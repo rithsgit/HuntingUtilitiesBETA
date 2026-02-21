@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "id": "hunting-utilities",
+  "version": "${version}",
+  "name": "Hunting Utilities",
+  "description": "A Meteor Client addon featuring a handful of utilities for hunting.",
+  "authors": [
+    "riths"
+  ],
+  "contact": {},
+  "license": "MIT",
+  "environment": "client",
+  "entrypoints": {
+    "meteor": [
+      "com.example.addon.HuntingUtilities"
+    ]
+  },
+  "mixins": [
+    "hunting-utilities.mixins.json"
+  ],
+  "custom": {
+    "meteor-client:colors": 75
+  },
+  "depends": {
+    "java": ">=21",
+    "minecraft": "1.21.4",
+    "meteor-client": "*"
+  }
+}
