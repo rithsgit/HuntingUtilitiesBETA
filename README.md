@@ -2,7 +2,17 @@
 
 A set of lightweight, focused Minecraft utility modules designed for efficient looting, scanning, automation, and travel — especially useful in survival, anarchy, or hardcore environments.
 
-## Modules
+## Quick Overview
+
+- **Dungeon Assistant**: Auto-opens & loots nearby chests/spawners with alerts for valuables
+- **Graveyard**: Detects & beams high-value dropped items (e.g., elytra, totems)
+- **Gridlock**: Auto-flies grid/spiral/lawnmower patterns for large-area scanning
+- **Loot Lens**: Scans & highlights containers/item frames for shulkers & valuables
+- **Portal Maker**: Builds & lights minimal Nether portals automatically
+- **Portal Tracker**: Detects & highlights portals/gateways, tracks your creations
+- **Rocket Pilot**: Auto-elytra flight with rocket firing, modes, & safety features
+
+## Detailed Modules
 
 ### 1. Dungeon Assistant
 Helps you quickly find and process valuable containers and structures in dungeons, mineshafts, strongholds, ancient cities, and hidden player bases.
