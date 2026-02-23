@@ -321,6 +321,11 @@ public class ElytraAssistant extends Module {
         return new FindItemResult(-1, 0);
     }
 
+    private int getSlotId(int slot) {
+        if (slot >= 0 && slot < 9) return 36 + slot;
+        return slot;
+    }
+
     /**
      * Silently equips an item from any inventory slot (hotbar or main inventory)
      * directly into the chestplate armor slot, without opening the inventory.
@@ -329,7 +334,7 @@ public class ElytraAssistant extends Module {
     private void silentEquip(int slot) {
         // InvUtils.move() sends the required packets silently without opening any screen.
         // Slot 0-8 = hotbar, 9-35 = main inventory. toArmor(2) = chestplate slot.
-        InvUtils.move().from(slot).toArmor(2);
+        InvUtils.move().from(getSlotId(slot)).toArmor(2);
     }
 
     private void handleAutoMend() {
