@@ -277,7 +277,7 @@ public class ElytraAssistant extends Module {
                 FindItemResult cp = InvUtils.find(stack ->
                     stack.isOf(Items.NETHERITE_CHESTPLATE) || stack.isOf(Items.DIAMOND_CHESTPLATE));
                 if (cp.found()) {
-                    InvUtils.move().from(getSlotId(cp.slot())).toArmor(2);
+                    equip(cp.slot());
                     swapTimer = swapDelay.get();
                 }
             }
@@ -286,7 +286,7 @@ public class ElytraAssistant extends Module {
             if (!chest.isOf(Items.ELYTRA) || (autoSwap.get() && chest.getMaxDamage() - chest.getDamage() <= durabilityThreshold.get())) {
                 FindItemResult elytra = findUsableElytra();
                 if (elytra.found()) {
-                    InvUtils.move().from(getSlotId(elytra.slot())).toArmor(2);
+                    equip(elytra.slot());
                     swapTimer = swapDelay.get();
                     info("Equipped usable elytra.");
                 } else if (!noUsableElytraWarned) {
@@ -309,7 +309,7 @@ public class ElytraAssistant extends Module {
 
         FindItemResult replacement = findUsableElytra();
         if (replacement.found()) {
-            InvUtils.move().from(getSlotId(replacement.slot())).toArmor(2);
+            equip(replacement.slot());
             warning("Elytra durability low! Swapping to fresh elytra.");
             mc.player.playSound(SoundEvents.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
             swapTimer = swapDelay.get();
@@ -338,6 +338,10 @@ public class ElytraAssistant extends Module {
 
         if (bestSlot != -1) return new FindItemResult(bestSlot, mc.player.getInventory().getStack(bestSlot).getCount());
         return new FindItemResult(-1, 0);
+    }
+
+    private void equip(int slot) {
+        InvUtils.move().from(getSlotId(slot)).toArmor(2);
     }
 
     private int getSlotId(int slot) {
