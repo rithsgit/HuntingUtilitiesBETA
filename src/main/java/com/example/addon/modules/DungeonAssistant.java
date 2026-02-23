@@ -38,6 +38,7 @@ import net.minecraft.client.gui.screen.ingame.HandledScreen;
 import net.minecraft.client.gui.screen.ingame.InventoryScreen;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.mob.EndermiteEntity;
+import net.minecraft.entity.mob.HostileEntity;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.entity.vehicle.ChestMinecartEntity;
 import net.minecraft.item.AxeItem;
@@ -919,6 +920,10 @@ public class DungeonAssistant extends Module {
 
     private boolean runSpawnerCheck() {
         if (autoBreakSpawners.get()) {
+            if (prioritizeSpawners.get() && areMobsNearby()) {
+                return false;
+            }
+
             for (Map.Entry<BlockPos, TargetType> entry : targets.entrySet()) {
                 if (entry.getValue() == TargetType.SPAWNER) {
                     BlockPos pos = entry.getKey();
@@ -931,6 +936,13 @@ public class DungeonAssistant extends Module {
             }
         }
         return false;
+    }
+
+    private boolean areMobsNearby() {
+        if (mc.player == null || mc.world == null) return false;
+        return !mc.world.getEntitiesByClass(HostileEntity.class, 
+            new Box(mc.player.getBlockPos()).expand(4), 
+            e -> e.isAlive()).isEmpty();
     }
 
     private boolean runMinecartCheck() {
