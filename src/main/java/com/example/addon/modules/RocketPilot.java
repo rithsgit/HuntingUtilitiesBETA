@@ -9,11 +9,13 @@ import meteordevelopment.meteorclient.settings.IntSetting;
 import meteordevelopment.meteorclient.settings.Setting;
 import meteordevelopment.meteorclient.settings.SettingGroup;
 import meteordevelopment.meteorclient.systems.modules.Module;
+import meteordevelopment.meteorclient.systems.modules.Modules;
 import meteordevelopment.meteorclient.utils.player.InvUtils;
 import meteordevelopment.orbit.EventHandler;
 import net.minecraft.entity.EquipmentSlot;
 import net.minecraft.item.ItemStack;
 import net.minecraft.item.Items;
+import net.minecraft.network.packet.c2s.play.ClientCommandC2SPacket;
 import net.minecraft.stat.Stats;
 import net.minecraft.text.Text;
 import net.minecraft.util.Hand;
@@ -88,7 +90,7 @@ public class RocketPilot extends Module {
         .build()
     );
 
-    private final Setting<Boolean> silentRockets = sgFlight.add(new BoolSetting.Builder()
+    public final Setting<Boolean> silentRockets = sgFlight.add(new BoolSetting.Builder()
         .name("silent-rockets")
         .description("Suppresses the hand swing animation when firing rockets.")
         .defaultValue(true)
@@ -250,24 +252,6 @@ public class RocketPilot extends Module {
     );
 
     // ─────────────────────────────────────── Elytra Safety ───────────────────────────────────────
-    public final Setting<Boolean> durabilityMonitor = sgElytraSafety.add(new BoolSetting.Builder()
-        .name("durability-monitor")
-        .description("Show warning when elytra durability is low.")
-        .defaultValue(true)
-        .build()
-    );
-
-    public final Setting<Double> warnThreshold = sgElytraSafety.add(new DoubleSetting.Builder()
-        .name("warn-threshold-percent")
-        .description("Percentage of durability remaining to trigger warning.")
-        .defaultValue(20.0)
-        .min(1)
-        .max(100)
-        .sliderRange(5, 50)
-        .visible(durabilityMonitor::get)
-        .build()
-    );
-
     private final Setting<Boolean> autoSwap = sgElytraSafety.add(new BoolSetting.Builder()
         .name("auto-swap")
         .description("Automatically swap to a fresh elytra when durability is low.")
@@ -294,38 +278,39 @@ public class RocketPilot extends Module {
         .build()
     );
 
-    // ─────────────────────────────────────── Flight Safety ───────────────────────────────────────
-    private final Setting<Boolean> limitRotationSpeed = sgFlightSafety.add(new BoolSetting.Builder()
-        .name("limit-rotation-speed")
-        .description("Limits how fast the module can rotate the player to bypass anti-cheat.")
+    public final Setting<Boolean> durabilityMonitor = sgElytraSafety.add(new BoolSetting.Builder()
+        .name("durability-monitor")
+        .description("Show warning when elytra durability is low.")
         .defaultValue(true)
         .build()
     );
 
-    private final Setting<Double> maxRotationPerTick = sgFlightSafety.add(new DoubleSetting.Builder()
-        .name("max-rotation-per-tick")
-        .description("Maximum degrees to rotate per tick.")
+    public final Setting<Double> warnThreshold = sgElytraSafety.add(new DoubleSetting.Builder()
+        .name("warn-threshold-percent")
+        .description("Percentage of durability remaining to trigger warning.")
         .defaultValue(20.0)
-        .min(1.0)
-        .max(90.0)
-        .sliderRange(5.0, 45.0)
-        .visible(limitRotationSpeed::get)
+        .min(1)
+        .max(100)
+        .sliderRange(5, 50)
+        .visible(durabilityMonitor::get)
         .build()
     );
 
-    private final Setting<Boolean> autoPark = sgFlightSafety.add(new BoolSetting.Builder()
-        .name("auto-park")
-        .description("Automatically lands and disables the module when a suitable location is reached.")
-        .defaultValue(false)
+    // ─────────────────────────────────────── Flight Safety ───────────────────────────────────────
+    private final Setting<Boolean> collisionAvoidance = sgFlightSafety.add(new BoolSetting.Builder()
+        .name("collision-avoidance")
+        .description("Attempts to avoid flying straight into walls.")
+        .defaultValue(true)
         .build()
     );
 
-    public final Setting<Integer> minRocketsWarning = sgFlightSafety.add(new IntSetting.Builder()
-        .name("min-rockets-warning")
-        .description("Warn when you have this many or fewer rockets left.")
-        .defaultValue(16)
-        .min(0)
-        .sliderRange(5, 64)
+    private final Setting<Integer> avoidanceDistance = sgFlightSafety.add(new IntSetting.Builder()
+        .name("avoidance-distance")
+        .description("How far to look ahead for obstacles.")
+        .defaultValue(10)
+        .min(3)
+        .sliderRange(5, 20)
+        .visible(collisionAvoidance::get)
         .build()
     );
 
@@ -346,20 +331,30 @@ public class RocketPilot extends Module {
         .build()
     );
 
-    private final Setting<Boolean> collisionAvoidance = sgFlightSafety.add(new BoolSetting.Builder()
-        .name("collision-avoidance")
-        .description("Attempts to avoid flying straight into walls.")
+    private final Setting<Boolean> limitRotationSpeed = sgFlightSafety.add(new BoolSetting.Builder()
+        .name("limit-rotation-speed")
+        .description("Limits how fast the module can rotate the player to bypass anti-cheat.")
         .defaultValue(true)
         .build()
     );
 
-    private final Setting<Integer> avoidanceDistance = sgFlightSafety.add(new IntSetting.Builder()
-        .name("avoidance-distance")
-        .description("How far to look ahead for obstacles.")
-        .defaultValue(10)
-        .min(3)
-        .sliderRange(5, 20)
-        .visible(collisionAvoidance::get)
+    private final Setting<Double> maxRotationPerTick = sgFlightSafety.add(new DoubleSetting.Builder()
+        .name("max-rotation-per-tick")
+        .description("Maximum degrees to rotate per tick.")
+        .defaultValue(20.0)
+        .min(1.0)
+        .max(90.0)
+        .sliderRange(5.0, 45.0)
+        .visible(limitRotationSpeed::get)
+        .build()
+    );
+
+    public final Setting<Integer> minRocketsWarning = sgFlightSafety.add(new IntSetting.Builder()
+        .name("min-rockets-warning")
+        .description("Warn when you have this many or fewer rockets left.")
+        .defaultValue(16)
+        .min(0)
+        .sliderRange(5, 64)
         .build()
     );
 
@@ -377,6 +372,13 @@ public class RocketPilot extends Module {
         .min(0)
         .sliderRange(0, 20)
         .visible(autoLandOnLowRockets::get)
+        .build()
+    );
+
+    private final Setting<Boolean> autoPark = sgFlightSafety.add(new BoolSetting.Builder()
+        .name("auto-park")
+        .description("Automatically lands and disables the module when a suitable location is reached.")
+        .defaultValue(false)
         .build()
     );
 
@@ -424,6 +426,7 @@ public class RocketPilot extends Module {
     private int totemPops = 0;
     private boolean emergencyLanding = false;
     private boolean emergencyLandingWarnSent = false;
+    private int takeoffTimer = 0;
 
     public RocketPilot() {
         super(HuntingUtilities.CATEGORY, "rocket-pilot", "Automatic elytra + rocket flight with height maintenance and auto-takeoff.");
@@ -444,6 +447,7 @@ public class RocketPilot extends Module {
         rocketsWarningSent = false;
         emergencyLanding = false;
         emergencyLandingWarnSent = false;
+        takeoffTimer = 0;
 
         if (mc.player == null || mc.world == null) {
             toggle();
@@ -527,8 +531,10 @@ public class RocketPilot extends Module {
             return;
         }
 
+        if (takeoffTimer > 0) takeoffTimer--;
+
         // Check disable on land
-        if (disableOnLand.get() && mc.player.isOnGround() && !needsTakeoffRocket) {
+        if (disableOnLand.get() && mc.player.isOnGround() && !needsTakeoffRocket && takeoffTimer == 0) {
             info("Landed — disabling.");
             toggle();
             return;
@@ -549,13 +555,20 @@ public class RocketPilot extends Module {
 
         // ─────────────────────────────── Auto-takeoff logic ───────────────────────────────
         if (needsTakeoffRocket) {
-            if (!mc.player.isOnGround() && mc.player.getVelocity().y < -0.08) {
+            if (mc.player.isOnGround()) {
+                mc.player.jump();
+            } else if (mc.player.isGliding()) {
                 if (shouldFireRocket() && countFireworks() > 0) {
                     fireRocket();
+                    lastRocketTime = System.currentTimeMillis();
                 }
                 needsTakeoffRocket = false;
-            } else if (mc.player.isOnGround()) {
-                mc.player.jump();
+                takeoffTimer = 40;
+            } else if (mc.player.getVelocity().y < -0.04) {
+                // Not gliding, but falling -> try to deploy
+                if (mc.player.networkHandler != null) {
+                    mc.player.networkHandler.sendPacket(new ClientCommandC2SPacket(mc.player, ClientCommandC2SPacket.Mode.START_FALL_FLYING));
+                }
             }
             return;
         }
@@ -568,7 +581,14 @@ public class RocketPilot extends Module {
         // ─────────────────────────────── Safety Checks ───────────────────────────────
         if (durabilityMonitor.get()) {
             double percent = getDurabilityPercent();
-            if (autoSwap.get() && percent <= swapThreshold.get()) {
+
+            boolean assistantHandling = false;
+            ElytraAssistant assistant = Modules.get().get(ElytraAssistant.class);
+            if (assistant != null && assistant.isAutoSwapEnabled()) {
+                assistantHandling = true;
+            }
+
+            if (!assistantHandling && autoSwap.get() && percent <= swapThreshold.get()) {
                 int oldDura = mc.player.getEquippedStack(EquipmentSlot.CHEST).getMaxDamage() - mc.player.getEquippedStack(EquipmentSlot.CHEST).getDamage();
                 Integer newDura = swapToFreshElytra();
                 if (newDura != null) {
@@ -912,7 +932,7 @@ public class RocketPilot extends Module {
         if (Math.abs(mc.player.getPitch()) > 70) return false;
 
         // Don't fire if moving too slowly (wasteful)
-        if (mc.player.getVelocity().horizontalLength() < 0.3) return false;
+        if (!needsTakeoffRocket && mc.player.getVelocity().horizontalLength() < 0.3) return false;
 
         return elytra.getDamage() < elytra.getMaxDamage() - 1;
     }
@@ -1046,11 +1066,9 @@ public class RocketPilot extends Module {
         if (rocketSlot < 9) {
             mc.player.getInventory().selectedSlot = rocketSlot;
             mc.interactionManager.interactItem(mc.player, Hand.MAIN_HAND);
-            if (!silentRockets.get()) mc.player.swingHand(Hand.MAIN_HAND);
             mc.player.getInventory().selectedSlot = selected;
         } else {
             mc.interactionManager.interactItem(mc.player, Hand.OFF_HAND);
-            if (!silentRockets.get()) mc.player.swingHand(Hand.OFF_HAND);
         }
     }
 

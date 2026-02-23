@@ -28,11 +28,11 @@ import meteordevelopment.meteorclient.utils.render.color.Color;
 import meteordevelopment.meteorclient.utils.render.color.SettingColor;
 import meteordevelopment.orbit.EventHandler;
 import net.minecraft.block.Block;
+import net.minecraft.block.BlockState;
+import net.minecraft.block.Blocks;
 import net.minecraft.block.entity.BlockEntity;
 import net.minecraft.block.entity.EndGatewayBlockEntity;
 import net.minecraft.block.entity.EndPortalBlockEntity;
-import net.minecraft.block.BlockState;
-import net.minecraft.block.Blocks;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Box;
 import net.minecraft.util.math.ChunkPos;
@@ -69,7 +69,6 @@ public class PortalTracker extends Module {
     private boolean wasInPortal = false;
 
     private final SettingGroup sgGeneral = settings.getDefaultGroup();
-    private final SettingGroup sgStats = settings.createGroup("Statistics");
     private final SettingGroup sgNetherPortals = settings.createGroup("Nether Portals");
     private final SettingGroup sgEndDimension = settings.createGroup("End Dimension");
     private final SettingGroup sgRender = settings.createGroup("Render");
@@ -85,13 +84,6 @@ public class PortalTracker extends Module {
         .build()
     );
 
-    private final Setting<Boolean> debug = sgGeneral.add(new BoolSetting.Builder()
-        .name("debug")
-        .description("Log debug messages.")
-        .defaultValue(false)
-        .build()
-    );
-
     private final Setting<Boolean> dynamicColors = sgGeneral.add(new BoolSetting.Builder()
         .name("dynamic-colors")
         .description("Animated rainbow colors for portals.")
@@ -99,7 +91,7 @@ public class PortalTracker extends Module {
         .build()
     );
 
-    private final Setting<Integer> autoMarkRange = sgStats.add(new IntSetting.Builder()
+    private final Setting<Integer> autoMarkRange = sgGeneral.add(new IntSetting.Builder()
         .name("auto-mark-range")
         .description("Auto-mark portals within this range as created by you.")
         .defaultValue(10)
@@ -110,14 +102,14 @@ public class PortalTracker extends Module {
         .build()
     );
 
-    private final Setting<Boolean> showCreatedCount = sgStats.add(new BoolSetting.Builder()
+    private final Setting<Boolean> showCreatedCount = sgGeneral.add(new BoolSetting.Builder()
         .name("show-created-count")
         .description("Show how many portals you've created in chat.")
         .defaultValue(true)
         .build()
     );
 
-    private final Setting<Boolean> onlyShowCreated = sgStats.add(new BoolSetting.Builder()
+    private final Setting<Boolean> onlyShowCreated = sgGeneral.add(new BoolSetting.Builder()
         .name("only-show-created")
         .description("Only highlight portals you've created.")
         .defaultValue(false)
@@ -127,9 +119,9 @@ public class PortalTracker extends Module {
     private Setting<Boolean> resetButton;
 
     {
-        resetButton = sgStats.add(new BoolSetting.Builder()
+        resetButton = sgGeneral.add(new BoolSetting.Builder()
             .name("reset")
-            .description("Click to reset created portal counter.")
+            .description("Resets the current session and clears created portals.")
             .defaultValue(false)
             .onChanged(v -> {
                 if (v) {
@@ -137,7 +129,8 @@ public class PortalTracker extends Module {
                     totalCreated = 0;
                     createdPortals.clear();
                     notifiedStructures.clear();
-                    sendMessage("§eReset! Cleared " + oldCount + " created portal" + (oldCount == 1 ? "" : "s"));
+                    sessionStartTime = System.currentTimeMillis();
+                    info("Session cleared. Reset " + oldCount + " created portal" + (oldCount == 1 ? "" : "s") + ".");
                     resetButton.set(false);
                 }
             })
@@ -268,10 +261,6 @@ public class PortalTracker extends Module {
         try {
             String currDim = mc.world.getRegistryKey().getValue().toString();
             if (!currDim.equals(lastDimension)) {
-                if (debug.get() && !lastDimension.isEmpty()) {
-                    info("Switching from " + getDimensionName(lastDimension) + " to " + getDimensionName(currDim));
-                }
-
                 dimensionChangeCooldown = 0;
                 exclusionTimer = COOLDOWN_TICKS;
                 lastDimension = currDim;

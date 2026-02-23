@@ -1,15 +1,25 @@
 package com.example.addon.modules;
 
+import java.util.ArrayList;
+import java.util.List;
+
 import com.example.addon.HuntingUtilities;
+
 import meteordevelopment.meteorclient.events.render.Render3DEvent;
 import meteordevelopment.meteorclient.events.world.TickEvent;
 import meteordevelopment.meteorclient.renderer.ShapeMode;
-import meteordevelopment.meteorclient.settings.*;
+import meteordevelopment.meteorclient.settings.BoolSetting;
+import meteordevelopment.meteorclient.settings.ColorSetting;
+import meteordevelopment.meteorclient.settings.EnumSetting;
+import meteordevelopment.meteorclient.settings.IntSetting;
+import meteordevelopment.meteorclient.settings.Setting;
+import meteordevelopment.meteorclient.settings.SettingGroup;
 import meteordevelopment.meteorclient.systems.modules.Module;
+import meteordevelopment.meteorclient.utils.player.FindItemResult;
+import meteordevelopment.meteorclient.utils.player.InvUtils;
 import meteordevelopment.meteorclient.utils.player.Rotations;
 import meteordevelopment.meteorclient.utils.render.color.SettingColor;
 import meteordevelopment.orbit.EventHandler;
-import meteordevelopment.meteorclient.utils.player.InvUtils;
 import net.minecraft.block.Blocks;
 import net.minecraft.item.Item;
 import net.minecraft.item.Items;
@@ -18,9 +28,6 @@ import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.Vec3d;
-
-import java.util.ArrayList;
-import java.util.List;
 
 public class PortalMaker extends Module {
 
@@ -197,12 +204,18 @@ public class PortalMaker extends Module {
 
         // Must hold obsidian to build
         if (placementIndex < portalFramePositions.size()) {
-            if (!(mc.player.getMainHandStack().getItem() instanceof net.minecraft.item.BlockItem bi) ||
-                bi.getBlock().asItem() != Items.OBSIDIAN) {
-                if (!selectHotbarItem(Items.OBSIDIAN)) {
-                    error("No obsidian in hotbar → disabled.");
+            if (!mc.player.getMainHandStack().isOf(Items.OBSIDIAN)) {
+                FindItemResult obsidian = InvUtils.find(Items.OBSIDIAN);
+                if (!obsidian.found()) {
+                    error("No obsidian found → disabled.");
                     toggle();
                     return;
+                }
+
+                if (obsidian.isHotbar()) {
+                    mc.player.getInventory().selectedSlot = obsidian.slot();
+                } else {
+                    InvUtils.move().from(obsidian.slot()).toHotbar(mc.player.getInventory().selectedSlot);
                 }
             }
 
@@ -420,28 +433,4 @@ public class PortalMaker extends Module {
         }
         return false;
     }
-
-    private void replenishObby() {
-        // Check hotbar for obby
-        for (int i = 0; i < 9; i++) {
-            if (mc.player.getInventory().getStack(i).isOf(Items.OBSIDIAN)) return;
-        }
-
-        // Find obby in main inventory
-        int invSlot = -1;
-        for (int i = 9; i < 36; i++) {
-            if (mc.player.getInventory().getStack(i).isOf(Items.OBSIDIAN)) {
-                invSlot = i;
-                break;
-            }
-        }
-
-        if (invSlot != -1) {
-            int hotbarSlot = mc.player.getInventory().selectedSlot;
-            InvUtils.move().from(invSlot).toHotbar(hotbarSlot);
-        }
-    }
-
-
-
 }

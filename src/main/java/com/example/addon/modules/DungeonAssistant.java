@@ -1,6 +1,7 @@
 package com.example.addon.modules;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -29,14 +30,15 @@ import meteordevelopment.meteorclient.utils.player.Rotations;
 import meteordevelopment.meteorclient.utils.render.color.SettingColor;
 import meteordevelopment.orbit.EventHandler;
 import net.minecraft.block.Block;
+import net.minecraft.block.BlockState;
 import net.minecraft.block.Blocks;
 import net.minecraft.block.entity.BlockEntity;
 import net.minecraft.block.entity.MobSpawnerBlockEntity;
 import net.minecraft.client.gui.screen.ingame.HandledScreen;
 import net.minecraft.client.gui.screen.ingame.InventoryScreen;
 import net.minecraft.entity.Entity;
-import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.entity.mob.EndermiteEntity;
+import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.entity.vehicle.ChestMinecartEntity;
 import net.minecraft.item.AxeItem;
 import net.minecraft.item.Item;
@@ -46,6 +48,7 @@ import net.minecraft.item.PickaxeItem;
 import net.minecraft.item.SwordItem;
 import net.minecraft.sound.SoundEvents;
 import net.minecraft.stat.Stats;
+import net.minecraft.state.property.Properties;
 import net.minecraft.text.Text;
 import net.minecraft.util.Hand;
 import net.minecraft.util.hit.BlockHitResult;
@@ -55,10 +58,8 @@ import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Box;
 import net.minecraft.util.math.ChunkPos;
 import net.minecraft.util.math.Direction;
-import net.minecraft.util.math.Vec3d;
-import net.minecraft.block.BlockState;
-import net.minecraft.state.property.Properties;
 import net.minecraft.util.math.Direction.Axis;
+import net.minecraft.util.math.Vec3d;
 import net.minecraft.world.chunk.ChunkSection;
 import net.minecraft.world.chunk.ChunkStatus;
 import net.minecraft.world.chunk.WorldChunk;
@@ -74,9 +75,10 @@ public class DungeonAssistant extends Module {
     private final Set<Integer> notifiedEndermites = new HashSet<>();
     private final Set<Integer> checkedEntityIds = new HashSet<>();
 
-    private final SettingGroup sgGeneral = settings.getDefaultGroup();
-    private final SettingGroup sgSpawners = settings.createGroup("Spawners");
-    private final SettingGroup sgChests = settings.createGroup("Chests");
+    private final SettingGroup sgGeneral      = settings.getDefaultGroup();
+    private final SettingGroup sgAutoOpen     = settings.createGroup("Auto Open");
+    private final SettingGroup sgSpawners     = settings.createGroup("Spawners");
+    private final SettingGroup sgChests       = settings.createGroup("Chests");
     private final SettingGroup sgClutterBlocks = settings.createGroup("Clutter Blocks");
     private final SettingGroup sgContainerButtons = settings.createGroup("Container Buttons");
     private final SettingGroup sgEndermites = settings.createGroup("Endermites");
@@ -124,24 +126,33 @@ public class DungeonAssistant extends Module {
         .build()
     );
 
-    private final Setting<Boolean> autoOpen = sgGeneral.add(new BoolSetting.Builder()
+    // ── Auto Open Settings ──
+    private final Setting<Boolean> autoOpen = sgAutoOpen.add(new BoolSetting.Builder()
         .name("auto-open")
         .description("Automatically open, check, and close containers.")
         .defaultValue(true)
         .build()
     );
 
-    private final Setting<Boolean> autoBreak = sgGeneral.add(new BoolSetting.Builder()
-        .name("auto-break")
-        .description("Automatically break empty containers after checking.")
+    private final Setting<Boolean> silentMode = sgAutoOpen.add(new BoolSetting.Builder()
+        .name("silent-mode")
+        .description("Open containers invisibly — GUI is suppressed, inventory is read server-side, then the break-delay fires if no whitelisted items are found.")
         .defaultValue(true)
         .visible(autoOpen::get)
         .build()
     );
 
-    private final Setting<Integer> breakDelay = sgGeneral.add(new IntSetting.Builder()
+    private final Setting<Boolean> autoBreak = sgAutoOpen.add(new BoolSetting.Builder()
+        .name("auto-break")
+        .description("Break empty containers after checking.")
+        .defaultValue(true)
+        .visible(autoOpen::get)
+        .build()
+    );
+
+    private final Setting<Integer> breakDelay = sgAutoOpen.add(new IntSetting.Builder()
         .name("break-delay")
-        .description("Delay in ticks before breaking an empty container.")
+        .description("Ticks to wait before breaking an empty container.")
         .defaultValue(5)
         .min(0)
         .max(40)
@@ -150,45 +161,44 @@ public class DungeonAssistant extends Module {
         .visible(() -> autoOpen.get() && autoBreak.get())
         .build()
     );
-    
-    private final Setting<Boolean> autoBreakSpawners = sgGeneral.add(new BoolSetting.Builder()
-        .name("auto-break-spawners")
-        .description("Automatically break spawners after checking.")
-        .defaultValue(false)
+
+    private final Setting<Boolean> silentSwitch = sgAutoOpen.add(new BoolSetting.Builder()
+        .name("silent-switch")
+        .description("Switch to axe (chest) or sword (chest minecart) for breaking, then restore the previous hotbar slot.")
+        .defaultValue(true)
         .visible(() -> autoOpen.get() && autoBreak.get())
         .build()
     );
 
-    private final Setting<Integer> spawnerBreakRange = sgGeneral.add(new IntSetting.Builder()
-        .name("spawner-break-range")
-        .description("Range in blocks to break spawners.")
-        .defaultValue(5)
-        .min(1)
-        .max(10)
-        .sliderRange(1, 10)
-        .visible(() -> autoOpen.get() && autoBreak.get() && autoBreakSpawners.get())
+    private final Setting<List<Item>> whitelistedItems = sgAutoOpen.add(new ItemListSetting.Builder()
+        .name("whitelisted-items")
+        .description("Items to look for — if found the container is left open and a sound plays.")
+        .defaultValue(List.of(
+            Items.ENCHANTED_GOLDEN_APPLE,
+            Items.ENDER_CHEST,
+            Items.SHULKER_BOX,
+            Items.WHITE_SHULKER_BOX,   Items.ORANGE_SHULKER_BOX,
+            Items.MAGENTA_SHULKER_BOX, Items.LIGHT_BLUE_SHULKER_BOX,
+            Items.YELLOW_SHULKER_BOX,  Items.LIME_SHULKER_BOX,
+            Items.PINK_SHULKER_BOX,    Items.GRAY_SHULKER_BOX,
+            Items.LIGHT_GRAY_SHULKER_BOX, Items.CYAN_SHULKER_BOX,
+            Items.PURPLE_SHULKER_BOX,  Items.BLUE_SHULKER_BOX,
+            Items.BROWN_SHULKER_BOX,   Items.GREEN_SHULKER_BOX,
+            Items.RED_SHULKER_BOX,     Items.BLACK_SHULKER_BOX
+        ))
+        .visible(autoOpen::get)
         .build()
     );
 
-    private final Setting<Integer> spawnerBreakDelay = sgGeneral.add(new IntSetting.Builder()
-        .name("spawner-break-delay")
-        .description("Delay in ticks before breaking a spawner.")
-        .defaultValue(5)
-        .min(0)
-        .max(20)
-        .visible(() -> autoOpen.get() && autoBreak.get() && autoBreakSpawners.get())
-        .build()
-    );
-
-    private final Setting<Boolean> prioritizeSpawners = sgGeneral.add(new BoolSetting.Builder()
-        .name("prioritize-spawners")
-        .description("Prioritize breaking spawners over opening chests.")
+    private final Setting<Boolean> rareItemSound = sgAutoOpen.add(new BoolSetting.Builder()
+        .name("alert-sound")
+        .description("Play a sound when a whitelisted item is found.")
         .defaultValue(true)
-        .visible(() -> autoOpen.get() && autoBreak.get() && autoBreakSpawners.get())
+        .visible(autoOpen::get)
         .build()
     );
 
-    // Spawner Settings
+    // ── Spawner Settings ──
     private final Setting<Boolean> trackSpawners = sgSpawners.add(new BoolSetting.Builder()
         .name("track-spawners")
         .description("Highlight monster spawners.")
@@ -238,6 +248,41 @@ public class DungeonAssistant extends Module {
         .build()
     );
 
+    private final Setting<Boolean> autoBreakSpawners = sgSpawners.add(new BoolSetting.Builder()
+        .name("auto-break")
+        .description("Automatically break spawners in range.")
+        .defaultValue(false)
+        .build()
+    );
+
+    private final Setting<Integer> spawnerBreakRange = sgSpawners.add(new IntSetting.Builder()
+        .name("break-range")
+        .description("Range in blocks to break spawners.")
+        .defaultValue(5)
+        .min(1)
+        .max(10)
+        .sliderRange(1, 10)
+        .visible(autoBreakSpawners::get)
+        .build()
+    );
+
+    private final Setting<Integer> spawnerBreakDelay = sgSpawners.add(new IntSetting.Builder()
+        .name("break-delay")
+        .description("Ticks to wait before breaking a spawner.")
+        .defaultValue(5)
+        .min(0)
+        .max(20)
+        .visible(autoBreakSpawners::get)
+        .build()
+    );
+
+    private final Setting<Boolean> prioritizeSpawners = sgSpawners.add(new BoolSetting.Builder()
+        .name("prioritize-spawners")
+        .description("Prioritize breaking spawners over opening chests.")
+        .defaultValue(true)
+        .visible(autoBreakSpawners::get)
+        .build()
+    );
 
     // Chest Settings
     private final Setting<Boolean> trackChests = sgChests.add(new BoolSetting.Builder()
@@ -283,42 +328,6 @@ public class DungeonAssistant extends Module {
         .description("Highlight color for stacked chest minecarts.")
         .defaultValue(new SettingColor(255, 0, 255, 120))
         .visible(() -> trackChestMinecarts.get() && highlightStacked.get())
-        .build()
-    );
-
-    private final Setting<List<Item>> whitelistedItems = sgGeneral.add(new ItemListSetting.Builder()
-        .name("whitelisted-items")
-        .description("Items to look for in chests.")
-        .defaultValue(List.of(
-            Items.ENCHANTED_GOLDEN_APPLE,
-            Items.ENDER_CHEST,
-            Items.SHULKER_BOX,
-            Items.WHITE_SHULKER_BOX,
-            Items.ORANGE_SHULKER_BOX,
-            Items.MAGENTA_SHULKER_BOX,
-            Items.LIGHT_BLUE_SHULKER_BOX,
-            Items.YELLOW_SHULKER_BOX,
-            Items.LIME_SHULKER_BOX,
-            Items.PINK_SHULKER_BOX,
-            Items.GRAY_SHULKER_BOX,
-            Items.LIGHT_GRAY_SHULKER_BOX,
-            Items.CYAN_SHULKER_BOX,
-            Items.PURPLE_SHULKER_BOX,
-            Items.BLUE_SHULKER_BOX,
-            Items.BROWN_SHULKER_BOX,
-            Items.GREEN_SHULKER_BOX,
-            Items.RED_SHULKER_BOX,
-            Items.BLACK_SHULKER_BOX
-        ))
-        .visible(autoOpen::get)
-        .build()
-    );
-
-    private final Setting<Boolean> rareItemSound = sgChests.add(new BoolSetting.Builder()
-        .name("rare-item-sound")
-        .description("Play sound when whitelisted items are found.")
-        .defaultValue(true)
-        .visible(autoOpen::get)
         .build()
     );
 
@@ -521,6 +530,24 @@ public class DungeonAssistant extends Module {
     /** True only when the container was opened by the auto-open logic, not by the player manually. */
     private boolean wasAutoOpened = false;
 
+    // ── Silent open/close state ──
+    /** Set to true after we send the interact packet so onOpenScreen knows to close silently. */
+    private boolean silentOpenPending = false;
+    /** Result of the silent inventory check: true = whitelisted item found. */
+    private boolean silentFoundWhitelisted = false;
+    /** After a silent close, this triggers the break/sound decision on the next clear tick. */
+    private boolean pendingBreakCheck = false;
+    /** Saved hotbar slot before a silent-switch tool swap — restored after breaking completes. */
+    private int previousSlot = -1;
+    /**
+     * Counts down after we send an interact packet.
+     * While > 0 the auto-open logic won't re-fire (preventing wasAutoOpened from
+     * being reset before the server sends back the OpenScreen packet).
+     * If it reaches 0 before the screen opens we abort and try again next cycle.
+     */
+    private int interactTimeoutTimer = 0;
+    private static final int INTERACT_TIMEOUT_TICKS = 20; // 1 second max wait
+
     public DungeonAssistant() {
         super(HuntingUtilities.CATEGORY, "dungeon-assistant", "Highlights dungeon elements: spawners, chests, and dungeon blocks.");
     }
@@ -568,6 +595,16 @@ public class DungeonAssistant extends Module {
         isBreakingEntity = false;
         blockToBreak = null;
         entityToBreak = null;
+        // Silent state cleanup
+        silentOpenPending = false;
+        silentFoundWhitelisted = false;
+        pendingBreakCheck = false;
+        interactTimeoutTimer = 0;
+        // Restore slot if silent-switch was interrupted
+        if (previousSlot >= 0 && mc.player != null) {
+            mc.player.getInventory().selectedSlot = previousSlot;
+        }
+        previousSlot = -1;
     }
 
     // Auto-disable on disconnect
@@ -579,6 +616,29 @@ public class DungeonAssistant extends Module {
     @EventHandler
     private void onOpenScreen(OpenScreenEvent event) {
         if (mc.player == null || mc.world == null) return;
+
+        // ── Auto-open intercept ──
+        // When wasAutoOpened is true we already know which container was opened
+        // (set in runChestCheck / runMinecartCheck). We must NOT overwrite
+        // lastOpenedContainer / lastOpenedEntity from the crosshair — that would
+        // point breaking at whatever the player happens to be looking at instead.
+        if (wasAutoOpened) {
+            interactTimeoutTimer = 0; // server responded — cancel the timeout
+
+            if (autoOpen.get() && silentMode.get()
+                    && event.screen instanceof HandledScreen<?>
+                    && !(event.screen instanceof InventoryScreen)) {
+                // Silent mode: flag for close-on-next-tick (slot reading deferred
+                // so the InventoryS2CPacket has time to populate the handler).
+                silentOpenPending = true;
+            }
+            // In non-silent mode we simply let the screen open; updateContainerLogic
+            // will read and close it on the next tick using lastOpenedContainer /
+            // lastOpenedEntity that were already set by the run* method.
+            return;
+        }
+
+        // ── Manual open — track what the player opened for Steal/Dump buttons ──
         HitResult hit = mc.crosshairTarget;
         if (hit != null) {
             if (hit.getType() == HitResult.Type.BLOCK) {
@@ -668,12 +728,20 @@ public class DungeonAssistant extends Module {
                     Block targetBlock = mc.world.getBlockState(blockToBreak).getBlock();
                     if (targetBlock == Blocks.CHEST || targetBlock == Blocks.TRAPPED_CHEST || targetBlock == Blocks.SPAWNER) {
                         isBreaking = true;
+                        // Silent switch: save current slot before we change tools
+                        if (silentSwitch.get() && previousSlot < 0) {
+                            previousSlot = mc.player.getInventory().selectedSlot;
+                        }
                     } else {
-                        blockToBreak = null; // Not a chest — abort
+                        blockToBreak = null; // Not a valid target — abort
                     }
                 } else if (entityToBreak != null) {
                     if (entityToBreak instanceof ChestMinecartEntity) {
                         isBreakingEntity = true;
+                        // Silent switch: save current slot before we change tools
+                        if (silentSwitch.get() && previousSlot < 0) {
+                            previousSlot = mc.player.getInventory().selectedSlot;
+                        }
                     } else {
                         entityToBreak = null; // Not a chest minecart — abort
                     }
@@ -681,59 +749,147 @@ public class DungeonAssistant extends Module {
             }
         }
 
+        // ── Breaking a block (chest / trapped chest / spawner) ──
         if (isBreaking && blockToBreak != null && !mc.player.isTouchingWater()) {
             Block currentBreakTarget = mc.world.getBlockState(blockToBreak).getBlock();
-            if (mc.world.getBlockState(blockToBreak).isAir()
-                    || (currentBreakTarget != Blocks.CHEST && currentBreakTarget != Blocks.TRAPPED_CHEST && currentBreakTarget != Blocks.SPAWNER)
-                    || Math.sqrt(mc.player.squaredDistanceTo(blockToBreak.toCenterPos())) > 6) {
+            boolean done = mc.world.getBlockState(blockToBreak).isAir()
+                || (currentBreakTarget != Blocks.CHEST && currentBreakTarget != Blocks.TRAPPED_CHEST && currentBreakTarget != Blocks.SPAWNER)
+                || Math.sqrt(mc.player.squaredDistanceTo(blockToBreak.toCenterPos())) > 6;
+
+            if (done) {
                 isBreaking = false;
                 blockToBreak = null;
                 mc.interactionManager.cancelBlockBreaking();
-            } else {
-                if (currentBreakTarget == Blocks.SPAWNER) {
-                    int pickaxeSlot = findPickaxe();
-                    if (pickaxeSlot != -1) mc.player.getInventory().selectedSlot = pickaxeSlot;
-                } else {
-                    int axeSlot = findAxe();
-                    if (axeSlot != -1) mc.player.getInventory().selectedSlot = axeSlot;
+                // Restore slot after silent switch
+                if (silentSwitch.get() && previousSlot >= 0) {
+                    mc.player.getInventory().selectedSlot = previousSlot;
+                    previousSlot = -1;
                 }
-                Rotations.rotate(Rotations.getYaw(blockToBreak), Rotations.getPitch(blockToBreak), null);
-                mc.interactionManager.updateBlockBreakingProgress(blockToBreak, Direction.UP);
-                mc.player.swingHand(Hand.MAIN_HAND);
+            } else {
+                // Select correct tool: pickaxe for spawner, axe for chest
+                if (currentBreakTarget == Blocks.SPAWNER) {
+                    int slot = findPickaxe();
+                    if (slot != -1) mc.player.getInventory().selectedSlot = slot;
+                } else {
+                    int slot = findAxe();
+                    if (slot != -1) mc.player.getInventory().selectedSlot = slot;
+                }
+                Rotations.rotate(Rotations.getYaw(blockToBreak), Rotations.getPitch(blockToBreak), () -> {
+                    mc.interactionManager.updateBlockBreakingProgress(blockToBreak, Direction.UP);
+                    mc.player.swingHand(Hand.MAIN_HAND);
+                });
             }
         }
 
+        // ── Breaking a chest minecart (sword, min-swing) ──
         if (isBreakingEntity && entityToBreak != null && !mc.player.isTouchingWater()) {
-            if (!(entityToBreak instanceof ChestMinecartEntity) || !entityToBreak.isAlive() || mc.player.distanceTo(entityToBreak) > 6) {
+            boolean gone = !(entityToBreak instanceof ChestMinecartEntity)
+                || !entityToBreak.isAlive()
+                || mc.player.distanceTo(entityToBreak) > 6;
+
+            if (gone) {
                 isBreakingEntity = false;
                 entityToBreak = null;
+                // Restore slot after silent switch
+                if (silentSwitch.get() && previousSlot >= 0) {
+                    mc.player.getInventory().selectedSlot = previousSlot;
+                    previousSlot = -1;
+                }
             } else {
+                // Switch to sword
                 int swordSlot = findSword();
                 if (swordSlot != -1) mc.player.getInventory().selectedSlot = swordSlot;
-                Rotations.rotate(Rotations.getYaw(entityToBreak), Rotations.getPitch(entityToBreak), null);
-                mc.interactionManager.attackEntity(mc.player, entityToBreak);
-                mc.player.swingHand(Hand.MAIN_HAND);
+                // Min-swing: only attack once the attack cooldown is fully recharged
+                if (mc.player.getAttackCooldownProgress(0f) >= 1.0f) {
+                    Rotations.rotate(Rotations.getYaw(entityToBreak), Rotations.getPitch(entityToBreak), () -> {
+                        mc.interactionManager.attackEntity(mc.player, entityToBreak);
+                        mc.player.swingHand(Hand.MAIN_HAND);
+                    });
+                }
             }
         }
     }
 
     private void updateContainerLogic() {
-        if (!autoOpen.get()) return;
 
+        // ── Interact timeout: if the server hasn't responded within INTERACT_TIMEOUT_TICKS
+        // ticks, abort and allow the cycle to restart on the next pass. ──
+        if (interactTimeoutTimer > 0) {
+            interactTimeoutTimer--;
+            if (interactTimeoutTimer == 0 && wasAutoOpened && mc.currentScreen == null) {
+                // Server never responded — reset everything so we can try again
+                wasAutoOpened = false;
+                silentOpenPending = false;
+                pendingBreakCheck = false;
+                // Remove this chest/minecart from checkedContainers/checkedEntityIds
+                // so it can be retried (it may have been temporarily inaccessible)
+                if (lastOpenedContainer != null) checkedContainers.remove(lastOpenedContainer);
+                if (lastOpenedEntity != null) checkedEntityIds.remove(lastOpenedEntity.getId());
+                lastOpenedContainer = null;
+                lastOpenedEntity = null;
+            }
+        }
+
+        // ── SILENT MODE: screen is open and the server has populated the handler ──
+        // We read slots here (NOT in onOpenScreen) so the InventoryS2CPacket is guaranteed
+        // to have arrived and filled the container slots before we check them.
+        if (silentOpenPending && mc.currentScreen instanceof HandledScreen
+                && !(mc.currentScreen instanceof InventoryScreen)) {
+            HandledScreen<?> silentScreen = (HandledScreen<?>) mc.currentScreen;
+            int numSlots = silentScreen.getScreenHandler().slots.size();
+            int containerSlots = numSlots - 36;
+
+            if (containerSlots > 0) {
+                silentFoundWhitelisted = false;
+                for (int i = 0; i < containerSlots; i++) {
+                    Item item = silentScreen.getScreenHandler().slots.get(i).getStack().getItem();
+                    if (whitelistedItems.get().contains(item)) {
+                        silentFoundWhitelisted = true;
+                        break;
+                    }
+                }
+                pendingBreakCheck = true;
+            }
+
+            mc.player.closeHandledScreen();
+            silentOpenPending = false;
+            return;
+        }
+
+        // ── After a silent close: decide break or sound ──
+        if (pendingBreakCheck && mc.currentScreen == null && !silentOpenPending) {
+            pendingBreakCheck = false;
+            wasAutoOpened = false;
+            hasPlayedSoundForCurrentScreen = false;
+
+            if (!silentFoundWhitelisted) {
+                // No whitelisted items — schedule break after delay
+                if (autoBreak.get()) {
+                    if (lastOpenedContainer != null) {
+                        blockToBreak = lastOpenedContainer;
+                        breakDelayTimer = getRandomizedDelay(breakDelay.get());
+                    } else if (lastOpenedEntity != null) {
+                        entityToBreak = lastOpenedEntity;
+                        breakDelayTimer = getRandomizedDelay(breakDelay.get());
+                    }
+                }
+            } else {
+                // Whitelisted item found — alert
+                if (rareItemSound.get()) {
+                    mc.player.playSound(SoundEvents.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
+                }
+            }
+            return;
+        }
+
+        // ── NON-SILENT MODE: screen is open, read and close it ──
         if (mc.currentScreen instanceof HandledScreen && !(mc.currentScreen instanceof InventoryScreen)) {
-            // Only auto-manage containers that were opened by the auto-open logic.
+            // Only auto-manage containers opened by the auto-open logic.
             // Containers opened manually by the player are left alone so the Steal/Dump buttons remain usable.
             if (!wasAutoOpened) return;
 
-            // Ensure we only manage target containers (Chests, Trapped Chests, Minecarts)
-            if (lastOpenedContainer != null) {
-                Block block = mc.world.getBlockState(lastOpenedContainer).getBlock();
-                if (block != Blocks.CHEST && block != Blocks.TRAPPED_CHEST) return;
-            } else if (lastOpenedEntity != null) {
-                if (!(lastOpenedEntity instanceof ChestMinecartEntity)) return;
-            } else {
-                return;
-            }
+            if (lastOpenedContainer == null && lastOpenedEntity == null) return;
+            if (lastOpenedEntity != null && !(lastOpenedEntity instanceof ChestMinecartEntity)) return;
 
             HandledScreen<?> screen = (HandledScreen<?>) mc.currentScreen;
             int numSlots = screen.getScreenHandler().slots.size();
@@ -749,45 +905,59 @@ public class DungeonAssistant extends Module {
                 }
                 if (!found) {
                     mc.player.closeHandledScreen();
+                    wasAutoOpened = false; // allow next auto-open cycle
                     if (autoBreak.get()) {
                         if (lastOpenedContainer != null) {
                             blockToBreak = lastOpenedContainer;
-                            breakDelayTimer = breakDelay.get();
+                            breakDelayTimer = getRandomizedDelay(breakDelay.get());
                         } else if (lastOpenedEntity != null) {
                             entityToBreak = lastOpenedEntity;
-                            breakDelayTimer = breakDelay.get();
+                            breakDelayTimer = getRandomizedDelay(breakDelay.get());
                         }
                     }
-                } else if (rareItemSound.get() && !hasPlayedSoundForCurrentScreen) {
-                    boolean isChestOrMinecart = lastOpenedEntity != null ||
-                        (lastOpenedContainer != null && mc.world != null &&
-                            (mc.world.getBlockState(lastOpenedContainer).getBlock() == Blocks.CHEST ||
-                            mc.world.getBlockState(lastOpenedContainer).getBlock() == Blocks.TRAPPED_CHEST));
-                    if (isChestOrMinecart) {
-                        mc.player.playSound(SoundEvents.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
-                        hasPlayedSoundForCurrentScreen = true;
+                } else {
+                    // Whitelisted items found — always release the lock so the next
+                    // cycle can start, regardless of whether the sound is enabled.
+                    wasAutoOpened = false;
+                    if (rareItemSound.get() && !hasPlayedSoundForCurrentScreen) {
+                        boolean isChestOrMinecart = lastOpenedEntity != null ||
+                            (lastOpenedContainer != null &&
+                                (mc.world.getBlockState(lastOpenedContainer).getBlock() == Blocks.CHEST ||
+                                mc.world.getBlockState(lastOpenedContainer).getBlock() == Blocks.TRAPPED_CHEST));
+                        if (isChestOrMinecart) {
+                            mc.player.playSound(SoundEvents.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
+                            hasPlayedSoundForCurrentScreen = true;
+                        }
                     }
                 }
             }
-        } else if (mc.currentScreen == null && !isBreaking && !isBreakingEntity && breakDelayTimer == 0) {
 
-            wasAutoOpened = false; // screen is closed — next open could be manual
+        } else if (mc.currentScreen == null && !isBreaking && !isBreakingEntity
+                && breakDelayTimer == 0 && !pendingBreakCheck && !silentOpenPending
+                && !wasAutoOpened) {
+            // NOTE: !wasAutoOpened prevents re-entering this block on the ticks between
+            // sending the interact packet and the server sending back the open-screen packet.
+            // wasAutoOpened is reset by pendingBreakCheck, by the non-silent close path,
+            // or by interactTimeoutTimer reaching 0.
             hasPlayedSoundForCurrentScreen = false;
-            
+
             // Auto-open logic
-            if (prioritizeSpawners.get()) {
-                if (runSpawnerCheck()) return;
-                if (runMinecartCheck()) return;
-                if (runChestCheck()) return;
-            } else {
-                if (runMinecartCheck()) return;
-                if (runChestCheck()) return;
-                if (runSpawnerCheck()) return;
+            if (autoOpen.get()) {
+                if (prioritizeSpawners.get()) {
+                    if (runSpawnerCheck()) return;
+                    if (runMinecartCheck()) return;
+                    if (runChestCheck()) return;
+                } else {
+                    if (runMinecartCheck()) return;
+                    if (runChestCheck()) return;
+                    if (runSpawnerCheck()) return;
+                }
             }
         }
     }
 
     private void updateScanningLogic() {
+
         try {
             if (mc.world.getRegistryKey() == null) return;
         } catch (Exception e) { return; }
@@ -826,7 +996,7 @@ public class DungeonAssistant extends Module {
                     BlockPos pos = entry.getKey();
                     if (Math.sqrt(pos.getSquaredDistance(mc.player.getPos())) <= spawnerBreakRange.get()) {
                         blockToBreak = pos;
-                        breakDelayTimer = spawnerBreakDelay.get();
+                        breakDelayTimer = getRandomizedDelay(spawnerBreakDelay.get());
                         return true;
                     }
                 }
@@ -836,47 +1006,76 @@ public class DungeonAssistant extends Module {
     }
 
     private boolean runMinecartCheck() {
-        if (trackChestMinecarts.get()) {
-            List<ChestMinecartEntity> minecarts = mc.world.getEntitiesByClass(
-                ChestMinecartEntity.class,
-                new Box(mc.player.getBlockPos()).expand(5.0),
-                e -> !checkedEntityIds.contains(e.getId())
-            );
-            if (!minecarts.isEmpty()) {
-                ChestMinecartEntity cart = minecarts.get(0);
-                if (mc.player.distanceTo(cart) <= 5.0) {
-                    mc.interactionManager.interactEntity(mc.player, cart, Hand.MAIN_HAND);
-                    lastOpenedEntity = cart;
-                    lastOpenedContainer = null;
-                    checkedEntityIds.add(cart.getId());
-                    wasAutoOpened = true; // mark as auto-opened so it can be auto-closed
-                    return true;
-                }
-            }
-        }
-        return false;
+        if (!trackChestMinecarts.get()) return false;
+
+        // Gather all unchecked chest minecarts in range, sort nearest first
+        List<ChestMinecartEntity> minecarts = mc.world.getEntitiesByClass(
+            ChestMinecartEntity.class,
+            new Box(mc.player.getBlockPos()).expand(4.5),
+            e -> !checkedEntityIds.contains(e.getId())
+        );
+        if (minecarts.isEmpty()) return false;
+
+        // Sort nearest first
+        minecarts.sort(Comparator.comparingDouble(e -> mc.player.squaredDistanceTo(e)));
+        ChestMinecartEntity cart = minecarts.get(0);
+        if (mc.player.distanceTo(cart) > 4.5) return false;
+
+        lastOpenedEntity = cart;
+        lastOpenedContainer = null;
+        checkedEntityIds.add(cart.getId());
+        wasAutoOpened = true;
+        interactTimeoutTimer = INTERACT_TIMEOUT_TICKS; // start timeout window
+
+        Rotations.rotate(Rotations.getYaw(cart), Rotations.getPitch(cart), () -> {
+            mc.interactionManager.interactEntity(mc.player, cart, Hand.MAIN_HAND);
+            mc.player.swingHand(Hand.MAIN_HAND);
+        });
+        return true;
     }
 
     private boolean runChestCheck() {
-        if (trackChests.get()) {
-            for (Map.Entry<BlockPos, TargetType> entry : targets.entrySet()) {
-                if (entry.getValue() == TargetType.CHEST) {
-                    BlockPos pos = entry.getKey();
-                    if (checkedContainers.contains(pos)) continue;
-                    if (Math.sqrt(pos.getSquaredDistance(mc.player.getPos())) > 5.0) continue;
+        if (!trackChests.get()) return false;
 
-                    BlockHitResult hit = new BlockHitResult(Vec3d.ofCenter(pos), Direction.UP, pos, false);
-                    mc.interactionManager.interactBlock(mc.player, Hand.MAIN_HAND, hit);
-                    mc.player.swingHand(Hand.MAIN_HAND);
-                    lastOpenedContainer = pos;
-                    lastOpenedEntity = null;
-                    checkedContainers.add(pos);
-                    wasAutoOpened = true; // mark as auto-opened so it can be auto-closed
-                    return true;
+        // Collect all unchecked chests within range, sorted nearest first
+        List<BlockPos> nearbyChests = targets.entrySet().stream()
+            .filter(e -> e.getValue() == TargetType.CHEST)
+            .map(Map.Entry::getKey)
+            .filter(pos -> !checkedContainers.contains(pos))
+            .filter(pos -> Math.sqrt(pos.getSquaredDistance(mc.player.getPos())) <= 4.5)
+            .sorted(Comparator.comparingDouble(pos -> pos.getSquaredDistance(mc.player.getPos())))
+            .toList();
+
+        if (nearbyChests.isEmpty()) return false;
+
+        BlockPos pos = nearbyChests.get(0);
+        Block block = mc.world.getBlockState(pos).getBlock();
+
+        // Mark this chest as checked
+        checkedContainers.add(pos);
+
+        // If it's a double chest, mark the other half too so we don't visit it separately
+        if (block == Blocks.CHEST || block == Blocks.TRAPPED_CHEST) {
+            for (Direction dir : new Direction[]{Direction.NORTH, Direction.SOUTH, Direction.EAST, Direction.WEST}) {
+                BlockPos neighbor = pos.offset(dir);
+                if (mc.world.getBlockState(neighbor).getBlock() == block) {
+                    checkedContainers.add(neighbor);
+                    break;
                 }
             }
         }
-        return false;
+
+        lastOpenedContainer = pos;
+        lastOpenedEntity = null;
+        wasAutoOpened = true;
+        interactTimeoutTimer = INTERACT_TIMEOUT_TICKS; // start timeout window
+
+        Rotations.rotate(Rotations.getYaw(pos), Rotations.getPitch(pos), () -> {
+            BlockHitResult hit = new BlockHitResult(Vec3d.ofCenter(pos), Direction.UP, pos, false);
+            mc.interactionManager.interactBlock(mc.player, Hand.MAIN_HAND, hit);
+            mc.player.swingHand(Hand.MAIN_HAND);
+        });
+        return true;
     }
 
     private void resetScanningState() {
@@ -1133,10 +1332,6 @@ public class DungeonAssistant extends Module {
         if (mc.player == null || mc.world == null) return;
 
         ShapeMode mode = shapeMode.get();
-
-
-
-
         Set<BlockPos> toRemove = new HashSet<>();
         
         for (Map.Entry<BlockPos, TargetType> entry : targets.entrySet()) {
@@ -1288,53 +1483,44 @@ public class DungeonAssistant extends Module {
         return counts;
     }
 
+    /** Scans hotbar slots 0-8 for a golden apple. */
     private int findGoldenApple() {
         for (int i = 0; i < 9; i++) {
-            ItemStack stack = mc.player.getInventory().getStack(i);
-            if (stack.getItem() == Items.GOLDEN_APPLE || stack.getItem() == Items.ENCHANTED_GOLDEN_APPLE) {
-                return i;
-            }
+            Item it = mc.player.getInventory().getStack(i).getItem();
+            if (it == Items.GOLDEN_APPLE || it == Items.ENCHANTED_GOLDEN_APPLE) return i;
         }
         return -1;
     }
 
+    /** Scans hotbar slots 0-8 for an axe. */
     private int findAxe() {
         for (int i = 0; i < 9; i++) {
-            ItemStack stack = mc.player.getInventory().getStack(i);
-            if (stack.getItem() instanceof AxeItem) {
-                return i;
-            }
+            if (mc.player.getInventory().getStack(i).getItem() instanceof AxeItem) return i;
         }
         return -1;
     }
 
+    /** Scans hotbar slots 0-8 for a pickaxe. */
     private int findPickaxe() {
         for (int i = 0; i < 9; i++) {
-            ItemStack stack = mc.player.getInventory().getStack(i);
-            if (stack.getItem() instanceof PickaxeItem) {
-                return i;
-            }
+            if (mc.player.getInventory().getStack(i).getItem() instanceof PickaxeItem) return i;
         }
         return -1;
     }
 
+    /** Scans hotbar slots 0-8 for a sword. */
     private int findSword() {
         for (int i = 0; i < 9; i++) {
-            ItemStack stack = mc.player.getInventory().getStack(i);
-            if (stack.getItem() instanceof SwordItem) {
-                return i;
-            }
+            if (mc.player.getInventory().getStack(i).getItem() instanceof SwordItem) return i;
         }
         return -1;
     }
 
-    private String getDimensionName(String dimensionId) {
-        return switch (dimensionId) {
-            case "minecraft:the_nether" -> "Nether";
-            case "minecraft:overworld" -> "Overworld";
-            case "minecraft:the_end" -> "End";
-            default -> dimensionId;
-        };
+    private int getRandomizedDelay(int baseDelay) {
+        // Always return at least 1 so the breakDelayTimer decrement path sets isBreaking = true.
+        // If baseDelay is 0 the break is effectively instant (fires next tick).
+        if (baseDelay <= 0) return 1;
+        return (int) Math.max(1, Math.round(baseDelay * (1.0 + (Math.random() - 0.5) * 0.8)));
     }
 
     public enum TargetType {

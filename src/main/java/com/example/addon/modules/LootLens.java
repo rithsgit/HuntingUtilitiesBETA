@@ -62,7 +62,6 @@ public class LootLens extends Module {
     private final SettingGroup sgGeneral = settings.getDefaultGroup();
     private final SettingGroup sgStorage = settings.createGroup("Storage");
     private final SettingGroup sgUtility = settings.createGroup("Utility");
-    private final SettingGroup sgContainerButtons = settings.createGroup("Container Buttons");
     private final SettingGroup sgDecorative = settings.createGroup("Decorative");
 
     // General Settings
@@ -110,16 +109,9 @@ public class LootLens extends Module {
         .build()
     );
 
-    private final Setting<Boolean> notify = sgGeneral.add(new BoolSetting.Builder()
-        .name("notify")
-        .description("Send chat messages when shulkers are found or removed.")
-        .defaultValue(true)
-        .build()
-    );
-
-    private final Setting<Boolean> playSound = sgGeneral.add(new BoolSetting.Builder()
-        .name("play-sound")
-        .description("Play a sound when a shulker is found.")
+    private final Setting<Boolean> notification = sgGeneral.add(new BoolSetting.Builder()
+        .name("notification")
+        .description("Send chat messages and play sound when shulkers are found.")
         .defaultValue(true)
         .build()
     );
@@ -130,23 +122,6 @@ public class LootLens extends Module {
         .defaultValue(List.of(Items.ENCHANTED_GOLDEN_APPLE, Items.ELYTRA))
         .build()
     );
-
-    // Container Buttons
-    public final Setting<Boolean> showContainerButtons = sgContainerButtons.add(new BoolSetting.Builder()
-        .name("show-container-buttons")
-        .description("Shows 'Steal' and 'Dump' buttons on the right side of container GUIs.")
-        .defaultValue(true)
-        .build()
-    );
-
-    public final Setting<Boolean> dumpHotbar = sgContainerButtons.add(new BoolSetting.Builder()
-        .name("dump-hotbar")
-        .description("Whether the 'Dump' button also dumps your hotbar.")
-        .defaultValue(false)
-        .visible(showContainerButtons::get)
-        .build()
-    );
-
 
     // --- Storage Settings ---
     private final Setting<Boolean> scanChests = sgStorage.add(new BoolSetting.Builder()
@@ -326,7 +301,7 @@ public class LootLens extends Module {
 
     private final Setting<Boolean> scanItemFrames = sgDecorative.add(new BoolSetting.Builder()
         .name("item-frames")
-        .description("Detect item frames with shulker boxes.")
+        .description("Detect item frames and glow item frames with shulker boxes.")
         .defaultValue(true)
         .build()
     );
@@ -335,20 +310,6 @@ public class LootLens extends Module {
         .description("Item frame highlight color (only shown when shulker inside).")
         .defaultValue(new SettingColor(255, 100, 255, 150))
         .visible(scanItemFrames::get)
-        .build()
-    );
-
-    private final Setting<Boolean> scanGlowItemFrames = sgDecorative.add(new BoolSetting.Builder()
-        .name("glow-item-frames")
-        .description("Detect glow item frames with shulker boxes.")
-        .defaultValue(true)
-        .build()
-    );
-    private final Setting<SettingColor> glowItemFrameColor = sgDecorative.add(new ColorSetting.Builder()
-        .name("glow-item-frame-color")
-        .description("Glow item frame highlight color (only shown when shulker inside).")
-        .defaultValue(new SettingColor(100, 255, 255, 150))
-        .visible(scanGlowItemFrames::get)
         .build()
     );
 
@@ -521,7 +482,7 @@ public class LootLens extends Module {
 
     private void scanItemFrames() {
         if (mc.player == null || mc.world == null) return;
-        if (!scanItemFrames.get() && !scanGlowItemFrames.get()) return;
+        if (!scanItemFrames.get()) return;
 
         BlockPos playerPos = mc.player.getBlockPos();
         int scanRange = range.get();
@@ -537,9 +498,6 @@ public class LootLens extends Module {
         // Scan for item frames (includes glow item frames)
         for (ItemFrameEntity frame : mc.world.getEntitiesByClass(ItemFrameEntity.class, searchBox, entity -> true)) {
             boolean isGlow = frame instanceof GlowItemFrameEntity;
-
-            if (isGlow && !scanGlowItemFrames.get()) continue;
-            if (!isGlow && !scanItemFrames.get()) continue;
 
             ItemStack heldStack = frame.getHeldItemStack();
             if (!heldStack.isEmpty()) {
@@ -558,14 +516,12 @@ public class LootLens extends Module {
                     // Notify if this is a new discovery
                     if (!notifiedItemFrames.contains(pos)) {
                         notifiedItemFrames.add(pos);
-                        if (notify.get()) {
+                        if (notification.get()) {
                             if (isShulker) {
                                 info("Shulker found, Beam has been lit.");
                             } else {
                                 info("§aItem found, Look for the beam!");
                             }
-                        }
-                        if (playSound.get()) {
                             mc.player.playSound(SoundEvents.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
                         }
                     }
@@ -636,11 +592,10 @@ public class LootLens extends Module {
                     checkedContainers.add(adjacentChest);
                 }
 
-                if (playSound.get()) {
+                if (notification.get()) {
                     mc.player.playSound(SoundEvents.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
+                    info("§a" + shulkerCount + (shulkerCount == 1 ? " Item" : " Items") + " found!");
                 }
-
-                if (notify.get()) info("§a" + shulkerCount + (shulkerCount == 1 ? " Item" : " Items") + " found!");
             } else {
                 shulkerCounts.put(lastOpenedContainer, shulkerCount);
                 if (adjacentChest != null) {
@@ -661,7 +616,7 @@ public class LootLens extends Module {
             }
 
             // Only notify if the container previously had shulkers
-            if (notify.get() && previouslyHadShulker) {
+            if (notification.get() && previouslyHadShulker) {
                 info("§70 items found, removing highlight.");
             }
         }
@@ -775,7 +730,7 @@ public class LootLens extends Module {
             if (frame == null || frame.isRemoved()) continue;
 
             Box box = frame.getBoundingBox();
-            SettingColor color = glowItemFrameColor.get();
+            SettingColor color = itemFrameColor.get();
             
             // Highlight the item frame
             event.renderer.box(box, color, color, ShapeMode.Both, 0);

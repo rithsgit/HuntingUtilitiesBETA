@@ -9,6 +9,8 @@
     "PortalTrackerMixin",
     "RocketPilotMixin",
     "PortalMakerMixin",
+    "ElytraAssistantMixin",
+    "ElytraAssistantSwingMixin",
     "HandledScreenMixin"
   ],
   "server": [],

@@ -1,26 +1,31 @@
 package com.example.addon.modules;
 
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+
 import com.example.addon.HuntingUtilities;
-import meteordevelopment.meteorclient.systems.modules.Category;
-import meteordevelopment.meteorclient.systems.modules.Modules;
-import net.minecraft.item.Items;
-import net.minecraft.item.Item;
-import net.minecraft.entity.ItemEntity;
+
 import meteordevelopment.meteorclient.events.render.Render3DEvent;
 import meteordevelopment.meteorclient.events.world.TickEvent;
 import meteordevelopment.meteorclient.renderer.ShapeMode;
-import meteordevelopment.meteorclient.settings.*;
+import meteordevelopment.meteorclient.settings.BoolSetting;
+import meteordevelopment.meteorclient.settings.ColorSetting;
+import meteordevelopment.meteorclient.settings.DoubleSetting;
+import meteordevelopment.meteorclient.settings.IntSetting;
+import meteordevelopment.meteorclient.settings.ItemListSetting;
+import meteordevelopment.meteorclient.settings.Setting;
+import meteordevelopment.meteorclient.settings.SettingGroup;
 import meteordevelopment.meteorclient.systems.modules.Module;
-import meteordevelopment.meteorclient.systems.modules.Categories;
 import meteordevelopment.meteorclient.utils.render.color.SettingColor;
-import meteordevelopment.meteorclient.utils.Utils;
 import meteordevelopment.orbit.EventHandler;
 import net.minecraft.entity.ItemEntity;
-import net.minecraft.item.*;
+import net.minecraft.item.Item;
+import net.minecraft.item.Items;
 import net.minecraft.util.math.Box;
 import net.minecraft.util.math.Vec3d;
-
-import java.util.*;
 
 public class Graveyard extends Module {
     private final SettingGroup sgGeneral = settings.getDefaultGroup();
@@ -42,6 +47,14 @@ public class Graveyard extends Module {
         .build()
     );
 
+    private final Setting<SettingColor> beamColor = sgGeneral.add(new ColorSetting.Builder()
+        .name("beam-color")
+        .description("Color of the beam.")
+        .defaultValue(new SettingColor(255, 255, 255, 200))
+        .visible(showBeam::get)
+        .build()
+    );
+
     private final Setting<Double> beamWidth = sgGeneral.add(new DoubleSetting.Builder()
         .name("beam-width")
         .description("Beam thickness (blocks).")
@@ -60,58 +73,12 @@ public class Graveyard extends Module {
         .build()
     );
 
-    private final Setting<Boolean> notify = sgGeneral.add(new BoolSetting.Builder()
-        .name("notify")
-        .description("Send chat messages when new whitelisted items are found.")
+    private final Setting<Boolean> notification = sgGeneral.add(new BoolSetting.Builder()
+        .name("notification")
+        .description("Send chat messages and play sound when new whitelisted items are found.")
         .defaultValue(true)
         .build()
     );
-
-    private final Setting<Boolean> playSound = sgGeneral.add(new BoolSetting.Builder()
-        .name("play-sound")
-        .description("Play a sound when a new whitelisted item is found.")
-        .defaultValue(true)
-        .build()
-    );
-
-    private final Setting<Double> eyeHeightBeam = sgGeneral.add(new DoubleSetting.Builder()
-    .name("eye-height-beam")
-    .description("Beam stops rendering to where the player eye height is.")
-    .defaultValue(5.0)
-    .min(0)
-    .max(5.0)
-    .build()
-    );
-
-    private final Setting<Boolean> useLines = sgGeneral.add(new BoolSetting.Builder()
-        .name("use-lines")
-        .description("Uses lines instead of boxes for beams.")
-        .defaultValue(false)
-        .build()
-    );
-
-    private final Setting<Integer> fadeStart = sgGeneral.add(new IntSetting.Builder()
-        .name("fade-start")
-        .description("Distance at which the beam starts to fade out.")
-        .defaultValue(5)
-        .min(0)
-        .max(20)
-        .sliderRange(0, 20)
-        .build()
-    );
-
-    private final Setting<Integer> fadeEnd = sgGeneral.add(new IntSetting.Builder()
-        .name("fade-end")
-        .description("Distance at which the beam becomes fully transparent.")
-        .defaultValue(2)
-        .min(0)
-        .max(20)
-        .sliderRange(0, 20)
-        .build()
-    );
-
-
-
 
     private final Setting<Boolean> sortByDistance = sgGeneral.add(new BoolSetting.Builder()
         .name("sort-by-distance")
@@ -142,14 +109,6 @@ public class Graveyard extends Module {
         .build()
     );
 
-    private final Setting<SettingColor> beamColor = sgGeneral.add(new ColorSetting.Builder()
-        .name("beam-color")
-        .description("Color of the beam.")
-        .defaultValue(new SettingColor(255, 255, 255, 200))
-        .visible(showBeam::get)
-        .build()
-    );
-
     // Cache for items to render
     private final List<ItemEntity> itemsToRender = new ArrayList<>();
     private final Set<Integer> notifiedItemEntities = new HashSet<>();
@@ -170,9 +129,9 @@ public class Graveyard extends Module {
 
         // Remove invalid IDs from the notification cache & rendering list
         notifiedItemEntities.removeIf(id -> mc.world.getEntityById(id) == null);
-        itemsToRender.removeIf(item -> mc.world.getEntityById(item.getId()) == null);
 
         // Clear previous frame data
+        itemsToRender.clear();
 
         // Define search area
         Box searchArea = new Box(mc.player.getBlockPos()).expand(range.get());
@@ -235,12 +194,9 @@ public class Graveyard extends Module {
 
         notifiedItemEntities.add(id);
 
-        if (notify.get()) {
+        if (notification.get()) {
             String name = item.getStack().getName().getString();
             info("Found: %s", name);
-        }
-
-        if (playSound.get()) {
             mc.player.playSound(net.minecraft.sound.SoundEvents.ENTITY_EXPERIENCE_ORB_PICKUP, 0.9f, 1.0f);
         }
     }

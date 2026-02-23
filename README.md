@@ -1,156 +1,140 @@
-# Dungeon Tools / Quality-of-Life Mod Collection
+# Meteor Addon Template
 
-A set of lightweight, focused Minecraft utility modules designed for efficient looting, scanning, automation, and travel — especially useful in survival, anarchy, or hardcore environments.
+A template to allow easy usage of the Meteor Addon API.
 
-## Quick Overview
+### How to use
 
-- **Dungeon Assistant**: Auto-opens & loots nearby chests/spawners with alerts for valuables
-- **Graveyard**: Detects & beams high-value dropped items (e.g., elytra, totems)
-- **Gridlock**: Auto-flies grid/spiral/lawnmower patterns for large-area scanning
-- **Loot Lens**: Scans & highlights containers/item frames for shulkers & valuables
-- **Portal Maker**: Builds & lights minimal Nether portals automatically
-- **Portal Tracker**: Detects & highlights portals/gateways, tracks your creations
-- **Rocket Pilot**: Auto-elytra flight with rocket firing, modes, & safety features
+#### Use GitHub Template (Recommended)
 
-## Detailed Modules
+- Click the green `Use this template` button in the top right corner of this page.  
+  This will create a new repository with this template and a clean history.
 
-### 1. Dungeon Assistant
-Helps you quickly find and process valuable containers and structures in dungeons, mineshafts, strongholds, ancient cities, and hidden player bases.
+#### Clone Manually
 
-**Main Features**
-- Automatically opens nearby chests, trapped chests, and chest minecarts
-- Checks for high-value items (default: enchanted golden apples, ender chests, shulkers of all colors)
-- Plays alert sound when rare items are found
-- Auto-closes and (optionally) auto-breaks empty containers after a short delay
-- Can also auto-break spawners (with configurable range & delay)
-- Prioritizes spawners over chests if both are nearby (toggleable)
-- Tracks recently broken spawners and shows a temporary tall beam at the location
-- Adds **Steal** and **Dump** buttons to container screens for faster manual looting
+- Alternatively, clone this repository using these commands for a clean history:
+  ```bash
+  git clone --depth 1 https://github.com/MeteorDevelopment/meteor-addon-template your-addon-name
+  cd your-addon-name
+  rm -rf .git
+  git init
+  git add .
+  git commit -m "Initial commit from template"
+  ```
 
-**Safety Options**
-- Disconnect on nearby player
-- Disconnect / auto-disable on totem pop
-- Auto-eat golden apples when low on health
-- Auto-disable on critically low health while holding totem
+#### Development
 
-### 2. Graveyard
-Automatically detects and alerts you to high-value items dropped as entities (e.g. after PvP deaths, raids, or from dead bodies) within a configurable range.
+- Use this template to add custom modules, commands, HUDs, and other features to Meteor Client.
+- To test, run the `Minecraft Client` configuration in your IDE.
+  This will start a Minecraft client with the Meteor Client mod and your addon loaded.
+- To build, run the gradle `build` task. This will create a JAR file in the `build/libs` folder.
+    - Move the JAR file to the `mods` folder of your Minecraft installation, alongside the Meteor Client mod and run the
+      game.
 
-**Main Features**
-- Scans for dropped items matching your whitelist (default: elytra, totems, enchanted golden apples, netherite/diamond tools & armor, shulker boxes, fireworks, bows, flint & steel, etc.)
-- Plays a sound and/or sends a chat message when a new matching item is detected
-- Draws a tall beam from each found item up to build height (white by default, thickness and color adjustable)
+### Updating to newer Minecraft versions
 
-**Optional Settings**
-- Show beams only for the single nearest item
-- Sort / prioritize items by distance to you
-- Fade beam opacity based on distance (start & end fade distances)
-- Beam stops rendering at player eye height (adjustable)
+To update this template to a newer Minecraft version, follow these steps:
 
-### 3. Gridlock
-Automatically flies grid, spiral or lawnmower patterns while keeping safe height above ground and below ceilings — perfect for large-area scanning without constant manual control.
+1. Ensure a Meteor Client snapshot is available for the new Minecraft version.
+2. Update `gradle/libs.versions.toml` (the versions catalog):
+    - Set the version entries to the new versions. Common keys to update are:
+        - `versions.minecraft` - Minecraft version
+        - `versions.yarn-mappings` - Yarn mappings
+        - `versions.fabric-loader` - Fabric loader version
+        - `versions.meteor` - Meteor Client snapshot version
+    - If your addon depends on other libraries listed under the `[libraries]` section, update their versions there as
+      needed.
+    - After editing, refresh Gradle dependencies and rebuild your project in the IDE.
+3. Update Loom:
+    - Change the `loom` version in `gradle/libs.versions.toml` (the `versions.loom` entry) to the latest version
+      compatible with the new Minecraft version.
+4. Update the Gradle wrapper:
+    - Run the wrapper update command for your platform. Examples:
+      - Unix / macOS / Windows (Powershell): `./gradlew wrapper --gradle-version <version> && ./gradlew wrapper`
+      - Windows (cmd.exe): `gradlew.bat wrapper --gradle-version <version> && gradlew.bat wrapper`
+    - This updates and regenerates the Gradle Wrapper scripts (`gradlew`, `gradlew.bat`, etc.) for the specified version.
+5. Update your source code:
+    - Adjust for Minecraft or Yarn mapping changes: method names, imports, mixins, etc.
+    - Check for Meteor Client API changes that may affect your addon by comparing against the
+      [master branch](https://github.com/MeteorDevelopment/meteor-client/tree/master).
+6. Build and test:
+    - Run the gradle `build` task.
+    - Confirm the build succeeds and your addon works with the new Minecraft version.
 
-**Flight Patterns**
-- Square Spiral
-- Archimedean Spiral
-- Diagonal Grid
-- Lawnmower (parallel strips with return legs)
+### Project structure
 
-**Key Features**
-- Configurable spacing (in chunks) between lines/loops
-- Smart altitude control: maintains floor clearance + avoids ceilings (especially useful in Nether roof)
-- Looks ahead to anticipate terrain changes (hills, cliffs, bedrock)
-- Smooth turning toward next waypoint
-- Pause/resume keybind
-- Safety: auto-pause on damage or low health
-- Optional auto-disable after max distance from start
-- Renders green line to next target (toggleable)
+```text
+.
+│── .github
+│   ╰── workflows
+│       │── dev_build.yml
+│       ╰── pull_request.yml
+│── gradle
+│   │── libs.versions.toml
+│   ╰── wrapper
+│       │── gradle-wrapper.jar
+│       ╰── gradle-wrapper.properties
+│── src
+│   ╰── main
+│       │── java
+│       │   ╰── com
+│       │       ╰── example
+│       │           ╰── addon
+│       │               │── commands
+│       │               │   ╰── CommandExample
+│       │               │── hud
+│       │               │   ╰── HudExample
+│       │               │── modules
+│       │               │   ╰── ModuleExample
+│       │               ╰── AddonTemplate
+│       ╰── resources
+│           │── assets
+│           │   ╰── template
+│           │       ╰── icon.png
+│           │── addon-template.mixins.json
+│           ╰── fabric.mod.json
+│── .editorconfig
+│── .gitignore
+│── build.gradle.kts
+│── gradle.properties
+│── gradlew
+│── gradlew.bat
+│── LICENSE
+│── README.md
+╰── settings.gradle.kts
+```
 
-### 4. Loot Lens
-Helps with stash moving, base raiding, and container auditing.
+This is the default project structure. Each folder/file has a specific purpose.  
+Here is a brief explanation of the ones you might need to modify:
 
-**Supported Containers** (toggleable + custom colors per type)
-- Chests / trapped chests
-- Barrels
-- Chest minecarts (including stacked)
-- Furnaces / blast furnaces / smokers
-- Hoppers
-- Dispensers / droppers
-- Brewing stands
-- Crafters
-- Decorated pots
+- `.github/workflows`: Contains the GitHub Actions configuration files.
+- `gradle`: Contains the Gradle wrapper files and the versions catalog.  
+  - `libs.versions.toml`: Defines version numbers for Minecraft, Loom, Meteor, and other dependencies.
+  - `wrapper`: Contains the Gradle wrapper executable files.  
+    To update the Gradle wrapper executable itself, run the wrapper update command (examples are shown above).
+- `src/main/java/com/example/addon`: Contains the main class of the addon.  
+  Here you can register your custom commands, modules, and HUDs.  
+  Edit the `getPackage` method to reflect the package of your addon.
+- `src/main/resources`: Contains the resources of the addon.
+    - `assets`: Contains the assets of the addon.  
+      You can add your own assets here, separated in subfolders.
+        - `template`: Contains the assets of the template.  
+          You can replace the `icon.png` file with your own addon icon.  
+          Also, rename this folder to reflect the name of your addon.
+    - `addon-template.mixins.json`: Contains the Mixin configuration for the addon.  
+      You can add your own mixins in the `client` array.
+    - `fabric.mod.json`: Contains the metadata of the addon.  
+      Edit the various fields to reflect the metadata of your addon.
+- `build.gradle.kts`: Contains the Gradle build script.  
+  You can manage the dependencies of the addon here.  
+  Remember to keep the `fabric-loom` version up-to-date.
+- `gradle.properties`: Contains additional build properties used by the build script
+  (for example `maven_group` and `archives_base_name`).  
+  Dependency and platform version numbers are stored in `gradle/libs.versions.toml`.
+- `LICENSE`: Contains the license of the addon.  
+  You can edit this file to change the license of your addon.
+- `README.md`: Contains the documentation of the addon.  
+  You can edit this file to reflect the documentation of your addon, and showcase its features.
 
-**Features**
-- Manual inventory check: Open highlighted container → auto-scans for shulkers / custom high-value items (e-gaps, elytra) → green glow + sound/chat alert (handles double chests)
-- Auto item frames: Detects shulkers in normal/glow frames → pink/cyan box + beam + instant alert (no opening needed)
-- **Steal** / **Dump** buttons on container GUIs (optional hotbar dump)
-- Configurable range (up to 512 blocks), beams (width adjustable), shape mode, notifications
-- Auto-cleanup of distant/removed containers, dimension reset
+## License
 
-### 5. Portal Maker
-Automatically builds a minimal Nether portal right in front of the player.
-
-**Features**
-- Places 10-block minimal frame (2×3 opening)
-- Configurable place delay (1–12 ticks)
-- Renders preview boxes for missing frame parts (toggleable, customizable colors/shape)
-- Auto-lights with flint & steel (tries both bottom blocks)
-- Optional auto-enter: walks/sprints/jumps into portal after lighting
-
-### 6. Portal Tracker
-Scans nearby chunks for Nether portals, End portals and End gateways → highlights them and tracks which ones you personally created.
-
-**Highlights**
-- Lit Nether portals (Overworld ↔ Nether)
-- End portal frames (stronghold)
-- End gateways (outer End islands)
-
-**Features**
-- Configurable scan range (16–64 chunks)
-- Auto-marks nearby portals as “created by you” (adjustable radius)
-- Counts & announces newly created portals in chat (with cooldown)
-- Only-show-created mode available
-- Render style: lines / fill / both + customizable colors per portal type
-- Rainbow dynamic colors option (animated)
-- Cleans up distant / unloaded portals automatically
-- Handles dimension changes (clears data, restarts scan)
-- Tracks session stats (total portals found + created by you)
-- Reset counter button in settings
-- Block-update aware (re-scans changed chunks)
-
-### 7. Rocket Pilot
-Fully automatic elytra + firework-rocket flight assistant.
-
-**Altitude Control**
-- Target Y level with tolerance
-- Auto rocket firing when dropping too low
-
-**Flight Modes**
-- Classic smoothed pitch control
-- Pitch40 mode — alternates steep climb (-40°) / descent (+40°) between two Y levels
-- Oscillation mode — smooth sine-wave pitch ±40° for efficient long-distance speed (with optional peak rocket boosts)
-
-**DrunkPilot Mode**
-- Random chaotic yaw changes
-- Optional quadrant bias → fly away from spawn / 0,0
-- Adjustable intensity, frequency & smoothing
-
-**Safety & Convenience**
-- Auto-takeoff (jump + first rocket)
-- Elytra durability monitor + warning + auto-swap to backup elytra
-- Critical elytra → emergency flare landing + optional disconnect
-- Low rockets → warning / auto-land
-- Low health / totem pop → auto-disable or disconnect
-- Collision avoidance (pull up + rocket when wall detected)
-- Safe landing flare when near ground
-- Limit rotation speed (anti-cheat friendly)
-- Silent / no-swing rocket firing
-- Auto-replenish rockets from inventory to hotbar
-
-## General Notes
-- Most modules are highly configurable (ranges, delays, colors, sounds, toggles, etc.)
-- Safety features aim to reduce risk during automation or semi-afk usage
-- Visual feedback (beams, lines, boxes, glows) uses modern rendering
-- Designed to be modular — enable only what you need
-
-Enjoy faster looting, safer travel, and less tedious grinding!
+This template is available under the CC0 license. Feel free to use it for your own projects.

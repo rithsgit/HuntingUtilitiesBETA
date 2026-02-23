@@ -26,6 +26,7 @@ public class HuntingUtilities extends MeteorAddon {
         Modules.get().add(new DungeonAssistant());
         Modules.get().add(new RocketPilot());
         Modules.get().add(new LootLens());
+        Modules.get().add(new ElytraAssistant());
         Modules.get().add(new PortalTracker());
         Modules.get().add(new PortalMaker());
         Modules.get().add(new GridLock());        

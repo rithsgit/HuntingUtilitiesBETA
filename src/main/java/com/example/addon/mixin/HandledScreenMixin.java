@@ -28,27 +28,31 @@ public abstract class HandledScreenMixin extends Screen {
     @Inject(method = "init", at = @At("TAIL"))
     private void onInit(CallbackInfo ci) {
         LootLens ll = Modules.get().get(LootLens.class);
-        boolean llHandled = ll != null && ll.isActive() && ll.showContainerButtons.get();
+        // LootLens (higher priority)
+        // If LootLens exists and is active -> adds buttons using addLootLensButtons()
+        boolean llHandled = ll != null && ll.isActive();
         if (llHandled) {
-            addLootLensButtons(ll);
+			addLootLensButtons(ll);
         }
 
-        // DungeonAssistant shows its buttons if LootLens hasn't already added them
+        // DungeonAssistant (fallback)
+        // Only adds buttons if LootLens did not handle it
         if (!llHandled) {
             DungeonAssistant da = Modules.get().get(DungeonAssistant.class);
-            if (da != null && da.isActive() && da.showContainerButtons.get()) {
+            if (da != null && da.isActive()) {
                 addDungeonAssistantButtons(da);
             }
         }
     }
 
     private void addDungeonAssistantButtons(DungeonAssistant da) {
+        // Skips entirely if the current screen is the player inventory (InventoryScreen)
         if ((Object) this instanceof InventoryScreen) return;
 
         HandledScreen<?> screen = (HandledScreen<?>) (Object) this;
         int containerSlots = screen.getScreenHandler().slots.size() - 36;
         if (containerSlots <= 0) return;
-
+		
         int buttonX = this.x + this.backgroundWidth + 5;
         int buttonY = this.y + 5;
 
@@ -63,11 +67,9 @@ public abstract class HandledScreenMixin extends Screen {
             }
         }).dimensions(buttonX, buttonY, 20, 20).build());
 
-        // Dump button
+		// Dump button
         this.addDrawableChild(new ButtonWidget.Builder(Text.literal("D"), button -> {
-            int end = da.dumpHotbar.get()
-                ? screen.getScreenHandler().slots.size()
-                : screen.getScreenHandler().slots.size() - 9;
+            int end = screen.getScreenHandler().slots.size() - 9;
             for (int i = containerSlots; i < end; i++) {
                 if (screen.getScreenHandler().getSlot(i).getStack().isEmpty()) continue;
                 client.interactionManager.clickSlot(
@@ -78,7 +80,7 @@ public abstract class HandledScreenMixin extends Screen {
     }
 
     private void addLootLensButtons(LootLens ll) {
-        if ((Object) this instanceof InventoryScreen) return;
+		if ((Object) this instanceof InventoryScreen) return;
 
         HandledScreen<?> screen = (HandledScreen<?>) (Object) this;
         int containerSlots = screen.getScreenHandler().slots.size() - 36;
@@ -87,7 +89,7 @@ public abstract class HandledScreenMixin extends Screen {
         int buttonX = this.x + this.backgroundWidth + 5;
         int buttonY = this.y + 5;
 
-        // Steal button
+		// Steal button
         this.addDrawableChild(new ButtonWidget.Builder(Text.literal("S"), button -> {
             for (int i = 0; i < containerSlots; i++) {
                 if (screen.getScreenHandler().getSlot(i).hasStack()) {
@@ -98,11 +100,9 @@ public abstract class HandledScreenMixin extends Screen {
             }
         }).dimensions(buttonX, buttonY, 20, 20).build());
 
-        // Dump button
+		// Dump button
         this.addDrawableChild(new ButtonWidget.Builder(Text.literal("D"), button -> {
-            int end = ll.dumpHotbar.get()
-                ? screen.getScreenHandler().slots.size()
-                : screen.getScreenHandler().slots.size() - 9;
+            int end = screen.getScreenHandler().slots.size() - 9;
             for (int i = containerSlots; i < end; i++) {
                 if (screen.getScreenHandler().getSlot(i).getStack().isEmpty()) continue;
                 client.interactionManager.clickSlot(
