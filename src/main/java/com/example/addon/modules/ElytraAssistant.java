@@ -112,6 +112,23 @@ public class ElytraAssistant extends Module {
         .build()
     );
 
+    public final Setting<Boolean> autoSwing = sgUtilities.add(new BoolSetting.Builder()
+        .name("auto-swing")
+        .description("Automatically swings your hand periodically.")
+        .defaultValue(false)
+        .build()
+    );
+
+    public final Setting<Double> swingInterval = sgUtilities.add(new DoubleSetting.Builder()
+        .name("swing-interval")
+        .description("Interval in seconds between swings.")
+        .defaultValue(5.0)
+        .min(0.1)
+        .sliderMax(30.0)
+        .visible(autoSwing::get)
+        .build()
+    );
+
     // ─── Auto Mending ───────────────────────────────────
     private final Setting<Boolean> autoMend = sgMending.add(new BoolSetting.Builder()
         .name("auto-mend")
@@ -160,6 +177,7 @@ public class ElytraAssistant extends Module {
     private boolean wasMiddlePressed = false;
     private int mendTimer = 0;
     private int middleClickTimer = 0;
+    private int swingTimer = 0;
 
     public ElytraAssistant() {
         super(HuntingUtilities.CATEGORY, "elytra-assistant", "Smart elytra & rocket management.");
@@ -173,6 +191,7 @@ public class ElytraAssistant extends Module {
         wasMiddlePressed = false;
         mendTimer = 0;
         middleClickTimer = 0;
+        swingTimer = 0;
     }
 
     @EventHandler
@@ -191,6 +210,15 @@ public class ElytraAssistant extends Module {
                 }
             } else {
                 wasMiddlePressed = false;
+            }
+        }
+
+        if (autoSwing.get()) {
+            if (swingTimer <= 0) {
+                mc.player.swingHand(Hand.MAIN_HAND);
+                swingTimer = (int) (swingInterval.get() * 20);
+            } else {
+                swingTimer--;
             }
         }
 

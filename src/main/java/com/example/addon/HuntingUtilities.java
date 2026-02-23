@@ -31,6 +31,7 @@ public class HuntingUtilities extends MeteorAddon {
         Modules.get().add(new PortalMaker());
         Modules.get().add(new GridLock());        
         Modules.get().add(new Graveyard());
+        Modules.get().add(new ServerHealthcareSystem());
 
 
         // ────────────────────────────────────────────────
