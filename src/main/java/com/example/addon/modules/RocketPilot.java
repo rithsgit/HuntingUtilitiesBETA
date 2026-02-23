@@ -11,7 +11,6 @@ import meteordevelopment.meteorclient.settings.SettingGroup;
 import meteordevelopment.meteorclient.systems.modules.Module;
 import meteordevelopment.meteorclient.systems.modules.Modules;
 import meteordevelopment.meteorclient.utils.player.InvUtils;
-import meteordevelopment.orbit.EventHandler;
 import net.minecraft.entity.EquipmentSlot;
 import net.minecraft.item.ItemStack;
 import net.minecraft.item.Items;
@@ -25,6 +24,7 @@ import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.Vec3d;
 import net.minecraft.world.RaycastContext;
+import meteordevelopment.orbit.EventHandler;
 
 
 public class RocketPilot extends Module {
@@ -34,7 +34,6 @@ public class RocketPilot extends Module {
     private final SettingGroup sgPitch40 = settings.createGroup("Pitch40");
     private final SettingGroup sgOscillation = settings.createGroup("Oscillation");
     private final SettingGroup sgDrunk = settings.createGroup("DrunkPilot");
-    private final SettingGroup sgElytraSafety = settings.createGroup("Elytra Safety");
     private final SettingGroup sgFlightSafety = settings.createGroup("Flight Safety");
     private final SettingGroup sgPlayerSafety = settings.createGroup("Player Safety");
 
@@ -98,7 +97,7 @@ public class RocketPilot extends Module {
     );
 
     // ─────────────────────────────────────── Pitch40 Mode ───────────────────────────────────────
-    private final Setting<Boolean> pitch40Mode = sgPitch40.add(new BoolSetting.Builder()
+    public final Setting<Boolean> pitch40Mode = sgPitch40.add(new BoolSetting.Builder()
         .name("pitch40-mode")
         .description("A flight mode that maintains a negative pitch to stay within a Y-level range.")
         .defaultValue(false)
@@ -149,7 +148,7 @@ public class RocketPilot extends Module {
 
     // ─────────────────────────────────────── Oscillation Mode ───────────────────────────────────────
     // MOVED UP: This must be defined before 'pitchSmoothing' because 'pitchSmoothing' references it.
-    private final Setting<Boolean> oscillationMode = sgOscillation.add(new BoolSetting.Builder()
+    public final Setting<Boolean> oscillationMode = sgOscillation.add(new BoolSetting.Builder()
         .name("oscillation-mode")
         .description("Auto-oscillates pitch between ±40° for efficient high-speed travel.")
         .defaultValue(false)
@@ -205,7 +204,7 @@ public class RocketPilot extends Module {
     );
 
     // ─────────────────────────────────────── Drunk Pilot ───────────────────────────────────────
-    private final Setting<Boolean> drunkMode = sgDrunk.add(new BoolSetting.Builder()
+    public final Setting<Boolean> drunkMode = sgDrunk.add(new BoolSetting.Builder()
         .name("drunk-mode")
         .description("Randomly changes facing direction.")
         .defaultValue(false)
@@ -248,51 +247,6 @@ public class RocketPilot extends Module {
         .min(0.01)
         .max(1.0)
         .visible(drunkMode::get)
-        .build()
-    );
-
-    // ─────────────────────────────────────── Elytra Safety ───────────────────────────────────────
-    private final Setting<Boolean> autoSwap = sgElytraSafety.add(new BoolSetting.Builder()
-        .name("auto-swap")
-        .description("Automatically swap to a fresh elytra when durability is low.")
-        .defaultValue(true)
-        .build()
-    );
-
-    private final Setting<Double> swapThreshold = sgElytraSafety.add(new DoubleSetting.Builder()
-        .name("swap-threshold")
-        .description("The durability percentage to trigger auto-swap.")
-        .defaultValue(5.0)
-        .min(1.0)
-        .max(50.0)
-        .sliderRange(1.0, 20.0)
-        .visible(autoSwap::get)
-        .build()
-    );
-
-    private final Setting<Boolean> disconnectAfterEmergencyLanding = sgElytraSafety.add(new BoolSetting.Builder()
-        .name("disconnect-after-emergency-landing")
-        .description("If elytra is critically low and no replacement is available, performs a safe landing then disconnects.")
-        .defaultValue(true)
-        .visible(autoSwap::get)
-        .build()
-    );
-
-    public final Setting<Boolean> durabilityMonitor = sgElytraSafety.add(new BoolSetting.Builder()
-        .name("durability-monitor")
-        .description("Show warning when elytra durability is low.")
-        .defaultValue(true)
-        .build()
-    );
-
-    public final Setting<Double> warnThreshold = sgElytraSafety.add(new DoubleSetting.Builder()
-        .name("warn-threshold-percent")
-        .description("Percentage of durability remaining to trigger warning.")
-        .defaultValue(20.0)
-        .min(1)
-        .max(100)
-        .sliderRange(5, 50)
-        .visible(durabilityMonitor::get)
         .build()
     );
 
@@ -408,6 +362,13 @@ public class RocketPilot extends Module {
         .build()
     );
 
+    private final Setting<Boolean> disconnectAfterEmergencyLanding = sgPlayerSafety.add(new BoolSetting.Builder()
+        .name("disconnect-after-emergency-landing")
+        .description("If elytra is critically low and no replacement is available, performs a safe landing then disconnects.")
+        .defaultValue(true)
+        .build()
+    );
+
     // ─────────────────────────────────────── Internal state ───────────────────────────────────────
     public long lastRocketTime = 0;
     private boolean needsTakeoffRocket = false;
@@ -420,12 +381,10 @@ public class RocketPilot extends Module {
     private int waveTicks = 0;
     private int drunkTimer = 0;
     private float targetDrunkYaw = 0;
-    private boolean durabilityWarningSent = false;
     private int currentDrunkDuration = 0;
     private boolean rocketsWarningSent = false;
     private int totemPops = 0;
     private boolean emergencyLanding = false;
-    private boolean emergencyLandingWarnSent = false;
     private int takeoffTimer = 0;
 
     public RocketPilot() {
@@ -443,10 +402,8 @@ public class RocketPilot extends Module {
         pitch40Climbing = false;
         pitch40Rocketing = false;
         pitch40BelowMinStartTime = 0;
-        durabilityWarningSent = false;
         rocketsWarningSent = false;
         emergencyLanding = false;
-        emergencyLandingWarnSent = false;
         takeoffTimer = 0;
 
         if (mc.player == null || mc.world == null) {
@@ -577,40 +534,28 @@ public class RocketPilot extends Module {
         if (!mc.player.isGliding()) return;
 
         Float desiredPitch = null;
-
+        
         // ─────────────────────────────── Safety Checks ───────────────────────────────
-        if (durabilityMonitor.get()) {
+        boolean assistantHandling = false;
+        ElytraAssistant assistant = Modules.get().get(ElytraAssistant.class);
+        if (assistant != null && assistant.isAutoSwapEnabled()) {
+            assistantHandling = true;
+        }
+
+        if (!assistantHandling) {
             double percent = getDurabilityPercent();
-
-            boolean assistantHandling = false;
-            ElytraAssistant assistant = Modules.get().get(ElytraAssistant.class);
-            if (assistant != null && assistant.isAutoSwapEnabled()) {
-                assistantHandling = true;
-            }
-
-            if (!assistantHandling && autoSwap.get() && percent <= swapThreshold.get()) {
-                int oldDura = mc.player.getEquippedStack(EquipmentSlot.CHEST).getMaxDamage() - mc.player.getEquippedStack(EquipmentSlot.CHEST).getDamage();
+            if (percent <= 5.0) { // 5% durability threshold
                 Integer newDura = swapToFreshElytra();
                 if (newDura != null) {
-                    info("Auto-swapped elytra! Old: %d, New: %d", oldDura, newDura);
+                    info("Auto-swapped elytra, durability was low.");
                     emergencyLanding = false;
-                    return;
                 } else if (!emergencyLanding && disconnectAfterEmergencyLanding.get()) {
-                    // No replacement elytra available — initiate emergency landing
                     emergencyLanding = true;
                     warning("No replacement elytra found! Initiating emergency landing...");
                 }
             }
-            if (percent <= warnThreshold.get()) {
-                if (!durabilityWarningSent) {
-                    warning("Elytra durability critical: %.1f%%", percent);
-                    durabilityWarningSent = true;
-                }
-            } else {
-                durabilityWarningSent = false;
-            }
         }
-
+        
         int rockets = countFireworks();
         if (rockets > 0 && rockets <= minRocketsWarning.get()) {
             if (!rocketsWarningSent) {

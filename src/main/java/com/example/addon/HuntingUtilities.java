@@ -6,6 +6,7 @@ import com.example.addon.modules.*;
 import meteordevelopment.meteorclient.addons.MeteorAddon;
 import meteordevelopment.meteorclient.commands.Commands;
 import meteordevelopment.meteorclient.systems.hud.Hud;
+import meteordevelopment.meteorclient.systems.hud.HudGroup;
 import meteordevelopment.meteorclient.systems.modules.Category;
 import meteordevelopment.meteorclient.systems.modules.Modules;
 import org.slf4j.Logger;
@@ -15,6 +16,7 @@ public class HuntingUtilities extends MeteorAddon {
 
     public static final Logger LOG = LoggerFactory.getLogger("Hunting Utilities");
     public static final Category CATEGORY = new Category("Hunting Utilities");
+    public static final HudGroup HUD_GROUP = new HudGroup("Hunting Utilities");
 
     @Override
     public void onInitialize() {

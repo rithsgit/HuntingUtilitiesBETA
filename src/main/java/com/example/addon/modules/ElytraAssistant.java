@@ -301,7 +301,7 @@ public class ElytraAssistant extends Module {
         FindItemResult replacement = findUsableElytra();
         if (replacement.found()) {
             InvUtils.move().from(replacement.slot()).toArmor(2);
-            info("Auto-swapped low-durability elytra.");
+            warning("Elytra durability low! Swapping to fresh elytra.");
             swapTimer = swapDelay.get();
             noReplacementWarned = false;
         } else if (!noReplacementWarned) {
