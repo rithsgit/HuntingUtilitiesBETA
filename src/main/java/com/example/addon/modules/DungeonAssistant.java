@@ -42,7 +42,6 @@ import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.entity.vehicle.ChestMinecartEntity;
 import net.minecraft.item.AxeItem;
 import net.minecraft.item.Item;
-import net.minecraft.item.ItemStack;
 import net.minecraft.item.Items;
 import net.minecraft.item.PickaxeItem;
 import net.minecraft.item.SwordItem;
@@ -80,7 +79,6 @@ public class DungeonAssistant extends Module {
     private final SettingGroup sgSpawners     = settings.createGroup("Spawners");
     private final SettingGroup sgChests       = settings.createGroup("Chests");
     private final SettingGroup sgClutterBlocks = settings.createGroup("Clutter Blocks");
-    private final SettingGroup sgContainerButtons = settings.createGroup("Container Buttons");
     private final SettingGroup sgEndermites = settings.createGroup("Endermites");
     private final SettingGroup sgSafety = settings.createGroup("Safety");
 
@@ -395,20 +393,17 @@ public class DungeonAssistant extends Module {
     );
 
     // Container Buttons
-    public final Setting<Boolean> showContainerButtons = sgContainerButtons.add(new BoolSetting.Builder()
+    public final Setting<Boolean> showContainerButtons = new BoolSetting.Builder()
         .name("show-container-buttons")
         .description("Shows 'Steal' and 'Dump' buttons on the right side of container GUIs.")
         .defaultValue(true)
-        .build()
-    );
+        .build();
 
-    public final Setting<Boolean> dumpHotbar = sgContainerButtons.add(new BoolSetting.Builder()
+    public final Setting<Boolean> dumpHotbar = new BoolSetting.Builder()
         .name("dump-hotbar")
         .description("Whether the 'Dump' button also dumps your hotbar.")
         .defaultValue(false)
-        .visible(showContainerButtons::get)
-        .build()
-    );
+        .build();
 
     private final Setting<SettingColor> endermiteColor = sgEndermites.add(new ColorSetting.Builder()
         .name("endermite-color")
