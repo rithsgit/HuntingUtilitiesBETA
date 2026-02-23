@@ -10,7 +10,6 @@ import java.util.Set;
 
 import com.example.addon.HuntingUtilities;
 
-import meteordevelopment.meteorclient.events.game.GameLeftEvent;
 import meteordevelopment.meteorclient.events.game.OpenScreenEvent;
 import meteordevelopment.meteorclient.events.render.Render3DEvent;
 import meteordevelopment.meteorclient.events.world.TickEvent;
@@ -558,12 +557,6 @@ public class DungeonAssistant extends Module {
             mc.player.getInventory().selectedSlot = previousSlot;
         }
         previousSlot = -1;
-    }
-
-    // Auto-disable on disconnect
-    @EventHandler
-    private void onGameLeft(GameLeftEvent event) {
-        if (this.isActive()) toggle();
     }
 
     @EventHandler

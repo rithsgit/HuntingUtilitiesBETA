@@ -12,7 +12,6 @@ import java.util.concurrent.CopyOnWriteArrayList;
 
 import com.example.addon.HuntingUtilities;
 
-import meteordevelopment.meteorclient.events.game.GameLeftEvent;
 import meteordevelopment.meteorclient.events.render.Render3DEvent;
 import meteordevelopment.meteorclient.events.world.BlockUpdateEvent;
 import meteordevelopment.meteorclient.events.world.TickEvent;
@@ -234,11 +233,6 @@ public class PortalTracker extends Module {
         messageCooldowns.clear();
         manuallyActivated = false;
         sessionStartTime = 0;
-    }
-
-    @EventHandler
-    private void onGameLeft(GameLeftEvent event) {
-        if (isActive()) toggle();
     }
 
     @EventHandler
