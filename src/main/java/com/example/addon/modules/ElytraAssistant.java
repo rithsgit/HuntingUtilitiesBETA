@@ -1,12 +1,21 @@
 package com.example.addon.modules;
 
+import org.lwjgl.glfw.GLFW;
+
 import com.example.addon.HuntingUtilities;
+
 import meteordevelopment.meteorclient.events.world.TickEvent;
-import meteordevelopment.meteorclient.settings.*;
+import meteordevelopment.meteorclient.settings.BoolSetting;
+import meteordevelopment.meteorclient.settings.DoubleSetting;
+import meteordevelopment.meteorclient.settings.EnumSetting;
+import meteordevelopment.meteorclient.settings.IntSetting;
+import meteordevelopment.meteorclient.settings.KeybindSetting;
+import meteordevelopment.meteorclient.settings.Setting;
+import meteordevelopment.meteorclient.settings.SettingGroup;
 import meteordevelopment.meteorclient.systems.modules.Module;
 import meteordevelopment.meteorclient.systems.modules.Modules;
-import meteordevelopment.meteorclient.utils.misc.input.Input;
 import meteordevelopment.meteorclient.utils.misc.Keybind;
+import meteordevelopment.meteorclient.utils.misc.input.Input;
 import meteordevelopment.meteorclient.utils.player.FindItemResult;
 import meteordevelopment.meteorclient.utils.player.InvUtils;
 import meteordevelopment.meteorclient.utils.player.Rotations;
@@ -14,8 +23,8 @@ import meteordevelopment.orbit.EventHandler;
 import net.minecraft.entity.EquipmentSlot;
 import net.minecraft.item.ItemStack;
 import net.minecraft.item.Items;
+import net.minecraft.sound.SoundEvents;
 import net.minecraft.util.Hand;
-import org.lwjgl.glfw.GLFW;
 
 public class ElytraAssistant extends Module {
 
@@ -268,7 +277,7 @@ public class ElytraAssistant extends Module {
                 FindItemResult cp = InvUtils.find(stack ->
                     stack.isOf(Items.NETHERITE_CHESTPLATE) || stack.isOf(Items.DIAMOND_CHESTPLATE));
                 if (cp.found()) {
-                    InvUtils.move().from(cp.slot()).toArmor(2);
+                    InvUtils.move().from(getSlotId(cp.slot())).toArmor(2);
                     swapTimer = swapDelay.get();
                 }
             }
@@ -277,7 +286,7 @@ public class ElytraAssistant extends Module {
             if (!chest.isOf(Items.ELYTRA) || (autoSwap.get() && chest.getMaxDamage() - chest.getDamage() <= durabilityThreshold.get())) {
                 FindItemResult elytra = findUsableElytra();
                 if (elytra.found()) {
-                    InvUtils.move().from(elytra.slot()).toArmor(2);
+                    InvUtils.move().from(getSlotId(elytra.slot())).toArmor(2);
                     swapTimer = swapDelay.get();
                     info("Equipped usable elytra.");
                 } else if (!noUsableElytraWarned) {
@@ -300,21 +309,40 @@ public class ElytraAssistant extends Module {
 
         FindItemResult replacement = findUsableElytra();
         if (replacement.found()) {
-            InvUtils.move().from(replacement.slot()).toArmor(2);
+            InvUtils.move().from(getSlotId(replacement.slot())).toArmor(2);
             warning("Elytra durability low! Swapping to fresh elytra.");
+            mc.player.playSound(SoundEvents.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
             swapTimer = swapDelay.get();
             noReplacementWarned = false;
         } else if (!noReplacementWarned) {
             warning("No replacement elytra available!");
+            mc.player.playSound(SoundEvents.BLOCK_ANVIL_LAND, 0.5f, 1.0f);
             noReplacementWarned = true;
         }
     }
 
     private FindItemResult findUsableElytra() {
-        return InvUtils.find(stack ->
-            stack.isOf(Items.ELYTRA) &&
-            (stack.getMaxDamage() - stack.getDamage() > durabilityThreshold.get())
-        );
+        int bestSlot = -1;
+        int bestDurability = -1;
+
+        for (int i = 0; i < mc.player.getInventory().main.size(); i++) {
+            ItemStack stack = mc.player.getInventory().getStack(i);
+            if (stack.isEmpty() || !stack.isOf(Items.ELYTRA)) continue;
+
+            int durability = stack.getMaxDamage() - stack.getDamage();
+            if (durability > durabilityThreshold.get() && durability > bestDurability) {
+                bestSlot = i;
+                bestDurability = durability;
+            }
+        }
+
+        if (bestSlot != -1) return new FindItemResult(bestSlot, mc.player.getInventory().getStack(bestSlot).getCount());
+        return new FindItemResult(-1, 0);
+    }
+
+    private int getSlotId(int slot) {
+        if (slot >= 0 && slot < 9) return 36 + slot;
+        return slot;
     }
 
     private void handleAutoMend() {
