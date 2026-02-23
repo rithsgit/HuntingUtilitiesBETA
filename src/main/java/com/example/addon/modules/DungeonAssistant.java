@@ -188,14 +188,6 @@ public class DungeonAssistant extends Module {
         .build()
     );
 
-    private final Setting<Boolean> rareItemSound = sgAutoOpen.add(new BoolSetting.Builder()
-        .name("alert-sound")
-        .description("Play a sound when a whitelisted item is found.")
-        .defaultValue(true)
-        .visible(autoOpen::get)
-        .build()
-    );
-
     // ── Spawner Settings ──
     private final Setting<Boolean> trackSpawners = sgSpawners.add(new BoolSetting.Builder()
         .name("track-spawners")
@@ -421,14 +413,6 @@ public class DungeonAssistant extends Module {
         .build()
     );
 
-    private final Setting<Boolean> endermiteSound = sgEndermites.add(new BoolSetting.Builder()
-        .name("play-sound")
-        .description("Plays a sound when an Endermite is detected.")
-        .defaultValue(true)
-        .visible(trackEndermites::get)
-        .build()
-    );
-
     private final Setting<Boolean> endermiteBeam = sgEndermites.add(new BoolSetting.Builder()
         .name("show-beam")
         .description("Shows a beam above detected Endermites.")
@@ -448,23 +432,6 @@ public class DungeonAssistant extends Module {
     );
 
     // Safety Settings
-    private final Setting<Boolean> disconnectOnPlayer = sgSafety.add(new BoolSetting.Builder()
-        .name("disconnect-on-player")
-        .description("Disconnects if another player is detected nearby.")
-        .defaultValue(false)
-        .build()
-    );
-
-    private final Setting<Integer> playerDetectionRange = sgSafety.add(new IntSetting.Builder()
-        .name("player-detection-range")
-        .description("Distance to detect other players.")
-        .defaultValue(32)
-        .min(1)
-        .sliderMax(128)
-        .visible(disconnectOnPlayer::get)
-        .build()
-    );
-
     private final Setting<Boolean> autoEat = sgSafety.add(new BoolSetting.Builder()
         .name("auto-eat")
         .description("Automatically eat Golden Apples when low on health.")
@@ -501,16 +468,7 @@ public class DungeonAssistant extends Module {
         .build()
     );
 
-    private final Setting<Boolean> disconnectOnTotemPop = sgSafety.add(new BoolSetting.Builder()
-        .name("disconnect-on-totem-pop")
-        .description("Disconnects if a totem of undying is used.")
-        .defaultValue(false)
-        .build()
-    );
-
     // ─────────────────────────── Other State ───────────────────────────
-    private int totemPops = 0;
-
     private boolean isEating = false;
     private boolean hasPlayedSoundForCurrentScreen = false;
     private BlockPos lastOpenedContainer = null;
@@ -562,7 +520,6 @@ public class DungeonAssistant extends Module {
         hasPlayedSoundForCurrentScreen = false;
         
         if (mc.player != null && mc.world != null) {
-            totemPops = mc.player.getStatHandler().getStat(Stats.USED, Items.TOTEM_OF_UNDYING);
             info("§6Dungeon Assistant activated");
             if (mc.world.getRegistryKey() != null) {
                 lastDimension = mc.world.getRegistryKey().getValue().toString();
@@ -664,17 +621,6 @@ public class DungeonAssistant extends Module {
     // ─────────────────────────── Logic Methods ───────────────────────────
 
     private boolean performSafetyChecks() {
-        if (disconnectOnTotemPop.get()) {
-            int currentPops = mc.player.getStatHandler().getStat(Stats.USED, Items.TOTEM_OF_UNDYING);
-            if (currentPops > totemPops) {
-                if (mc.player.networkHandler != null) {
-                    mc.player.networkHandler.getConnection().disconnect(Text.literal("[DungeonAssistant] Disconnected on totem pop."));
-                }
-                this.toggle();
-                return true;
-            }
-        }
-
         if (autoDisableOnLowHealth.get()) {
             boolean hasTotem = mc.player.getOffHandStack().isOf(Items.TOTEM_OF_UNDYING) || mc.player.getMainHandStack().isOf(Items.TOTEM_OF_UNDYING);
             if (hasTotem && mc.player.getHealth() <= lowHealthThreshold.get() * 2) {
@@ -684,17 +630,6 @@ public class DungeonAssistant extends Module {
             }
         }
 
-        if (disconnectOnPlayer.get()) {
-            for (PlayerEntity player : mc.world.getPlayers()) {
-                if (player == mc.player) continue;
-                if (player.getUuid().equals(mc.player.getUuid())) continue;
-                if (mc.player.distanceTo(player) <= playerDetectionRange.get()) {
-                    mc.player.networkHandler.getConnection().disconnect(Text.literal("[DungeonAssistant] Player detected: " + player.getName().getString()));
-                    this.toggle();
-                    return true;
-                }
-            }
-        }
         return false;
     }
 
@@ -870,9 +805,7 @@ public class DungeonAssistant extends Module {
                 }
             } else {
                 // Whitelisted item found — alert
-                if (rareItemSound.get()) {
-                    mc.player.playSound(SoundEvents.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
-                }
+                mc.player.playSound(SoundEvents.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
             }
             return;
         }
@@ -914,7 +847,7 @@ public class DungeonAssistant extends Module {
                     // Whitelisted items found — always release the lock so the next
                     // cycle can start, regardless of whether the sound is enabled.
                     wasAutoOpened = false;
-                    if (rareItemSound.get() && !hasPlayedSoundForCurrentScreen) {
+                    if (!hasPlayedSoundForCurrentScreen) {
                         boolean isChestOrMinecart = lastOpenedEntity != null ||
                             (lastOpenedContainer != null &&
                                 (mc.world.getBlockState(lastOpenedContainer).getBlock() == Blocks.CHEST ||
@@ -1107,9 +1040,7 @@ public class DungeonAssistant extends Module {
                 if (endermiteMessage.get()) {
                     info("Endermite Detected, Beam created");
                 }
-                if (endermiteSound.get()) {
-                    mc.player.playSound(SoundEvents.ENTITY_ENDERMITE_AMBIENT, 1.0f, 1.0f);
-                }
+                mc.player.playSound(SoundEvents.ENTITY_ENDERMITE_AMBIENT, 1.0f, 1.0f);
             }
         }
 
