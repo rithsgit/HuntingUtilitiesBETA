@@ -37,12 +37,12 @@ public class ElytraAssistant extends Module {
     private final SettingGroup sgDurability = settings.createGroup("Durability");
     private final SettingGroup sgChestplate = settings.createGroup("Chestplate Swap");
     private final SettingGroup sgUtilities  = settings.createGroup("Utilities");
-    private final SettingGroup sgMending  = settings.createGroup("Auto Mending");
-    
+    private final SettingGroup sgMending    = settings.createGroup("Auto Mending");
+
     // ─── Durability ────────────────────────────────────────
     private final Setting<Boolean> autoSwap = sgDurability.add(new BoolSetting.Builder()
         .name("auto-swap")
-        .description("Swaps to a fresh elytra when current one is low on durability.")
+        .description("Silently swaps to a fresh elytra when current one is low on durability.")
         .defaultValue(true)
         .onChanged(this::onAutoSwapChanged)
         .build()
@@ -73,7 +73,7 @@ public class ElytraAssistant extends Module {
     // ─── Chestplate Swap ───────────────────────────────────
     private final Setting<Boolean> chestplateOnGround = sgChestplate.add(new BoolSetting.Builder()
         .name("chestplate-on-ground")
-        .description("Wears chestplate on ground, elytra while flying.")
+        .description("Silently wears chestplate on ground, elytra while flying.")
         .defaultValue(false)
         .build()
     );
@@ -87,15 +87,6 @@ public class ElytraAssistant extends Module {
             chestplateOnGround.set(newVal);
             info("Chestplate swap " + (newVal ? "enabled" : "disabled") + ".");
         })
-        .build()
-    );
-
-    private final Setting<Integer> swapDelay = sgDurability.add(new IntSetting.Builder()
-        .name("swap-delay")
-        .description("Ticks to wait after performing a swap.")
-        .defaultValue(10)
-        .min(0)
-        .visible(() -> autoSwap.get() || chestplateOnGround.get())
         .build()
     );
 
@@ -188,7 +179,6 @@ public class ElytraAssistant extends Module {
     );
 
     // Internal state
-    private int swapTimer = 0;
     private boolean noReplacementWarned = false;
     private boolean noUsableElytraWarned = false;
     private boolean wasMiddlePressed = false;
@@ -202,7 +192,6 @@ public class ElytraAssistant extends Module {
 
     @Override
     public void onActivate() {
-        swapTimer = 0;
         noReplacementWarned = false;
         noUsableElytraWarned = false;
         wasMiddlePressed = false;
@@ -243,11 +232,6 @@ public class ElytraAssistant extends Module {
             }
         }
 
-        if (swapTimer > 0) {
-            swapTimer--;
-            return;
-        }
-
         // Priority: auto mend (can override normal behavior)
         if (autoMend.get()) {
             handleAutoMend();
@@ -277,8 +261,7 @@ public class ElytraAssistant extends Module {
                 FindItemResult cp = InvUtils.find(stack ->
                     stack.isOf(Items.NETHERITE_CHESTPLATE) || stack.isOf(Items.DIAMOND_CHESTPLATE));
                 if (cp.found()) {
-                    equip(cp.slot());
-                    swapTimer = swapDelay.get();
+                    silentEquip(cp.slot());
                 }
             }
         } else {
@@ -286,8 +269,7 @@ public class ElytraAssistant extends Module {
             if (!chest.isOf(Items.ELYTRA) || (autoSwap.get() && chest.getMaxDamage() - chest.getDamage() <= durabilityThreshold.get())) {
                 FindItemResult elytra = findUsableElytra();
                 if (elytra.found()) {
-                    equip(elytra.slot());
-                    swapTimer = swapDelay.get();
+                    silentEquip(elytra.slot());
                     info("Equipped usable elytra.");
                 } else if (!noUsableElytraWarned) {
                     warning("No usable elytra found in inventory!");
@@ -309,10 +291,9 @@ public class ElytraAssistant extends Module {
 
         FindItemResult replacement = findUsableElytra();
         if (replacement.found()) {
-            equip(replacement.slot());
+            silentEquip(replacement.slot());
             warning("Elytra durability low! Swapping to fresh elytra.");
             mc.player.playSound(SoundEvents.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
-            swapTimer = swapDelay.get();
             noReplacementWarned = false;
         } else if (!noReplacementWarned) {
             warning("No replacement elytra available!");
@@ -340,13 +321,15 @@ public class ElytraAssistant extends Module {
         return new FindItemResult(-1, 0);
     }
 
-    private void equip(int slot) {
-        InvUtils.move().from(getSlotId(slot)).toArmor(2);
-    }
-
-    private int getSlotId(int slot) {
-        if (slot >= 0 && slot < 9) return 36 + slot;
-        return slot;
+    /**
+     * Silently equips an item from any inventory slot (hotbar or main inventory)
+     * directly into the chestplate armor slot, without opening the inventory.
+     * slot is the index into player.getInventory().main (0–35).
+     */
+    private void silentEquip(int slot) {
+        // InvUtils.move() sends the required packets silently without opening any screen.
+        // Slot 0-8 = hotbar, 9-35 = main inventory. toArmor(2) = chestplate slot.
+        InvUtils.move().from(slot).toArmor(2);
     }
 
     private void handleAutoMend() {
@@ -370,7 +353,6 @@ public class ElytraAssistant extends Module {
             );
             if (damaged.found()) {
                 InvUtils.move().from(damaged.slot()).toArmor(2);
-                swapTimer = Math.max(swapDelay.get(), 10);
             } else {
                 info("All Elytras mended!");
                 autoMend.set(false);
@@ -424,9 +406,8 @@ public class ElytraAssistant extends Module {
             InvUtils.swap(prevSlot, true);
             mc.interactionManager.interactItem(mc.player, Hand.MAIN_HAND);
             InvUtils.swapBack();
-            InvUtils.move().from(prevSlot).to(slot); // Corrected to use .to(slot)
+            InvUtils.move().from(prevSlot).to(slot);
         }
-
     }
 
     private void onAutoSwapChanged(boolean v) {
