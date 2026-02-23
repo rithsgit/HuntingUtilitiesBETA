@@ -112,20 +112,28 @@ public class ElytraAssistant extends Module {
         .build()
     );
 
-    public final Setting<Boolean> autoSwing = sgUtilities.add(new BoolSetting.Builder()
-        .name("auto-swing")
-        .description("Automatically swings your hand periodically.")
+    public final Setting<Boolean> antiAfk = sgUtilities.add(new BoolSetting.Builder()
+        .name("anti-afk")
+        .description("Prevents being kicked for AFK by swinging your hand periodically.")
         .defaultValue(false)
         .build()
     );
 
-    public final Setting<Double> swingInterval = sgUtilities.add(new DoubleSetting.Builder()
-        .name("swing-interval")
+    public final Setting<Double> afkInterval = sgUtilities.add(new DoubleSetting.Builder()
+        .name("interval")
         .description("Interval in seconds between swings.")
-        .defaultValue(5.0)
-        .min(0.1)
-        .sliderMax(30.0)
-        .visible(autoSwing::get)
+        .defaultValue(15.0)
+        .min(1.0)
+        .sliderMax(60.0)
+        .visible(antiAfk::get)
+        .build()
+    );
+
+    public final Setting<Boolean> randomDelay = sgUtilities.add(new BoolSetting.Builder()
+        .name("random-delay")
+        .description("Adds randomness to the interval.")
+        .defaultValue(true)
+        .visible(antiAfk::get)
         .build()
     );
 
@@ -213,10 +221,14 @@ public class ElytraAssistant extends Module {
             }
         }
 
-        if (autoSwing.get()) {
+        if (antiAfk.get()) {
             if (swingTimer <= 0) {
                 mc.player.swingHand(Hand.MAIN_HAND);
-                swingTimer = (int) (swingInterval.get() * 20);
+                int base = (int) (afkInterval.get() * 20);
+                if (randomDelay.get()) {
+                    base += (int) ((Math.random() - 0.5) * (base * 0.4));
+                }
+                swingTimer = Math.max(1, base);
             } else {
                 swingTimer--;
             }
