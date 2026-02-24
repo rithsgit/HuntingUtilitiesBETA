@@ -38,7 +38,6 @@ import net.minecraft.client.gui.screen.ingame.InventoryScreen;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.mob.EndermiteEntity;
 import net.minecraft.entity.mob.HostileEntity;
-import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.entity.vehicle.ChestMinecartEntity;
 import net.minecraft.item.AxeItem;
 import net.minecraft.item.Item;
@@ -46,9 +45,7 @@ import net.minecraft.item.Items;
 import net.minecraft.item.PickaxeItem;
 import net.minecraft.item.SwordItem;
 import net.minecraft.sound.SoundEvents;
-import net.minecraft.stat.Stats;
 import net.minecraft.state.property.Properties;
-import net.minecraft.text.Text;
 import net.minecraft.util.Hand;
 import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.hit.EntityHitResult;
@@ -791,6 +788,7 @@ public class DungeonAssistant extends Module {
                 if (autoBreak.get()) {
                     if (lastOpenedContainer != null) {
                         blockToBreak = lastOpenedContainer;
+                        removeNeighborFromChecked(lastOpenedContainer);
                         breakDelayTimer = getRandomizedDelay(breakDelay.get());
                     } else if (lastOpenedEntity != null) {
                         entityToBreak = lastOpenedEntity;
@@ -831,6 +829,7 @@ public class DungeonAssistant extends Module {
                     if (autoBreak.get()) {
                         if (lastOpenedContainer != null) {
                             blockToBreak = lastOpenedContainer;
+                            removeNeighborFromChecked(lastOpenedContainer);
                             breakDelayTimer = getRandomizedDelay(breakDelay.get());
                         } else if (lastOpenedEntity != null) {
                             entityToBreak = lastOpenedEntity;
@@ -1198,6 +1197,21 @@ public class DungeonAssistant extends Module {
         int dx = Math.abs(pos.getX() - playerPos.getX());
         int dz = Math.abs(pos.getZ() - playerPos.getZ());
         return dx <= rangeBlocks && dz <= rangeBlocks;
+    }
+
+    private void removeNeighborFromChecked(BlockPos pos) {
+        if (pos == null || mc.world == null) return;
+        BlockState state = mc.world.getBlockState(pos);
+        Block block = state.getBlock();
+        if (block == Blocks.CHEST || block == Blocks.TRAPPED_CHEST) {
+            for (Direction dir : new Direction[]{Direction.NORTH, Direction.SOUTH, Direction.EAST, Direction.WEST}) {
+                BlockPos neighbor = pos.offset(dir);
+                if (mc.world.getBlockState(neighbor).getBlock() == block) {
+                    checkedContainers.remove(neighbor);
+                    break;
+                }
+            }
+        }
     }
 
     private void scanChestMinecarts(int centerChunkX, int centerChunkZ) {
