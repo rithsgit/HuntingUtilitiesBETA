@@ -916,15 +916,25 @@ public class DungeonAssistant extends Module {
                 return false;
             }
 
+            BlockPos bestPos = null;
+            double minDistanceSq = Double.MAX_VALUE;
+            double rangeSq = Math.pow(spawnerBreakRange.get(), 2);
+
             for (Map.Entry<BlockPos, TargetType> entry : targets.entrySet()) {
                 if (entry.getValue() == TargetType.SPAWNER) {
                     BlockPos pos = entry.getKey();
-                    if (Math.sqrt(pos.getSquaredDistance(mc.player.getPos())) <= spawnerBreakRange.get()) {
-                        blockToBreak = pos;
-                        breakDelayTimer = getRandomizedDelay(spawnerBreakDelay.get());
-                        return true;
+                    double distSq = pos.getSquaredDistance(mc.player.getPos());
+                    if (distSq <= rangeSq && distSq < minDistanceSq) {
+                        minDistanceSq = distSq;
+                        bestPos = pos;
                     }
                 }
+            }
+
+            if (bestPos != null) {
+                blockToBreak = bestPos;
+                breakDelayTimer = getRandomizedDelay(spawnerBreakDelay.get());
+                return true;
             }
         }
         return false;
