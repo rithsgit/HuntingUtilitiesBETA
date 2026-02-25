@@ -17,6 +17,7 @@ Current modules;
 - Server Healthcare System
 - Obsidian Fist (WIP)
 - Sign Scanner
+- Lava Marker (WIP)
 
 More modules coming soon — 
 
