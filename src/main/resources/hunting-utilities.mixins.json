@@ -12,7 +12,6 @@
     "ElytraAssistantMixin",
     "ElytraAssistantSwingMixin",
     "HandledScreenMixin",
-    "ObsidianFistMixin",
     "MixinSignBlockEntityRenderer"
     
   ],
