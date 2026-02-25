@@ -265,10 +265,13 @@ public class LavaMarker extends Module {
             // flowPositions so they render with the "flowing" colour.
             FluidState curFs = world.getFluidState(cur);
             boolean isFalling = curFs.contains(Properties.FALLING) && curFs.get(Properties.FALLING);
-            int level = curFs.contains(Properties.LEVEL_1_8) ? curFs.get(Properties.LEVEL_1_8) : 1;
+            // getLevel() is the reliable built-in method: returns 8 for source,
+            // 7 (adjacent to source) down to 1 (max spread distance / fully flown edge)
+            int level = curFs.getLevel();
             if (isFalling || level <= 1) {
-                result.add(cur);
+                result.add(cur); // fall column + outermost edge → "fully flown"
             }
+            // level 2-7 blocks are traversed but NOT added → stay in flowPositions
 
             // Horizontal and downward: follow any connected flowing lava
             for (BlockPos nb : new BlockPos[]{
@@ -309,8 +312,9 @@ public class LavaMarker extends Module {
         if (!state.isIn(FluidTags.LAVA) || state.isStill()) return false;
         // FALLING lava is the vertical column — already handled by bfsConnectedFlow
         if (state.contains(Properties.FALLING) && state.get(Properties.FALLING)) return false;
-        // Level 1 = outermost edge (fully spread); level 2+ = still spreading
-        return state.contains(Properties.LEVEL_1_8) && state.get(Properties.LEVEL_1_8) >= 2;
+        // getLevel(): 7 = adjacent to source, 1 = fully spread edge.
+        // Level 2+ = still spreading (actively flowing); level 1 = edge (handled by BFS).
+        return state.getLevel() >= 2;
     }
 
     @EventHandler
