@@ -1,7 +1,5 @@
 package com.example.addon.mixin;
 
-import com.example.addon.modules.LavaMarker;
-import meteordevelopment.meteorclient.systems.modules.Modules;
 import net.minecraft.block.BlockState;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.world.World;
@@ -17,12 +15,7 @@ public abstract class LavaMarkerMixin {
         at = @At("HEAD")
     )
     private void onSetBlockState(BlockPos pos, BlockState newState, int flags, int maxUpdateDepth, CallbackInfoReturnable<Boolean> cir) {
-        LavaMarker lavaMarker = Modules.get().get(LavaMarker.class);
-        if (lavaMarker != null && lavaMarker.isActive()) {
-            World world = (World) (Object) this;
-            BlockState oldState = world.getBlockState(pos);
-
-            lavaMarker.onBlockUpdate(pos, oldState, newState);
-        }
+        // Block update handling is now done via Meteor's BlockUpdateEvent in LavaMarker.
+        // This mixin is retained for compatibility but has no active logic.
     }
 }

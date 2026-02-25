@@ -2,6 +2,7 @@ package com.example.addon.modules;
 
 import com.example.addon.HuntingUtilities;
 import meteordevelopment.meteorclient.events.render.Render3DEvent;
+import meteordevelopment.meteorclient.events.world.BlockUpdateEvent;
 import meteordevelopment.meteorclient.events.world.TickEvent;
 import meteordevelopment.meteorclient.renderer.ShapeMode;
 import meteordevelopment.meteorclient.settings.*;
@@ -124,6 +125,7 @@ public class LavaMarker extends Module {
 
         if (!currentDimension.equals(lastDimension)) {
             lastDimension = currentDimension;
+            dirtyChunks.clear(); // discard stale dirty entries from the previous dimension
         }
 
         Set<BlockPos> fallPositions = lavaFallPositions.computeIfAbsent(currentDimension, k -> ConcurrentHashMap.newKeySet());
@@ -171,11 +173,27 @@ public class LavaMarker extends Module {
         }
     }
 
-    public void onBlockUpdate(BlockPos pos, BlockState oldState, BlockState newState) {
-        if (mc.world == null || !mc.world.getRegistryKey().getValue().toString().equals("minecraft:the_nether")) return;
-    
-        if (oldState.isOf(Blocks.LAVA) || newState.isOf(Blocks.LAVA) || oldState.isAir() || newState.isAir()) {
-            dirtyChunks.add(new ChunkPos(pos));
+    public void onSettingsChanged() {
+        // Force rescan of all scanned chunks when settings change (e.g. toggling trackFlowingLava)
+        if (mc.world == null) return;
+        Set<ChunkPos> scanned = scannedChunksPerDimension.get(mc.world.getRegistryKey().getValue().toString());
+        if (scanned != null) dirtyChunks.addAll(scanned);
+    }
+
+    @EventHandler
+    private void onBlockUpdate(BlockUpdateEvent event) {
+        if (mc.world == null) return;
+        if (!mc.world.getRegistryKey().getValue().toString().equals("minecraft:the_nether")) return;
+
+        BlockState newState = event.newState;
+        if (newState.isOf(Blocks.LAVA) || newState.isAir()) {
+            ChunkPos cp = new ChunkPos(event.pos);
+            dirtyChunks.add(cp);
+            // Mark adjacent chunks dirty — lava near a border can affect neighbors
+            dirtyChunks.add(new ChunkPos(cp.x - 1, cp.z));
+            dirtyChunks.add(new ChunkPos(cp.x + 1, cp.z));
+            dirtyChunks.add(new ChunkPos(cp.x, cp.z - 1));
+            dirtyChunks.add(new ChunkPos(cp.x, cp.z + 1));
         }
     }
 
@@ -203,7 +221,11 @@ public class LavaMarker extends Module {
         // BFS is then used to mark the entire connected flow from each tip.
         Set<BlockPos> fallTips = new HashSet<>();
 
-        for (int sectionY = chunk.getBottomSectionCoord(); sectionY < chunk.getTopSectionCoord(); sectionY++) {
+        // Clamp section iteration to vertical radius — skip irrelevant sections
+        int minSectionY = Math.max(chunk.getBottomSectionCoord(), (int) Math.floor((mc.player.getY() - vRadius) / 16.0));
+        int maxSectionY = Math.min(chunk.getTopSectionCoord() - 1, (int) Math.floor((mc.player.getY() + vRadius) / 16.0));
+
+        for (int sectionY = minSectionY; sectionY <= maxSectionY; sectionY++) {
             for (int x = 0; x < 16; x++) {
                 for (int z = 0; z < 16; z++) {
                     for (int y = 0; y < 16; y++) {
@@ -273,11 +295,12 @@ public class LavaMarker extends Module {
             }
             // level 2-7 blocks are traversed but NOT added → stay in flowPositions
 
-            // Horizontal and downward: follow any connected flowing lava
+            // Horizontal and downward: follow any connected flowing lava (chunk-loaded guard)
             for (BlockPos nb : new BlockPos[]{
                 cur.north(), cur.south(), cur.east(), cur.west(), cur.down()
             }) {
-                if (!visited.contains(nb)) {
+                if (!visited.contains(nb)
+                        && world.getChunkManager().isChunkLoaded(nb.getX() >> 4, nb.getZ() >> 4)) {
                     FluidState ns = world.getFluidState(nb);
                     if (ns.isIn(FluidTags.LAVA) && !ns.isStill()) {
                         visited.add(nb);
@@ -286,11 +309,10 @@ public class LavaMarker extends Module {
                 }
             }
 
-            // Upward: only follow if the block above is a falling column.
-            // Prevents the BFS from climbing into lake sources or unrelated lava
-            // that happens to be above the impact point.
+            // Upward: only follow if the block above is a falling column (chunk-loaded guard)
             BlockPos up = cur.up();
-            if (!visited.contains(up)) {
+            if (!visited.contains(up)
+                    && world.getChunkManager().isChunkLoaded(up.getX() >> 4, up.getZ() >> 4)) {
                 FluidState upFs = world.getFluidState(up);
                 if (upFs.isIn(FluidTags.LAVA) && !upFs.isStill()
                         && upFs.contains(Properties.FALLING) && upFs.get(Properties.FALLING)) {
