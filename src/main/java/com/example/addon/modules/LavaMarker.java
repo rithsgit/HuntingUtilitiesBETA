@@ -50,8 +50,8 @@ public class LavaMarker extends Module {
     );
 
     private final Setting<SettingColor> color = sgGeneral.add(new ColorSetting.Builder()
-        .name("color")
-        .description("The color of the highlight.")
+        .name("fully-flown-color")
+        .description("The color of fully flown lava fall highlights.")
         .defaultValue(new SettingColor(255, 100, 0, 50))
         .build()
     );
@@ -218,7 +218,7 @@ public class LavaMarker extends Module {
                             fallTips.add(mpos.toImmutable());
                         }
 
-                        if (trackFlowingLava.get() && fs.isIn(FluidTags.LAVA) && !fs.isStill()) {
+                        if (trackFlowingLava.get() && isActivelyFlowing(mpos, mc.world)) {
                             flowPositions.add(mpos.toImmutable());
                         }
                     }
@@ -234,8 +234,15 @@ public class LavaMarker extends Module {
     }
 
     /**
-     * BFS from a fall tip through all connected FLOWING lava (non-source).
-     * Still/source lava (lakes) acts as a natural boundary — BFS stops there.
+     * BFS from a fall tip through all connected FLOWING lava.
+     *
+     * Direction rules:
+     *  - Horizontal (N/S/E/W): always follow flowing lava — captures horizontal spread.
+     *  - Down: always follow — captures stepped/cascading flows.
+     *  - Up: ONLY follow if the block above is FALLING — traces the fall column
+     *    upward without leaking into lake sources or unrelated lava above the impact.
+     *
+     * Still/source lava always stops the BFS (lake boundary).
      */
     private void bfsConnectedFlow(BlockPos start, World world, Set<BlockPos> result, Set<BlockPos> visited) {
         if (visited.contains(start)) return;
@@ -244,7 +251,7 @@ public class LavaMarker extends Module {
         queue.add(start);
         visited.add(start);
 
-        int maxBlocks = 1024; // cap to avoid runaway BFS on massive flows
+        int maxBlocks = 1024;
         int count = 0;
 
         while (!queue.isEmpty() && count < maxBlocks) {
@@ -252,9 +259,9 @@ public class LavaMarker extends Module {
             result.add(cur);
             count++;
 
+            // Horizontal and downward: follow any connected flowing lava
             for (BlockPos nb : new BlockPos[]{
-                cur.north(), cur.south(), cur.east(), cur.west(),
-                cur.up(), cur.down()
+                cur.north(), cur.south(), cur.east(), cur.west(), cur.down()
             }) {
                 if (!visited.contains(nb)) {
                     FluidState ns = world.getFluidState(nb);
@@ -264,12 +271,35 @@ public class LavaMarker extends Module {
                     }
                 }
             }
+
+            // Upward: only follow if the block above is a falling column.
+            // Prevents the BFS from climbing into lake sources or unrelated lava
+            // that happens to be above the impact point.
+            BlockPos up = cur.up();
+            if (!visited.contains(up)) {
+                FluidState upFs = world.getFluidState(up);
+                if (upFs.isIn(FluidTags.LAVA) && !upFs.isStill()
+                        && upFs.contains(Properties.FALLING) && upFs.get(Properties.FALLING)) {
+                    visited.add(up);
+                    queue.add(up);
+                }
+            }
         }
     }
 
-    private boolean isFlowingLava(BlockPos pos, World world) {
+    /**
+     * A flowing lava block (for trackFlowingLava):
+     * any non-still lava that is actively spreading — level >= 2 means it hasn't
+     * yet reached maximum spread distance, so it's genuinely in motion.
+     * Level 1 blocks (fully spread edge) are already captured by the fall BFS.
+     */
+    private boolean isActivelyFlowing(BlockPos pos, World world) {
         FluidState state = world.getFluidState(pos);
-        return state.isIn(FluidTags.LAVA) && !state.isStill();
+        if (!state.isIn(FluidTags.LAVA) || state.isStill()) return false;
+        // FALLING lava is the vertical column — already handled by bfsConnectedFlow
+        if (state.contains(Properties.FALLING) && state.get(Properties.FALLING)) return false;
+        // Level 1 = outermost edge (fully spread); level 2+ = still spreading
+        return state.contains(Properties.LEVEL_1_8) && state.get(Properties.LEVEL_1_8) >= 2;
     }
 
     @EventHandler
