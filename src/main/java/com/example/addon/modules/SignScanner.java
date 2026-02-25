@@ -176,6 +176,8 @@ public class SignScanner extends Module {
         }
 
         try {
+            Set<BlockPos> currentSigns = new HashSet<>();
+
             for (BlockEntity be : Utils.blockEntities()) {
                 // Check both sign types simultaneously via switch expression
                 SignText[] texts = switch (be) {
@@ -212,6 +214,7 @@ public class SignScanner extends Module {
                 if (lines.stream().allMatch(t -> t.getString().isBlank()) && ignoreEmpty.get()) continue;
 
                 signs.put(be.getPos(), lines);
+                currentSigns.add(be.getPos());
 
                 if (chatFeedback.get() && !notified.contains(be.getPos())) {
                     List<String> lineStrings = lines.stream().map(Text::getString).filter(s -> !s.isBlank()).toList();
@@ -221,6 +224,10 @@ public class SignScanner extends Module {
                     notified.add(be.getPos());
                 }
             }
+
+            signs.keySet().retainAll(currentSigns);
+            notified.retainAll(currentSigns);
+
         } catch (Exception ignored) {
         }
     }
