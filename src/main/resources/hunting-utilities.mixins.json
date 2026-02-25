@@ -14,7 +14,8 @@
     "ElytraAssistantSwingMixin",
     "HandledScreenMixin",
     "ObsidianFistMixin",
-    "MixinSignBlockEntityRenderer"
+    "MixinSignBlockEntityRenderer",
+    "LavaMarkerMixin"
   ],
   "server": [],
   "injectors": {

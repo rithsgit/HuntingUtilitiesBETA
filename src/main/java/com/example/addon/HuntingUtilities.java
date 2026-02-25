@@ -19,6 +19,7 @@ import com.example.addon.modules.DungeonAssistant;
 import com.example.addon.modules.ElytraAssistant;
 import com.example.addon.modules.Graveyard;
 import com.example.addon.modules.GridLock;
+import com.example.addon.modules.LavaMarker;
 import com.example.addon.modules.LootLens;
 import com.example.addon.modules.ObsidianFist;
 import com.example.addon.modules.PortalMaker;
@@ -58,6 +59,7 @@ public class HuntingUtilities extends MeteorAddon {
         Modules.get().add(new ServerHealthcareSystem());
         Modules.get().add(new ObsidianFist());
         Modules.get().add(new SignScanner());
+        Modules.get().add(new LavaMarker());
 
 
         // ────────────────────────────────────────────────
