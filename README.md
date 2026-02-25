@@ -16,7 +16,7 @@ Current modules;
 - Rocket Pilot
 - Server Healthcare System
 - Obsidian Fist (WIP)
-- Sign Scanner (WIP)
+- Sign Scanner
 
 More modules coming soon — 
 
