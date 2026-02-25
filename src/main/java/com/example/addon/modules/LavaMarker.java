@@ -285,7 +285,10 @@ public class LavaMarker extends Module {
         if (trackFlowingLava.get()) {
             Set<BlockPos> flowPositions = flowingLavaPositions.get(currentDimension);
             if (flowPositions != null && !flowPositions.isEmpty()) {
-                renderConnectedAABBs(event, flowPositions, flowingLavaColor.get());
+                // Exclude any blocks already highlighted as fall-flow to prevent overlap
+                Set<BlockPos> netFlow = new HashSet<>(flowPositions);
+                if (fallPositions != null) netFlow.removeAll(fallPositions);
+                if (!netFlow.isEmpty()) renderConnectedAABBs(event, netFlow, flowingLavaColor.get());
             }
         }
     }
