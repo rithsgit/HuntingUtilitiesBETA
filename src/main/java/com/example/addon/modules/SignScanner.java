@@ -36,12 +36,12 @@ public class SignScanner extends Module {
     private final SettingGroup sgOptimization = settings.createGroup("Optimization");
     private final SettingGroup sgClustering = settings.createGroup("Clustering");
 
-    private final Setting<Double> maxDistance = sgGeneral.add(new DoubleSetting.Builder()
-        .name("max-distance")
-        .description("Maximum distance to scan for signs.")
-        .defaultValue(64.0)
-        .min(0)
-        .sliderMax(256)
+    private final Setting<Integer> chunks = sgGeneral.add(new IntSetting.Builder()
+        .name("chunks")
+        .description("Radius in chunks to scan for signs.")
+        .defaultValue(16)
+        .min(1)
+        .sliderMax(64)
         .build()
     );
 
@@ -78,7 +78,7 @@ public class SignScanner extends Module {
         .description("Scale of the rendered text.")
         .defaultValue(1.5)
         .min(0.1)
-        .sliderMax(3.0)
+        .sliderMax(5.0)
         .build()
     );
 
@@ -114,7 +114,7 @@ public class SignScanner extends Module {
     private final Setting<Boolean> outline = sgRender.add(new BoolSetting.Builder()
         .name("outline")
         .description("Render text with an outline.")
-        .defaultValue(false)
+        .defaultValue(true)
         .build()
     );
 
@@ -126,30 +126,9 @@ public class SignScanner extends Module {
         .build()
     );
 
-    private final Setting<Boolean> shadow = sgRender.add(new BoolSetting.Builder()
-        .name("shadow")
-        .description("Render text with shadow.")
-        .defaultValue(true)
-        .build()
-    );
-
-    private final Setting<Boolean> throughWalls = sgRender.add(new BoolSetting.Builder()
-        .name("through-walls")
-        .description("Renders sign text through walls and terrain.")
-        .defaultValue(true)
-        .build()
-    );
-
-    private final Setting<Boolean> filterBadWords = sgFilter.add(new BoolSetting.Builder()
-        .name("filter-bad-words")
+    private final Setting<Boolean> censorship = sgFilter.add(new BoolSetting.Builder()
+        .name("censorship")
         .description("Censors bad words on signs.")
-        .defaultValue(true)
-        .build()
-    );
-
-    private final Setting<Boolean> cullOffScreen = sgOptimization.add(new BoolSetting.Builder()
-        .name("cull-off-screen")
-        .description("Don't render signs that are outside the screen bounds.")
         .defaultValue(true)
         .build()
     );
@@ -202,7 +181,7 @@ public class SignScanner extends Module {
         .name("use-regex")
         .description("Use regular expressions for bad word filtering.")
         .defaultValue(false)
-        .visible(filterBadWords::get)
+        .visible(censorship::get)
         .build()
     );
 
@@ -210,7 +189,7 @@ public class SignScanner extends Module {
         .name("bad-words")
         .description("List of words to censor.")
         .defaultValue(List.of("badword1", "badword2"))
-        .visible(filterBadWords::get)
+        .visible(censorship::get)
         .build()
     );
 
@@ -233,7 +212,7 @@ public class SignScanner extends Module {
     private void onTick(TickEvent.Post event) {
         if (mc.world == null || mc.player == null) return;
 
-        double dist = maxDistance.get();
+        double dist = chunks.get() * 16.0;
         double rangeSq = dist * dist;
         signs.keySet().removeIf(pos ->
             pos.getSquaredDistance(mc.player.getPos()) > rangeSq
@@ -261,7 +240,7 @@ public class SignScanner extends Module {
 
                 List<Text> lines = new ArrayList<>();
 
-                if (filterBadWords.get()) {
+                if (censorship.get()) {
                     front = censorSignText(front);
                     back = censorSignText(back);
                 }
@@ -307,7 +286,7 @@ public class SignScanner extends Module {
     }
 
     public boolean shouldCensor() {
-        return isActive() && filterBadWords.get();
+        return isActive() && censorship.get();
     }
 
     public SignText censorSignText(SignText signText) {
@@ -337,7 +316,7 @@ public class SignScanner extends Module {
             for (String bad : badWords.get()) {
                 try {
                     if (input.matches("(?i).*" + bad + ".*")) {
-                        return "*CENSORED*";
+                        return "****";
                     }
                 } catch (Exception ignored) {}
             }
@@ -346,7 +325,7 @@ public class SignScanner extends Module {
         String lower = input.toLowerCase();
         for (String bad : badWords.get()) {
             if (lower.contains(bad.toLowerCase())) {
-                return "*CENSORED*";
+                return "****";
             }
         }
         return input;
@@ -396,12 +375,6 @@ public class SignScanner extends Module {
                 
                 if (!NametagUtils.to2D(pos3d, scale.get())) continue;
 
-                // After to2D(), pos3d contains screen-space coordinates
-                if (cullOffScreen.get()) {
-                    double margin = 100.0;
-                    if (pos3d.x < -margin || pos3d.y < -margin || pos3d.x > mc.getWindow().getScaledWidth() + margin || pos3d.y > mc.getWindow().getScaledHeight() + margin) continue;
-                }
-
                 entries.add(new SignEntry(pos, lines, pos3d, new Vector3d(pos3d.x, pos3d.y, pos3d.z)));
             }
         } catch (Exception ignored) {}
@@ -437,10 +410,8 @@ public class SignScanner extends Module {
 
     private void renderCluster(SignCluster cluster, Render2DEvent event, TextRenderer tr) {
         NametagUtils.begin(cluster.anchor3d, event.drawContext);
-        if (throughWalls.get()) {
-            RenderSystem.disableDepthTest();
-            RenderSystem.depthMask(false);
-        }
+        RenderSystem.disableDepthTest();
+        RenderSystem.depthMask(false);
 
         List<List<Text>> signsToRender = new ArrayList<>();
         if (clusterMode.get() == ClusterMode.Cycle && enableClustering.get()) {
@@ -454,6 +425,9 @@ public class SignScanner extends Module {
 
         double yOffset = 0;
         double lh = tr.getHeight();
+
+        // Calculate dynamic offset for consistent 1px outline thickness regardless of distance/scale
+        double offset = 1.0 / Math.max(cluster.anchor3d.z, 0.001);
 
         // First pass: Backgrounds
         if (background.get()) {
@@ -484,19 +458,19 @@ public class SignScanner extends Module {
             double totalH = lines.size() * lh;
             
             // Text — begin with shadow consistent with setting for smoother appearance
-            tr.begin(1.0, false, shadow.get());
+            tr.begin(1.0, false, true);
             double y = currentY - totalH / 2.0;
             for (Text lineText : lines) {
                 String line = getTextContent(lineText);
                 double x = -tr.getWidth(line) / 2.0;
                 if (outline.get()) {
                     SettingColor oc = outlineColor.get();
-                    tr.render(line, x - 1, y, oc, false);
-                    tr.render(line, x + 1, y, oc, false);
-                    tr.render(line, x, y - 1, oc, false);
-                    tr.render(line, x, y + 1, oc, false);
+                    tr.render(line, x - offset, y, oc, false);
+                    tr.render(line, x + offset, y, oc, false);
+                    tr.render(line, x, y - offset, oc, false);
+                    tr.render(line, x, y + offset, oc, false);
                 }
-                tr.render(line, x, y, textColor.get(), shadow.get());
+                tr.render(line, x, y, textColor.get(), true);
                 y += lh;
             }
             tr.end();
@@ -504,10 +478,8 @@ public class SignScanner extends Module {
             currentY += totalH + 6.0;
         }
 
-        if (throughWalls.get()) {
-            RenderSystem.depthMask(true);
-            RenderSystem.enableDepthTest();
-        }
+        RenderSystem.depthMask(true);
+        RenderSystem.enableDepthTest();
         NametagUtils.end(event.drawContext);
     }
 
