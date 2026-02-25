@@ -13,6 +13,8 @@ import net.minecraft.block.entity.BlockEntity;
 import net.minecraft.block.entity.SignBlockEntity;
 import net.minecraft.block.entity.SignText;
 import net.minecraft.text.Text;
+import net.minecraft.text.Style;
+import net.minecraft.util.Formatting;
 import net.minecraft.text.PlainTextContent;
 import net.minecraft.text.MutableText;
 import net.minecraft.text.TextContent;
@@ -50,6 +52,13 @@ public class SignScanner extends Module {
         .name("ignore-empty")
         .description("Ignore signs with no text.")
         .defaultValue(true)
+        .build()
+    );
+
+    private final Setting<Boolean> preserveLines = sgGeneral.add(new BoolSetting.Builder()
+        .name("preserve-lines")
+        .description("Preserves the 4-line layout of signs, including empty lines.")
+        .defaultValue(false)
         .build()
     );
 
@@ -99,7 +108,7 @@ public class SignScanner extends Module {
         .build()
     );
 
-    private final Map<BlockPos, List<String>> signs = new ConcurrentHashMap<>();
+    private final Map<BlockPos, List<Text>> signs = new ConcurrentHashMap<>();
     private final Set<BlockPos> notified = new HashSet<>();
     private int timer = 0;
 
@@ -142,7 +151,7 @@ public class SignScanner extends Module {
                     if (!(be instanceof SignBlockEntity sign)) continue;
                     if (Math.sqrt(be.getPos().getSquaredDistance(mc.player.getPos())) > rangeBlocks) continue;
 
-                    List<String> lines = new ArrayList<>();
+                    List<Text> lines = new ArrayList<>();
                     SignText front = sign.getFrontText();
                     SignText back = sign.getBackText();
 
@@ -151,17 +160,28 @@ public class SignScanner extends Module {
                         back = censorSignText(back);
                     }
 
-                    readSignText(front, lines);
-                    readSignText(back, lines);
+                    if (preserveLines.get()) {
+                        for (Text t : front.getMessages(false)) lines.add(t);
+                        
+                        // Only add back text if it's not completely empty, or if we want to be very strict
+                        boolean backHasText = false;
+                        for (Text t : back.getMessages(false)) {
+                            if (!t.getString().isBlank()) backHasText = true;
+                        }
+                        if (backHasText) {
+                            for (Text t : back.getMessages(false)) lines.add(t);
+                        }
+                    } else {
+                        readSignText(front, lines);
+                        readSignText(back, lines);
+                    }
 
-                    if (lines.isEmpty() && ignoreEmpty.get()) continue;
+                    if (lines.stream().allMatch(t -> t.getString().isBlank()) && ignoreEmpty.get()) continue;
 
                     signs.put(be.getPos(), lines);
 
                     if (chatFeedback.get() && !notified.contains(be.getPos())) {
-                        if (!lines.isEmpty()) {
-                            info("Sign found: " + String.join(", ", lines));
-                        }
+                        // Simple notification
                         notified.add(be.getPos());
                     }
                 }
@@ -169,10 +189,9 @@ public class SignScanner extends Module {
         }
     }
 
-    private void readSignText(SignText signText, List<String> output) {
+    private void readSignText(SignText signText, List<Text> output) {
         for (Text t : signText.getMessages(false)) {
-            String s = t.getString().trim();
-            if (!s.isEmpty()) output.add(s);
+            if (!t.getString().trim().isEmpty()) output.add(t);
         }
     }
 
@@ -212,11 +231,29 @@ public class SignScanner extends Module {
         return input;
     }
 
+    private String textToLegacy(Text text) {
+        StringBuilder sb = new StringBuilder();
+        text.visit((style, asString) -> {
+            if (style.getColor() != null) {
+                Formatting f = Formatting.byName(style.getColor().getName());
+                if (f != null) sb.append(f);
+            }
+            if (style.isObfuscated()) sb.append(Formatting.OBFUSCATED);
+            if (style.isBold()) sb.append(Formatting.BOLD);
+            if (style.isStrikethrough()) sb.append(Formatting.STRIKETHROUGH);
+            if (style.isUnderlined()) sb.append(Formatting.UNDERLINE);
+            if (style.isItalic()) sb.append(Formatting.ITALIC);
+            sb.append(asString);
+            return Optional.empty();
+        }, Style.EMPTY);
+        return sb.toString();
+    }
+
     @EventHandler
     private void onRender(Render3DEvent event) {
-        for (Map.Entry<BlockPos, List<String>> entry : signs.entrySet()) {
+        for (Map.Entry<BlockPos, List<Text>> entry : signs.entrySet()) {
             BlockPos pos = entry.getKey();
-            List<String> lines = entry.getValue();
+            List<Text> lines = entry.getValue();
             
             Vec3d vec = Vec3d.ofCenter(pos).add(0, 0.5, 0);
             Vector3d pos3d = new Vector3d(vec.x, vec.y, vec.z);
@@ -226,7 +263,8 @@ public class SignScanner extends Module {
                 TextRenderer.get().begin(1.0, false, true);
 
                 double y = -(TextRenderer.get().getHeight() * lines.size()) / 2.0;
-                for (String line : lines) {
+                for (Text lineText : lines) {
+                    String line = textToLegacy(lineText);
                     double x = -TextRenderer.get().getWidth(line) / 2.0;
                     if (outline.get()) {
                         SettingColor oc = outlineColor.get();
