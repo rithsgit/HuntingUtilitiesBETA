@@ -11,7 +11,8 @@
     "PortalMakerMixin",
     "ElytraAssistantMixin",
     "ElytraAssistantSwingMixin",
-    "HandledScreenMixin"
+    "HandledScreenMixin",
+    "ObsidianFistMixin"
   ],
   "server": [],
   "injectors": {

@@ -273,15 +273,17 @@ public class ServerHealthcareSystem extends Module {
 
     private int getArmorValue(ItemStack stack) {
         if (stack.isEmpty()) return -1;
-        var equippable = stack.get(DataComponentTypes.EQUIPPABLE);
+        var equippable = stack.getOrDefault(DataComponentTypes.EQUIPPABLE, null);
         if (equippable == null) return -1;
-        AttributeModifiersComponent attrs = stack.get(DataComponentTypes.ATTRIBUTE_MODIFIERS);
+        AttributeModifiersComponent attrs = stack.getOrDefault(DataComponentTypes.ATTRIBUTE_MODIFIERS, null);
         if (attrs == null) return 0;
         int armor = 0, toughness = 0;
         for (var entry : attrs.modifiers()) {
+            if (entry == null || entry.attribute() == null) continue;
             var keyOpt = entry.attribute().getKey();
-            if (keyOpt.isEmpty()) continue;
+            if (keyOpt == null || keyOpt.isEmpty()) continue;
             String id = keyOpt.get().getValue().toString();
+            if (entry.modifier() == null) continue;
             int val = (int) entry.modifier().value();
             if (id.equals("minecraft:generic.armor")) armor += val;
             else if (id.equals("minecraft:generic.armor_toughness")) toughness += val;

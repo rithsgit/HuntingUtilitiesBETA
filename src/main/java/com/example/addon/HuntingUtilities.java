@@ -1,16 +1,37 @@
 package com.example.addon;
 
-import com.example.addon.commands.*;
-import com.example.addon.hud.*;
-import com.example.addon.modules.*;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import com.example.addon.commands.DungeonAssistantCommand;
+import com.example.addon.commands.GridLockCommand;
+import com.example.addon.commands.LootLensCommand;
+import com.example.addon.commands.PortalMakerCommand;
+import com.example.addon.commands.PortalTrackerCommand;
+import com.example.addon.commands.RocketPilotCommand;
+import com.example.addon.hud.DungeonAssistantHud;
+import com.example.addon.hud.GridLockHud;
+import com.example.addon.hud.LootLensHud;
+import com.example.addon.hud.PortalMakerHud;
+import com.example.addon.hud.PortalTrackerHud;
+import com.example.addon.hud.RocketPilotHud;
+import com.example.addon.modules.DungeonAssistant;
+import com.example.addon.modules.ElytraAssistant;
+import com.example.addon.modules.Graveyard;
+import com.example.addon.modules.GridLock;
+import com.example.addon.modules.LootLens;
+import com.example.addon.modules.ObsidianFist;
+import com.example.addon.modules.PortalMaker;
+import com.example.addon.modules.PortalTracker;
+import com.example.addon.modules.RocketPilot;
+import com.example.addon.modules.ServerHealthcareSystem;
+
 import meteordevelopment.meteorclient.addons.MeteorAddon;
 import meteordevelopment.meteorclient.commands.Commands;
 import meteordevelopment.meteorclient.systems.hud.Hud;
 import meteordevelopment.meteorclient.systems.hud.HudGroup;
 import meteordevelopment.meteorclient.systems.modules.Category;
 import meteordevelopment.meteorclient.systems.modules.Modules;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 public class HuntingUtilities extends MeteorAddon {
 
@@ -34,6 +55,7 @@ public class HuntingUtilities extends MeteorAddon {
         Modules.get().add(new GridLock());        
         Modules.get().add(new Graveyard());
         Modules.get().add(new ServerHealthcareSystem());
+        Modules.get().add(new ObsidianFist());
 
 
         // ────────────────────────────────────────────────

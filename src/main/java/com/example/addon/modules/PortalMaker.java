@@ -239,17 +239,16 @@ public class PortalMaker extends Module {
             }
 
             // Face the block for better placement compatibility
-            Rotations.rotate(Rotations.getYaw(target), Rotations.getPitch(target), null);
-
-            BlockHitResult hit = new BlockHitResult(
-                Vec3d.ofCenter(target),
-                Direction.UP,  // Most reliable for placing obsidian frames
-                target,
-                false
-            );
-
-            mc.interactionManager.interactBlock(mc.player, Hand.MAIN_HAND, hit);
-            mc.player.swingHand(Hand.MAIN_HAND);
+            Rotations.rotate(Rotations.getYaw(target), Rotations.getPitch(target), () -> {
+                BlockHitResult hit = new BlockHitResult(
+                    Vec3d.ofCenter(target),
+                    Direction.UP,  // Most reliable for placing obsidian frames
+                    target,
+                    false
+                );
+                mc.interactionManager.interactBlock(mc.player, Hand.MAIN_HAND, hit);
+                mc.player.swingHand(Hand.MAIN_HAND);
+            });
 
             placementIndex++;
         }
@@ -289,14 +288,16 @@ public class PortalMaker extends Module {
 
         for (BlockPos pos : new BlockPos[]{bottom1, bottom2}) {
             if (mc.world.getBlockState(pos.up()).isAir()) {
-                BlockHitResult hit = new BlockHitResult(
-                    Vec3d.ofCenter(pos).add(0, 0.5, 0), // Top face of obsidian
-                    Direction.UP,
-                    pos,
-                    false
-                );
-                mc.interactionManager.interactBlock(mc.player, Hand.MAIN_HAND, hit);
-                mc.player.swingHand(Hand.MAIN_HAND);
+                Rotations.rotate(Rotations.getYaw(pos), Rotations.getPitch(pos), () -> {
+                    BlockHitResult hit = new BlockHitResult(
+                        Vec3d.ofCenter(pos).add(0, 0.5, 0), // Top face of obsidian
+                        Direction.UP,
+                        pos,
+                        false
+                    );
+                    mc.interactionManager.interactBlock(mc.player, Hand.MAIN_HAND, hit);
+                    mc.player.swingHand(Hand.MAIN_HAND);
+                });
                 break;
             }
         }

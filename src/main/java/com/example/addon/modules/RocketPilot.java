@@ -922,12 +922,13 @@ public class RocketPilot extends Module {
     private int countFireworks() {
         if (mc.player == null) return 0;
         int count = 0;
-        for (ItemStack stack : mc.player.getInventory().main) {
-            if (stack.isOf(Items.FIREWORK_ROCKET)) {
+        for (int i = 0; i < 36; i++) {
+            ItemStack stack = mc.player.getInventory().getStack(i);
+            if (stack != null && stack.isOf(Items.FIREWORK_ROCKET)) {
                 count += stack.getCount();
             }
         }
-        if (mc.player.getOffHandStack().isOf(Items.FIREWORK_ROCKET)) {
+        if (mc.player.getOffHandStack() != null && mc.player.getOffHandStack().isOf(Items.FIREWORK_ROCKET)) {
             count += mc.player.getOffHandStack().getCount();
         }
         return count;
@@ -937,8 +938,8 @@ public class RocketPilot extends Module {
         int bestSlot = -1;
         int bestDurability = -1;
 
-        for (int i = 0; i < mc.player.getInventory().main.size(); i++) {
-            ItemStack stack = mc.player.getInventory().main.get(i);
+        for (int i = 0; i < 36; i++) {
+            ItemStack stack = mc.player.getInventory().getStack(i);
             if (stack.isOf(Items.ELYTRA)) {
                 int durability = stack.getMaxDamage() - stack.getDamage();
                 if (durability > bestDurability && durability > 50) {
