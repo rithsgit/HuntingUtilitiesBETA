@@ -11,8 +11,7 @@
     "PortalMakerMixin",
     "ElytraAssistantMixin",
     "ElytraAssistantSwingMixin",
-    "HandledScreenMixin",
-    "MixinSignBlockEntityRenderer"
+    "HandledScreenMixin"
     
   ],
   "server": [],
