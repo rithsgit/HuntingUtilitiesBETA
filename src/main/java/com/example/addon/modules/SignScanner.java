@@ -133,8 +133,9 @@ public class SignScanner extends Module {
         }
         timer = 20;
 
+        double rangeSq = range.get() * range.get();
         signs.keySet().removeIf(pos -> 
-            Math.sqrt(pos.getSquaredDistance(mc.player.getPos())) > range.get()
+            pos.getSquaredDistance(mc.player.getPos()) > rangeSq
         );
 
         int rangeBlocks = range.get();
@@ -149,7 +150,7 @@ public class SignScanner extends Module {
 
                 for (BlockEntity be : chunk.getBlockEntities().values()) {
                     if (!(be instanceof SignBlockEntity sign)) continue;
-                    if (Math.sqrt(be.getPos().getSquaredDistance(mc.player.getPos())) > rangeBlocks) continue;
+                    if (be.getPos().getSquaredDistance(mc.player.getPos()) > rangeSq) continue;
 
                     List<Text> lines = new ArrayList<>();
                     SignText front = sign.getFrontText();
@@ -258,7 +259,12 @@ public class SignScanner extends Module {
             Vec3d vec = Vec3d.ofCenter(pos).add(0, 0.5, 0);
             Vector3d pos3d = new Vector3d(vec.x, vec.y, vec.z);
 
-            if (NametagUtils.to2D(pos3d, scale.get())) {
+            // Calculate distance to camera to counteract NametagUtils's distance scaling,
+            // which makes text larger at a distance instead of smaller.
+            double dist = pos.getSquaredDistance(mc.gameRenderer.getCamera().getPos());
+            double finalScale = scale.get() / Math.max(1.0, Math.sqrt(dist) / 5.0);
+
+            if (NametagUtils.to2D(pos3d, finalScale)) {
                 NametagUtils.begin(pos3d);
                 TextRenderer.get().begin(1.0, false, true);
 
