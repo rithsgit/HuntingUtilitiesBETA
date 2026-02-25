@@ -111,21 +111,6 @@ public class SignScanner extends Module {
         .build()
     );
 
-    private final Setting<Boolean> outline = sgRender.add(new BoolSetting.Builder()
-        .name("outline")
-        .description("Render text with an outline.")
-        .defaultValue(true)
-        .build()
-    );
-
-    private final Setting<SettingColor> outlineColor = sgRender.add(new ColorSetting.Builder()
-        .name("outline-color")
-        .description("Outline color.")
-        .defaultValue(new SettingColor(0, 0, 0, 255))
-        .visible(outline::get)
-        .build()
-    );
-
     private final Setting<Boolean> censorship = sgFilter.add(new BoolSetting.Builder()
         .name("censorship")
         .description("Censors bad words on signs.")
@@ -159,29 +144,19 @@ public class SignScanner extends Module {
 
     private final Setting<Double> clusterRadius = sgClustering.add(new DoubleSetting.Builder()
         .name("cluster-radius")
-        .description("Radius in pixels to group signs.")
-        .defaultValue(40.0)
+        .description("Radius in blocks to group signs.")
+        .defaultValue(2.0)
         .min(0)
-        .sliderMax(200)
+        .sliderMax(10)
         .visible(enableClustering::get)
         .build()
     );
 
-    public enum ClusterMode { Stack, Cycle }
-
-    private final Setting<ClusterMode> clusterMode = sgClustering.add(new EnumSetting.Builder<ClusterMode>()
-        .name("cluster-mode")
-        .description("How to display clustered signs.")
-        .defaultValue(ClusterMode.Stack)
+    private final Setting<SettingColor> clusterCountColor = sgClustering.add(new ColorSetting.Builder()
+        .name("cluster-count-color")
+        .description("The color for the '(+X more signs)' text.")
+        .defaultValue(new SettingColor(255, 0, 0, 255))
         .visible(enableClustering::get)
-        .build()
-    );
-
-    private final Setting<Boolean> useRegex = sgFilter.add(new BoolSetting.Builder()
-        .name("use-regex")
-        .description("Use regular expressions for bad word filtering.")
-        .defaultValue(false)
-        .visible(censorship::get)
         .build()
     );
 
@@ -312,20 +287,12 @@ public class SignScanner extends Module {
     }
 
     public String censor(String input) {
-        if (useRegex.get()) {
-            for (String bad : badWords.get()) {
-                try {
-                    if (input.matches("(?i).*" + bad + ".*")) {
-                        return "****";
-                    }
-                } catch (Exception ignored) {}
-            }
-            return input;
-        }
-        String lower = input.toLowerCase();
         for (String bad : badWords.get()) {
-            if (lower.contains(bad.toLowerCase())) {
-                return "****";
+            try {
+                if (input.matches("(?i).*" + bad + ".*")) {
+                    return "****";
+                }
+            } catch (Exception ignored) {
             }
         }
         return input;
@@ -375,7 +342,7 @@ public class SignScanner extends Module {
                 
                 if (!NametagUtils.to2D(pos3d, scale.get())) continue;
 
-                entries.add(new SignEntry(pos, lines, pos3d, new Vector3d(pos3d.x, pos3d.y, pos3d.z)));
+                entries.add(new SignEntry(pos, lines, pos3d));
             }
         } catch (Exception ignored) {}
 
@@ -384,7 +351,7 @@ public class SignScanner extends Module {
             for (SignEntry entry : entries) {
                 boolean added = false;
                 for (SignCluster cluster : clusters) {
-                    double dist = Math.sqrt(Math.pow(cluster.pos2d.x - entry.pos2d.x, 2) + Math.pow(cluster.pos2d.y - entry.pos2d.y, 2));
+                    double dist = cluster.anchor3d.distance(entry.pos3d);
                     if (dist <= clusterRadius.get()) {
                         cluster.add(entry);
                         added = true;
@@ -413,70 +380,45 @@ public class SignScanner extends Module {
         RenderSystem.disableDepthTest();
         RenderSystem.depthMask(false);
 
-        List<List<Text>> signsToRender = new ArrayList<>();
-        if (clusterMode.get() == ClusterMode.Cycle && enableClustering.get()) {
-            int index = (int) ((System.currentTimeMillis() / 2000L) % cluster.entries.size());
-            signsToRender.add(cluster.entries.get(index).lines);
-        } else {
-            for (SignEntry entry : cluster.entries) {
-                signsToRender.add(entry.lines);
-            }
+        List<Text> linesToRender = new ArrayList<>(cluster.entries.get(0).lines);
+        Text clusterCountText = null;
+        if (enableClustering.get() && cluster.entries.size() > 1) {
+            clusterCountText = Text.literal(String.format("(+%d more signs)", cluster.entries.size() - 1));
+            linesToRender.add(clusterCountText);
         }
 
-        double yOffset = 0;
         double lh = tr.getHeight();
 
-        // Calculate dynamic offset for consistent 1px outline thickness regardless of distance/scale
-        double offset = 1.0;
-
-        // First pass: Backgrounds
+        // Background
         if (background.get()) {
             Renderer2D.COLOR.begin();
-            double currentY = 0;
-            for (List<Text> lines : signsToRender) {
-                double maxWidth = 0;
-                for (Text t : lines) maxWidth = Math.max(maxWidth, tr.getWidth(getTextContent(t)));
-                double totalH = lines.size() * lh;
+            double maxWidth = 0;
+            for (Text t : linesToRender) maxWidth = Math.max(maxWidth, tr.getWidth(getTextContent(t)));
+            double totalH = linesToRender.size() * lh;
 
-                double pad = 4.0;
-                double bw = maxWidth + pad * 2;
-                double bh = totalH + pad * 2;
-                double bx = -bw / 2.0;
-                double by = currentY - totalH / 2.0 - pad;
+            double pad = 4.0;
+            double bw = maxWidth + pad * 2;
+            double bh = totalH + pad * 2;
+            double bx = -bw / 2.0;
+            double by = -totalH / 2.0 - pad;
 
-                Renderer2D.COLOR.quad(bx, by, bw, bh, backgroundColor.get());
-                
-                // Add spacing between stacked signs
-                currentY += totalH + 6.0; 
-            }
+            Renderer2D.COLOR.quad(bx, by, bw, bh, backgroundColor.get());
             Renderer2D.COLOR.render(null);
         }
 
-        // Second pass: Text
-        double currentY = 0;
-        for (List<Text> lines : signsToRender) {
-            double totalH = lines.size() * lh;
-            
-            // Text — begin with shadow consistent with setting for smoother appearance
-            tr.begin(1.0, false, true);
-            double y = currentY - totalH / 2.0;
-            for (Text lineText : lines) {
-                String line = getTextContent(lineText);
-                double x = -tr.getWidth(line) / 2.0;
-                if (outline.get()) {
-                    SettingColor oc = outlineColor.get();
-                    tr.render(line, x - offset, y, oc, false);
-                    tr.render(line, x + offset, y, oc, false);
-                    tr.render(line, x, y - offset, oc, false);
-                    tr.render(line, x, y + offset, oc, false);
-                }
-                tr.render(line, x, y, textColor.get(), true);
-                y += lh;
-            }
-            tr.end();
+        // Text
+        tr.begin(1.0, false, true);
+        double y = -(linesToRender.size() * lh) / 2.0;
+        for (Text lineText : linesToRender) {
+            String line = getTextContent(lineText);
+            double x = -tr.getWidth(line) / 2.0;
 
-            currentY += totalH + 6.0;
+            SettingColor color = (clusterCountText != null && lineText == clusterCountText) ? clusterCountColor.get() : textColor.get();
+
+            tr.render(line, x, y, color, true);
+            y += lh;
         }
+        tr.end();
 
         RenderSystem.depthMask(true);
         RenderSystem.enableDepthTest();
@@ -487,19 +429,17 @@ public class SignScanner extends Module {
         BlockPos pos;
         List<Text> lines;
         Vector3d pos3d;
-        Vector3d pos2d;
 
-        public SignEntry(BlockPos pos, List<Text> lines, Vector3d pos3d, Vector3d pos2d) {
-            this.pos = pos; this.lines = lines; this.pos3d = pos3d; this.pos2d = pos2d;
+        public SignEntry(BlockPos pos, List<Text> lines, Vector3d pos3d) {
+            this.pos = pos; this.lines = lines; this.pos3d = pos3d;
         }
     }
 
     private static class SignCluster {
-        Vector3d pos2d;
         Vector3d anchor3d;
         List<SignEntry> entries = new ArrayList<>();
 
-        public SignCluster(SignEntry first) { this.pos2d = first.pos2d; this.anchor3d = first.pos3d; this.entries.add(first); }
+        public SignCluster(SignEntry first) { this.anchor3d = first.pos3d; this.entries.add(first); }
         public void add(SignEntry entry) { this.entries.add(entry); }
     }
 }
