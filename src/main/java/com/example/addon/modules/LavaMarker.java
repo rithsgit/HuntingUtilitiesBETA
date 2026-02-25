@@ -256,8 +256,19 @@ public class LavaMarker extends Module {
 
         while (!queue.isEmpty() && count < maxBlocks) {
             BlockPos cur = queue.poll();
-            result.add(cur);
             count++;
+
+            // Only add to "fully flown" result if this block is:
+            //   - Part of the falling column (FALLING=true), OR
+            //   - At the outermost spread edge (LEVEL_1_8 == 1)
+            // Level 2+ blocks are still traversed to reach the edges but stay in
+            // flowPositions so they render with the "flowing" colour.
+            FluidState curFs = world.getFluidState(cur);
+            boolean isFalling = curFs.contains(Properties.FALLING) && curFs.get(Properties.FALLING);
+            int level = curFs.contains(Properties.LEVEL_1_8) ? curFs.get(Properties.LEVEL_1_8) : 1;
+            if (isFalling || level <= 1) {
+                result.add(cur);
+            }
 
             // Horizontal and downward: follow any connected flowing lava
             for (BlockPos nb : new BlockPos[]{
