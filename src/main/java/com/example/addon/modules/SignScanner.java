@@ -10,15 +10,12 @@ import meteordevelopment.meteorclient.utils.render.NametagUtils;
 import meteordevelopment.meteorclient.utils.render.color.SettingColor;
 import meteordevelopment.orbit.EventHandler;
 import net.minecraft.block.entity.BlockEntity;
+import net.minecraft.block.entity.HangingSignBlockEntity;
 import net.minecraft.block.entity.SignBlockEntity;
 import net.minecraft.block.entity.SignText;
 import net.minecraft.text.Text;
+import meteordevelopment.meteorclient.renderer.Renderer2D;
 import com.mojang.blaze3d.systems.RenderSystem;
-import net.minecraft.client.render.BufferRenderer;
-import net.minecraft.client.render.GameRenderer;
-import net.minecraft.client.render.Tessellator;
-import net.minecraft.client.render.VertexFormat;
-import net.minecraft.client.render.VertexFormats;
 import net.minecraft.text.Style;
 import net.minecraft.util.Formatting;
 import net.minecraft.text.PlainTextContent;
@@ -28,7 +25,6 @@ import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Vec3d;
 import net.minecraft.world.chunk.ChunkStatus;
 import net.minecraft.world.chunk.WorldChunk;
-import org.joml.Matrix4f;
 import org.joml.Vector3d;
 
 import java.util.*;
@@ -95,7 +91,7 @@ public class SignScanner extends Module {
     private final Setting<SettingColor> backgroundColor = sgRender.add(new ColorSetting.Builder()
         .name("background-color")
         .description("Background color.")
-        .defaultValue(new SettingColor(0, 0, 0, 140))
+        .defaultValue(new SettingColor(30, 30, 30, 160))
         .visible(background::get)
         .build()
     );
@@ -178,12 +174,20 @@ public class SignScanner extends Module {
                 if (chunk == null) continue;
 
                 for (BlockEntity be : chunk.getBlockEntities().values()) {
-                    if (!(be instanceof SignBlockEntity sign)) continue;
+                    // Accept both regular signs and hanging signs regardless of class hierarchy
+                    SignText front, back;
+                    if (be instanceof HangingSignBlockEntity hsign) {
+                        front = hsign.getFrontText();
+                        back = hsign.getBackText();
+                    } else if (be instanceof SignBlockEntity sign) {
+                        front = sign.getFrontText();
+                        back = sign.getBackText();
+                    } else {
+                        continue;
+                    }
                     if (be.getPos().getSquaredDistance(mc.player.getPos()) > rangeSq) continue;
 
                     List<Text> lines = new ArrayList<>();
-                    SignText front = sign.getFrontText();
-                    SignText back = sign.getBackText();
 
                     if (filterBadWords.get()) {
                         front = censorSignText(front);
@@ -307,31 +311,14 @@ public class SignScanner extends Module {
                 // Background
                 if (background.get()) {
                     double padding = 2.0;
-                    double width = maxWidth + padding * 2;
-                    double height = totalHeight + padding * 2;
-                    double x = -width / 2.0;
-                    double y = -totalHeight / 2.0 - padding;
+                    double bw = maxWidth + padding * 2;
+                    double bh = totalHeight + padding * 2;
+                    double bx = -bw / 2.0;
+                    double by = -totalHeight / 2.0 - padding;
 
-                    double x2 = x + width;
-                    double y2 = y + height;
-
-                    RenderSystem.setShader(GameRenderer::getPositionColorShader);
-                    RenderSystem.enableBlend();
-                    RenderSystem.defaultBlendFunc();
-
-                    Tessellator tessellator = Tessellator.getInstance();
-                    tessellator.begin(VertexFormat.DrawMode.QUADS, VertexFormats.POSITION_COLOR);
-
-                    Matrix4f matrix = new Matrix4f(RenderSystem.getModelViewStack());
-                    SettingColor c = backgroundColor.get();
-
-                    tessellator.vertex(matrix, (float) x, (float) y, 0).color(c.r, c.g, c.b, c.a).endVertex();
-                    tessellator.vertex(matrix, (float) x2, (float) y, 0).color(c.r, c.g, c.b, c.a).endVertex();
-                    tessellator.vertex(matrix, (float) x2, (float) y2, 0).color(c.r, c.g, c.b, c.a).endVertex();
-                    tessellator.vertex(matrix, (float) x, (float) y2, 0).color(c.r, c.g, c.b, c.a).endVertex();
-
-                    BufferRenderer.drawWithGlobalProgram(tessellator.end());
-                    RenderSystem.disableBlend();
+                    Renderer2D.COLOR.begin();
+                    Renderer2D.COLOR.quad(bx, by, bw, bh, backgroundColor.get());
+                    Renderer2D.COLOR.render(event.matrices);
                 }
 
                 // Text rendering
