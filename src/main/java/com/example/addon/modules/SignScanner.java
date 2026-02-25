@@ -13,6 +13,12 @@ import net.minecraft.block.entity.BlockEntity;
 import net.minecraft.block.entity.SignBlockEntity;
 import net.minecraft.block.entity.SignText;
 import net.minecraft.text.Text;
+import com.mojang.blaze3d.systems.RenderSystem;
+import net.minecraft.client.render.BufferRenderer;
+import net.minecraft.client.render.GameRenderer;
+import net.minecraft.client.render.Tessellator;
+import net.minecraft.client.render.VertexFormat;
+import net.minecraft.client.render.VertexFormats;
 import net.minecraft.text.Style;
 import net.minecraft.util.Formatting;
 import net.minecraft.text.PlainTextContent;
@@ -22,6 +28,7 @@ import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Vec3d;
 import net.minecraft.world.chunk.ChunkStatus;
 import net.minecraft.world.chunk.WorldChunk;
+import org.joml.Matrix4f;
 import org.joml.Vector3d;
 
 import java.util.*;
@@ -88,7 +95,7 @@ public class SignScanner extends Module {
     private final Setting<SettingColor> backgroundColor = sgRender.add(new ColorSetting.Builder()
         .name("background-color")
         .description("Background color.")
-        .defaultValue(new SettingColor(0, 0, 0, 128))
+        .defaultValue(new SettingColor(0, 0, 0, 140))
         .visible(background::get)
         .build()
     );
@@ -156,7 +163,7 @@ public class SignScanner extends Module {
         timer = 20;
 
         double rangeSq = range.get() * range.get();
-        signs.keySet().removeIf(pos -> 
+        signs.keySet().removeIf(pos ->
             pos.getSquaredDistance(mc.player.getPos()) > rangeSq
         );
 
@@ -185,8 +192,7 @@ public class SignScanner extends Module {
 
                     if (preserveLines.get()) {
                         for (Text t : front.getMessages(false)) lines.add(t);
-                        
-                        // Only add back text if it's not completely empty, or if we want to be very strict
+
                         boolean backHasText = false;
                         for (Text t : back.getMessages(false)) {
                             if (!t.getString().isBlank()) backHasText = true;
@@ -204,7 +210,10 @@ public class SignScanner extends Module {
                     signs.put(be.getPos(), lines);
 
                     if (chatFeedback.get() && !notified.contains(be.getPos())) {
-                        // Simple notification
+                        List<String> lineStrings = lines.stream().map(Text::getString).filter(s -> !s.isBlank()).toList();
+                        if (!lineStrings.isEmpty()) {
+                            info("Sign found: " + String.join(" | ", lineStrings));
+                        }
                         notified.add(be.getPos());
                     }
                 }
@@ -277,39 +286,62 @@ public class SignScanner extends Module {
         for (Map.Entry<BlockPos, List<Text>> entry : signs.entrySet()) {
             BlockPos pos = entry.getKey();
             List<Text> lines = entry.getValue();
-            
+
+            if (lines.isEmpty()) continue;
+
             Vec3d vec = Vec3d.ofCenter(pos).add(0, 0.5, 0);
             Vector3d pos3d = new Vector3d(vec.x, vec.y, vec.z);
 
-            // Calculate distance to camera to counteract NametagUtils's distance scaling,
-            // which makes text larger at a distance instead of smaller.
-            double dist = pos.getSquaredDistance(mc.gameRenderer.getCamera().getPos());
-            double finalScale = scale.get() / Math.max(1.0, Math.sqrt(dist) / 5.0);
-
-            if (NametagUtils.to2D(pos3d, finalScale)) {
+            if (NametagUtils.to2D(pos3d, scale.get())) {
                 NametagUtils.begin(pos3d);
 
-                double width = 0;
+                RenderSystem.disableDepthTest(); // Disable depth for the entire overlay
+
+                double maxWidth = 0;
                 for (Text lineText : lines) {
-                    width = Math.max(width, TextRenderer.get().getWidth(textToLegacy(lineText)));
+                    maxWidth = Math.max(maxWidth, TextRenderer.get().getWidth(textToLegacy(lineText)));
                 }
-                double height = lines.size() * TextRenderer.get().getHeight();
+                double lineHeight = TextRenderer.get().getHeight();
+                double totalHeight = lines.size() * lineHeight;
 
+                // Background
                 if (background.get()) {
-                    double x = -width / 2.0 - 2;
-                    double y = -height / 2.0 - 2;
-                    double w = width + 4;
-                    double h = height + 4;
+                    double padding = 2.0;
+                    double width = maxWidth + padding * 2;
+                    double height = totalHeight + padding * 2;
+                    double x = -width / 2.0;
+                    double y = -totalHeight / 2.0 - padding;
 
-                    event.renderer.quad(x, y, 0, x + w, y, 0, x + w, y + h, 0, x, y + h, 0, backgroundColor.get());
+                    double x2 = x + width;
+                    double y2 = y + height;
+
+                    RenderSystem.setShader(GameRenderer::getPositionColorShader);
+                    RenderSystem.enableBlend();
+                    RenderSystem.defaultBlendFunc();
+
+                    Tessellator tessellator = Tessellator.getInstance();
+                    tessellator.begin(VertexFormat.DrawMode.QUADS, VertexFormats.POSITION_COLOR);
+
+                    Matrix4f matrix = new Matrix4f(RenderSystem.getModelViewStack());
+                    SettingColor c = backgroundColor.get();
+
+                    tessellator.vertex(matrix, (float) x, (float) y, 0).color(c.r, c.g, c.b, c.a).endVertex();
+                    tessellator.vertex(matrix, (float) x2, (float) y, 0).color(c.r, c.g, c.b, c.a).endVertex();
+                    tessellator.vertex(matrix, (float) x2, (float) y2, 0).color(c.r, c.g, c.b, c.a).endVertex();
+                    tessellator.vertex(matrix, (float) x, (float) y2, 0).color(c.r, c.g, c.b, c.a).endVertex();
+
+                    BufferRenderer.drawWithGlobalProgram(tessellator.end());
+                    RenderSystem.disableBlend();
                 }
 
-                TextRenderer.get().begin(1.0, false, true);
+                // Text rendering
+                TextRenderer.get().begin(1.0, false, false);
 
-                double y = -height / 2.0;
+                double y = -totalHeight / 2.0;
                 for (Text lineText : lines) {
                     String line = textToLegacy(lineText);
                     double x = -TextRenderer.get().getWidth(line) / 2.0;
+
                     if (outline.get()) {
                         SettingColor oc = outlineColor.get();
                         TextRenderer.get().render(line, x - 1, y, oc, false);
@@ -320,10 +352,14 @@ public class SignScanner extends Module {
                     } else {
                         TextRenderer.get().render(line, x, y, textColor.get(), shadow.get());
                     }
-                    y += TextRenderer.get().getHeight();
+
+                    y += lineHeight;
                 }
 
                 TextRenderer.get().end();
+
+                RenderSystem.enableDepthTest(); // Re-enable depth after drawing
+
                 NametagUtils.end();
             }
         }

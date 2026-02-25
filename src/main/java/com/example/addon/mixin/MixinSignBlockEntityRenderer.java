@@ -4,30 +4,26 @@ import com.example.addon.modules.SignScanner;
 import meteordevelopment.meteorclient.systems.modules.Modules;
 import net.minecraft.block.entity.SignBlockEntity;
 import net.minecraft.block.entity.SignText;
-import net.minecraft.client.render.block.entity.SignBlockEntityRenderer;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
-import org.spongepowered.asm.mixin.injection.Redirect;
+import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
-@Mixin(SignBlockEntityRenderer.class)
+@Mixin(SignBlockEntity.class)
 public class MixinSignBlockEntityRenderer {
-    @Redirect(method = "render", at = @At(value = "INVOKE", target = "Lnet/minecraft/block/entity/SignBlockEntity;getFrontText()Lnet/minecraft/block/entity/SignText;"))
-    private SignText redirectGetFrontText(SignBlockEntity sign) {
-        SignText text = sign.getFrontText();
+    @Inject(method = "getFrontText", at = @At("RETURN"), cancellable = true)
+    private void onGetFrontText(CallbackInfoReturnable<SignText> cir) {
         SignScanner module = Modules.get().get(SignScanner.class);
         if (module != null && module.shouldCensor()) {
-            return module.censorSignText(text);
+            cir.setReturnValue(module.censorSignText(cir.getReturnValue()));
         }
-        return text;
     }
 
-    @Redirect(method = "render", at = @At(value = "INVOKE", target = "Lnet/minecraft/block/entity/SignBlockEntity;getBackText()Lnet/minecraft/block/entity/SignText;"))
-    private SignText redirectGetBackText(SignBlockEntity sign) {
-        SignText text = sign.getBackText();
+    @Inject(method = "getBackText", at = @At("RETURN"), cancellable = true)
+    private void onGetBackText(CallbackInfoReturnable<SignText> cir) {
         SignScanner module = Modules.get().get(SignScanner.class);
         if (module != null && module.shouldCensor()) {
-            return module.censorSignText(text);
+            cir.setReturnValue(module.censorSignText(cir.getReturnValue()));
         }
-        return text;
     }
 }

@@ -3,6 +3,7 @@
   "minVersion": "0.8",
   "package": "com.example.addon.mixin",
   "compatibilityLevel": "JAVA_21",
+  "refmap": "hunting-utilities.refmap.json",
   "mixins": [],
   "client": [
     "LootLensMixin",
@@ -11,7 +12,8 @@
     "PortalMakerMixin",
     "ElytraAssistantMixin",
     "ElytraAssistantSwingMixin",
-    "HandledScreenMixin"
+    "HandledScreenMixin",
+    "MixinSignBlockEntityRenderer"
     
   ],
   "server": [],
