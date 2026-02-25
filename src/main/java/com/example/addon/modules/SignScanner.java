@@ -65,13 +65,6 @@ public class SignScanner extends Module {
         .build()
     );
 
-    private final Setting<Boolean> multilineDisplay = sgGeneral.add(new BoolSetting.Builder()
-        .name("multiline-display")
-        .description("Always render 4 lines per sign.")
-        .defaultValue(true)
-        .build()
-    );
-
     private final Setting<Double> scale = sgRender.add(new DoubleSetting.Builder()
         .name("scale")
         .description("Scale of the rendered text.")
@@ -135,7 +128,7 @@ public class SignScanner extends Module {
     );
 
     private final Setting<List<String>> badWords = sgFilter.add(new StringListSetting.Builder()
-        .name("bad-words")
+        .name("Banned Words")
         .description("List of words to censor.")
         .defaultValue(List.of("badword1", "badword2"))
         .visible(censorship::get)
@@ -196,7 +189,7 @@ public class SignScanner extends Module {
                     back = censorSignText(back);
                 }
 
-                if (multilineDisplay.get() || preserveLines.get()) {
+                if (preserveLines.get()) {
                     for (Text t : front.getMessages(false)) lines.add(cleanSignText(t));
                     
                     boolean backHasText = false;
