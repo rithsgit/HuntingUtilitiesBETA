@@ -15,6 +15,8 @@ Current modules;
 - Portal Tracker
 - Rocket Pilot
 - Server Healthcare System
+- Obsidian Fist (WIP)
+- Sign Scanner (WIP)
 
 More modules coming soon — 
 
