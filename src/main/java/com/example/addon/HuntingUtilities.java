@@ -25,6 +25,7 @@ import com.example.addon.modules.PortalMaker;
 import com.example.addon.modules.PortalTracker;
 import com.example.addon.modules.RocketPilot;
 import com.example.addon.modules.ServerHealthcareSystem;
+import com.example.addon.modules.SignScanner;
 
 import meteordevelopment.meteorclient.addons.MeteorAddon;
 import meteordevelopment.meteorclient.commands.Commands;
@@ -56,6 +57,7 @@ public class HuntingUtilities extends MeteorAddon {
         Modules.get().add(new Graveyard());
         Modules.get().add(new ServerHealthcareSystem());
         Modules.get().add(new ObsidianFist());
+        Modules.get().add(new SignScanner());
 
 
         // ────────────────────────────────────────────────
