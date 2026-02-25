@@ -153,7 +153,7 @@ public class SignScanner extends Module {
     private final Setting<Boolean> enableClustering = sgClustering.add(new BoolSetting.Builder()
         .name("enable-clustering")
         .description("Groups overlapping signs together.")
-        .defaultValue(true)
+        .defaultValue(false)
         .build()
     );
 
@@ -427,7 +427,7 @@ public class SignScanner extends Module {
         double lh = tr.getHeight();
 
         // Calculate dynamic offset for consistent 1px outline thickness regardless of distance/scale
-        double offset = 1.0 / Math.max(cluster.anchor3d.z, 0.001);
+        double offset = 1.0;
 
         // First pass: Backgrounds
         if (background.get()) {
@@ -438,7 +438,7 @@ public class SignScanner extends Module {
                 for (Text t : lines) maxWidth = Math.max(maxWidth, tr.getWidth(getTextContent(t)));
                 double totalH = lines.size() * lh;
 
-                double pad = 2.0;
+                double pad = 4.0;
                 double bw = maxWidth + pad * 2;
                 double bh = totalH + pad * 2;
                 double bx = -bw / 2.0;
