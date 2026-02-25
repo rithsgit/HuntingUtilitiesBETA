@@ -78,6 +78,21 @@ public class SignScanner extends Module {
         .build()
     );
 
+    private final Setting<Boolean> background = sgRender.add(new BoolSetting.Builder()
+        .name("background")
+        .description("Render a background behind the text.")
+        .defaultValue(true)
+        .build()
+    );
+
+    private final Setting<SettingColor> backgroundColor = sgRender.add(new ColorSetting.Builder()
+        .name("background-color")
+        .description("Background color.")
+        .defaultValue(new SettingColor(0, 0, 0, 128))
+        .visible(background::get)
+        .build()
+    );
+
     private final Setting<Boolean> outline = sgRender.add(new BoolSetting.Builder()
         .name("outline")
         .description("Render text with an outline.")
@@ -90,6 +105,13 @@ public class SignScanner extends Module {
         .description("Outline color.")
         .defaultValue(new SettingColor(0, 0, 0, 255))
         .visible(outline::get)
+        .build()
+    );
+
+    private final Setting<Boolean> shadow = sgRender.add(new BoolSetting.Builder()
+        .name("shadow")
+        .description("Render text with shadow.")
+        .defaultValue(true)
         .build()
     );
 
@@ -266,9 +288,25 @@ public class SignScanner extends Module {
 
             if (NametagUtils.to2D(pos3d, finalScale)) {
                 NametagUtils.begin(pos3d);
+
+                double width = 0;
+                for (Text lineText : lines) {
+                    width = Math.max(width, TextRenderer.get().getWidth(textToLegacy(lineText)));
+                }
+                double height = lines.size() * TextRenderer.get().getHeight();
+
+                if (background.get()) {
+                    double x = -width / 2.0 - 2;
+                    double y = -height / 2.0 - 2;
+                    double w = width + 4;
+                    double h = height + 4;
+
+                    event.renderer.quad(x, y, 0, x + w, y, 0, x + w, y + h, 0, x, y + h, 0, backgroundColor.get());
+                }
+
                 TextRenderer.get().begin(1.0, false, true);
 
-                double y = -(TextRenderer.get().getHeight() * lines.size()) / 2.0;
+                double y = -height / 2.0;
                 for (Text lineText : lines) {
                     String line = textToLegacy(lineText);
                     double x = -TextRenderer.get().getWidth(line) / 2.0;
@@ -280,7 +318,7 @@ public class SignScanner extends Module {
                         TextRenderer.get().render(line, x, y + 1, oc, false);
                         TextRenderer.get().render(line, x, y, textColor.get(), false);
                     } else {
-                        TextRenderer.get().render(line, x, y, textColor.get(), true);
+                        TextRenderer.get().render(line, x, y, textColor.get(), shadow.get());
                     }
                     y += TextRenderer.get().getHeight();
                 }
