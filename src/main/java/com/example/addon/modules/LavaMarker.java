@@ -278,39 +278,50 @@ public class LavaMarker extends Module {
         String currentDimension = mc.world.getRegistryKey().getValue().toString();
 
         Set<BlockPos> fallPositions = lavaFallPositions.get(currentDimension);
-        if (fallPositions != null && !fallPositions.isEmpty()) {
-            renderConnectedAABBs(event, fallPositions, color.get());
-        }
+        Set<BlockPos> netFlow = null;
 
         if (trackFlowingLava.get()) {
             Set<BlockPos> flowPositions = flowingLavaPositions.get(currentDimension);
             if (flowPositions != null && !flowPositions.isEmpty()) {
-                // Exclude any blocks already highlighted as fall-flow to prevent overlap
-                Set<BlockPos> netFlow = new HashSet<>(flowPositions);
+                netFlow = new HashSet<>(flowPositions);
                 if (fallPositions != null) netFlow.removeAll(fallPositions);
-                if (!netFlow.isEmpty()) renderConnectedAABBs(event, netFlow, flowingLavaColor.get());
+                if (netFlow.isEmpty()) netFlow = null;
             }
+        }
+
+        // Render fall-flow excluding faces shared with netFlow (to prevent color bleed at boundary)
+        if (fallPositions != null && !fallPositions.isEmpty()) {
+            renderFaceCulled(event, fallPositions, netFlow, color.get());
+        }
+
+        // Render flowing lava excluding faces shared with fallPositions
+        if (netFlow != null) {
+            renderFaceCulled(event, netFlow, fallPositions, flowingLavaColor.get());
         }
     }
 
     /**
-     * Renders each block with face culling: shared faces between adjacent blocks
-     * in the same set are excluded so the entire flow appears as one seamless shape
-     * rather than individual boxes or an oversized bounding-box cube.
+     * Renders each block with face culling. Faces shared with blocks in either
+     * {@code positions} or {@code other} are excluded to prevent overlapping quads
+     * and colour mixing at region boundaries.
      *
-     * Exclude bitmask (matches Direction.ordinal()):
-     *   1 = Down, 2 = Up, 4 = North, 8 = South, 16 = West, 32 = East
+     * Exclude bitmask (Direction.ordinal() order):
+     *   1=Down  2=Up  4=North  8=South  16=West  32=East
      */
-    private void renderConnectedAABBs(Render3DEvent event, Set<BlockPos> positions, SettingColor c) {
+    private void renderFaceCulled(Render3DEvent event, Set<BlockPos> positions, Set<BlockPos> other, SettingColor c) {
         for (BlockPos pos : positions) {
             int exclude = 0;
-            if (positions.contains(pos.down()))  exclude |= 1;
-            if (positions.contains(pos.up()))    exclude |= 2;
-            if (positions.contains(pos.north())) exclude |= 4;
-            if (positions.contains(pos.south())) exclude |= 8;
-            if (positions.contains(pos.west()))  exclude |= 16;
-            if (positions.contains(pos.east()))  exclude |= 32;
+            if (inEither(pos.down(),  positions, other)) exclude |= 1;
+            if (inEither(pos.up(),    positions, other)) exclude |= 2;
+            if (inEither(pos.north(), positions, other)) exclude |= 4;
+            if (inEither(pos.south(), positions, other)) exclude |= 8;
+            if (inEither(pos.west(),  positions, other)) exclude |= 16;
+            if (inEither(pos.east(),  positions, other)) exclude |= 32;
             event.renderer.box(pos, c, c, shapeMode.get(), exclude);
         }
+    }
+
+    private static boolean inEither(BlockPos pos, Set<BlockPos> a, Set<BlockPos> b) {
+        return a.contains(pos) || (b != null && b.contains(pos));
     }
 }
