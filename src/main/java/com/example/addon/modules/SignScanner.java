@@ -34,7 +34,6 @@ public class SignScanner extends Module {
     private final SettingGroup sgRender = settings.createGroup("Render");
     private final SettingGroup sgFilter = settings.createGroup("Filter");
     private final SettingGroup sgOptimization = settings.createGroup("Optimization");
-    private final SettingGroup sgClustering = settings.createGroup("Clustering");
 
     private final Setting<Integer> chunks = sgGeneral.add(new IntSetting.Builder()
         .name("chunks")
@@ -132,31 +131,6 @@ public class SignScanner extends Module {
         .min(1)
         .sliderMax(100)
         .visible(cacheSignText::get)
-        .build()
-    );
-
-    private final Setting<Boolean> enableClustering = sgClustering.add(new BoolSetting.Builder()
-        .name("enable-clustering")
-        .description("Groups overlapping signs together.")
-        .defaultValue(false)
-        .build()
-    );
-
-    private final Setting<Double> clusterRadius = sgClustering.add(new DoubleSetting.Builder()
-        .name("cluster-radius")
-        .description("Radius in blocks to group signs.")
-        .defaultValue(2.0)
-        .min(0)
-        .sliderMax(10)
-        .visible(enableClustering::get)
-        .build()
-    );
-
-    private final Setting<SettingColor> clusterCountColor = sgClustering.add(new ColorSetting.Builder()
-        .name("cluster-count-color")
-        .description("The color for the '(+X more signs)' text.")
-        .defaultValue(new SettingColor(255, 0, 0, 255))
-        .visible(enableClustering::get)
         .build()
     );
 
@@ -346,46 +320,19 @@ public class SignScanner extends Module {
             }
         } catch (Exception ignored) {}
 
-        List<SignCluster> clusters = new ArrayList<>();
-        if (enableClustering.get()) {
-            for (SignEntry entry : entries) {
-                boolean added = false;
-                for (SignCluster cluster : clusters) {
-                    double dist = cluster.anchor3d.distance(entry.pos3d);
-                    if (dist <= clusterRadius.get()) {
-                        cluster.add(entry);
-                        added = true;
-                        break;
-                    }
-                }
-                if (!added) {
-                    clusters.add(new SignCluster(entry));
-                }
-            }
-        } else {
-            for (SignEntry entry : entries) {
-                clusters.add(new SignCluster(entry));
-            }
-        }
-
         try {
-            for (SignCluster cluster : clusters) {
-                renderCluster(cluster, event, tr);
+            for (SignEntry entry : entries) {
+                renderSign(entry, event, tr);
             }
         } catch (Exception ignored) {}
     }
 
-    private void renderCluster(SignCluster cluster, Render2DEvent event, TextRenderer tr) {
-        NametagUtils.begin(cluster.anchor3d, event.drawContext);
+    private void renderSign(SignEntry entry, Render2DEvent event, TextRenderer tr) {
+        NametagUtils.begin(entry.pos3d, event.drawContext);
         RenderSystem.disableDepthTest();
         RenderSystem.depthMask(false);
 
-        List<Text> linesToRender = new ArrayList<>(cluster.entries.get(0).lines);
-        Text clusterCountText = null;
-        if (enableClustering.get() && cluster.entries.size() > 1) {
-            clusterCountText = Text.literal(String.format("(+%d more signs)", cluster.entries.size() - 1));
-            linesToRender.add(clusterCountText);
-        }
+        List<Text> linesToRender = entry.lines;
 
         double lh = tr.getHeight();
 
@@ -413,7 +360,7 @@ public class SignScanner extends Module {
             String line = getTextContent(lineText);
             double x = -tr.getWidth(line) / 2.0;
 
-            SettingColor color = (clusterCountText != null && lineText == clusterCountText) ? clusterCountColor.get() : textColor.get();
+            SettingColor color = textColor.get();
 
             tr.render(line, x, y, color, true);
             y += lh;
@@ -433,13 +380,5 @@ public class SignScanner extends Module {
         public SignEntry(BlockPos pos, List<Text> lines, Vector3d pos3d) {
             this.pos = pos; this.lines = lines; this.pos3d = pos3d;
         }
-    }
-
-    private static class SignCluster {
-        Vector3d anchor3d;
-        List<SignEntry> entries = new ArrayList<>();
-
-        public SignCluster(SignEntry first) { this.anchor3d = first.pos3d; this.entries.add(first); }
-        public void add(SignEntry entry) { this.entries.add(entry); }
     }
 }
