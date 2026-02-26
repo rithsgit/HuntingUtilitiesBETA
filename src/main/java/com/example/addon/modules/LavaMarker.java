@@ -1,11 +1,26 @@
 package com.example.addon.modules;
 
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.Deque;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+
 import com.example.addon.HuntingUtilities;
+
 import meteordevelopment.meteorclient.events.render.Render3DEvent;
 import meteordevelopment.meteorclient.events.world.BlockUpdateEvent;
 import meteordevelopment.meteorclient.events.world.TickEvent;
 import meteordevelopment.meteorclient.renderer.ShapeMode;
-import meteordevelopment.meteorclient.settings.*;
+import meteordevelopment.meteorclient.settings.ColorSetting;
+import meteordevelopment.meteorclient.settings.EnumSetting;
+import meteordevelopment.meteorclient.settings.IntSetting;
+import meteordevelopment.meteorclient.settings.Setting;
+import meteordevelopment.meteorclient.settings.SettingGroup;
 import meteordevelopment.meteorclient.systems.modules.Module;
 import meteordevelopment.meteorclient.utils.render.color.SettingColor;
 import meteordevelopment.orbit.EventHandler;
@@ -16,19 +31,8 @@ import net.minecraft.registry.tag.FluidTags;
 import net.minecraft.state.property.Properties;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.ChunkPos;
-import net.minecraft.world.World;
 import net.minecraft.world.chunk.Chunk;
 import net.minecraft.world.chunk.ChunkSection;
-
-import java.util.ArrayDeque;
-import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.Deque;
-import java.util.List;
-import java.util.HashSet;
-import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * LavaMarker — highlights fully-flowed lava falls in the Nether.
@@ -65,6 +69,13 @@ public class LavaMarker extends Module {
         .name("color")
         .description("Colour for fully-flowed lava falls.")
         .defaultValue(new SettingColor(255, 100, 0, 50)).build()
+    );
+
+    private final Setting<SettingColor> bottomColor = sgGeneral.add(new ColorSetting.Builder()
+        .name("bottom-color")
+        .description("Color for the bottom-most block of a lava fall that has landed on a surface.")
+        .defaultValue(new SettingColor(139, 0, 0, 75))
+        .build()
     );
 
     private final Setting<ShapeMode> shapeMode = sgGeneral.add(new EnumSetting.Builder<ShapeMode>()
@@ -304,7 +315,26 @@ public class LavaMarker extends Module {
         if (mc.world == null) return;
         for (Set<BlockPos> set : fallsByChunk.values()) {
             for (BlockPos pos : set) {
-                event.renderer.box(pos, color.get(), color.get(), shapeMode.get(), 0);
+                // Check if the block at the cached position is still lava.
+                if (!mc.world.getFluidState(pos).isIn(FluidTags.LAVA)) continue;
+
+                // A "bottom block" is one where the block below is not also lava.
+                boolean isBottomBlock = !mc.world.getFluidState(pos.down()).isIn(FluidTags.LAVA);
+
+                if (isBottomBlock) {
+                    // This is the last lava block in a downward column.
+                    // Now, apply the user's rule: "if = last block is air, ignore"
+                    if (mc.world.getBlockState(pos.down()).isAir()) {
+                        // Ignore rendering this block.
+                        continue;
+                    }
+                    // If the block below is not air, it has landed. Highlight with bottom color.
+                    event.renderer.box(pos, bottomColor.get(), bottomColor.get(), shapeMode.get(), 0);
+                } else {
+                    // This is not a bottom block, so it's part of the column or spread above the floor.
+                    // Render with the normal "fully-flowed" color.
+                    event.renderer.box(pos, color.get(), color.get(), shapeMode.get(), 0);
+                }
             }
         }
     }
