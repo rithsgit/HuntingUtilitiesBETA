@@ -56,7 +56,7 @@ public class LavaMarker extends Module {
     private final Setting<Integer> chunkRadius = sgGeneral.add(new IntSetting.Builder()
         .name("chunk-radius")
         .description("Horizontal scan radius in chunks.")
-        .defaultValue(4).min(1).sliderMax(16).build()
+        .defaultValue(4).min(1).sliderMax(128).build()
     );
 
     private final Setting<Integer> verticalRadius = sgGeneral.add(new IntSetting.Builder()
@@ -66,9 +66,18 @@ public class LavaMarker extends Module {
     );
 
     private final Setting<SettingColor> color = sgGeneral.add(new ColorSetting.Builder()
-        .name("color")
-        .description("Colour for fully-flowed lava falls.")
+        .name("fully-flowd")
+        .description("Color for fully-flowed lava falls.")
         .defaultValue(new SettingColor(255, 100, 0, 50)).build()
+    );
+
+    private final Setting<Integer> minFallHeight = sgGeneral.add(new IntSetting.Builder()
+        .name("min-fall-height")
+        .description("Lava falls shorter than this will be ignored.")
+        .defaultValue(5)
+        .min(0)
+        .sliderMax(32)
+        .build()
     );
 
     private final Setting<SettingColor> bottomColor = sgGeneral.add(new ColorSetting.Builder()
@@ -240,8 +249,8 @@ public class LavaMarker extends Module {
                         if (!falling) continue;
 
                         BlockPos pos = new BlockPos(cp.getStartX() + x, worldY, cp.getStartZ() + z);
-                        // Fall tip: last block of a falling column (nothing lava below)
-                        if (!mc.world.getFluidState(pos.down()).isIn(FluidTags.LAVA)) {
+                        // Fall tip: last block of a falling column (block below is NOT falling)
+                        if (!isFalling(pos.down())) {
                             fallTips.add(pos);
                         }
                     }
@@ -249,16 +258,40 @@ public class LavaMarker extends Module {
             }
         }
 
-        // Pass 2: BFS from each tip — all connected FLOWING (non-still) lava = "fully flowed"
-        Set<BlockPos> localFalls = new HashSet<>();
-        Set<BlockPos> visited    = new HashSet<>();
+        // Pass 2: BFS from each tip, check height, and collect valid falls
+        Set<BlockPos> allValidFallBlocks = new HashSet<>();
+        Set<BlockPos> visitedInScan      = new HashSet<>();
         for (BlockPos tip : fallTips) {
-            bfs(tip, localFalls, visited);
+            if (visitedInScan.contains(tip)) continue;
+
+            Set<BlockPos> currentFall = new HashSet<>();
+            bfs(tip, currentFall, visitedInScan);
+
+            if (currentFall.isEmpty()) continue;
+
+            // Calculate height
+            int fallMinY = Integer.MAX_VALUE;
+            int fallMaxY = Integer.MIN_VALUE;
+            for (BlockPos pos : currentFall) {
+                fallMinY = Math.min(fallMinY, pos.getY());
+                fallMaxY = Math.max(fallMaxY, pos.getY());
+            }
+            int height = fallMaxY - fallMinY + 1;
+
+            // Add to results if tall enough
+            if (height >= minFallHeight.get()) {
+                allValidFallBlocks.addAll(currentFall);
+            }
         }
 
         // Atomic swap — renderer always sees a complete set, never a partial clear
-        if (!localFalls.isEmpty()) fallsByChunk.put(cp, localFalls);
+        if (!allValidFallBlocks.isEmpty()) fallsByChunk.put(cp, allValidFallBlocks);
         else fallsByChunk.remove(cp);
+    }
+
+    private boolean isFalling(BlockPos pos) {
+        FluidState fs = mc.world.getFluidState(pos);
+        return fs.isIn(FluidTags.LAVA) && fs.contains(Properties.FALLING) && fs.get(Properties.FALLING);
     }
 
     // -------------------------------------------------------------------------
@@ -296,9 +329,7 @@ public class LavaMarker extends Module {
             BlockPos up = cur.up();
             if (!visited.contains(up)
                     && mc.world.getChunkManager().isChunkLoaded(up.getX() >> 4, up.getZ() >> 4)) {
-                FluidState upFs = mc.world.getFluidState(up);
-                if (upFs.isIn(FluidTags.LAVA) && !upFs.isStill()
-                        && upFs.contains(Properties.FALLING) && upFs.get(Properties.FALLING)) {
+                if (isFalling(up)) {
                     visited.add(up);
                     queue.add(up);
                 }
