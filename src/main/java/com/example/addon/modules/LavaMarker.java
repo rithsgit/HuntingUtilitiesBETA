@@ -66,7 +66,7 @@ public class LavaMarker extends Module {
     );
 
     private final Setting<SettingColor> color = sgGeneral.add(new ColorSetting.Builder()
-        .name("fully-flowd")
+        .name("flowing-lava")
         .description("Color for fully-flowed lava falls.")
         .defaultValue(new SettingColor(255, 100, 0, 50)).build()
     );
@@ -77,13 +77,6 @@ public class LavaMarker extends Module {
         .defaultValue(5)
         .min(0)
         .sliderMax(32)
-        .build()
-    );
-
-    private final Setting<SettingColor> bottomColor = sgGeneral.add(new ColorSetting.Builder()
-        .name("bottom-color")
-        .description("Color for the bottom-most block of a lava fall that has landed on a surface.")
-        .defaultValue(new SettingColor(139, 0, 0, 75))
         .build()
     );
 
@@ -359,13 +352,9 @@ public class LavaMarker extends Module {
                         // Ignore rendering this block.
                         continue;
                     }
-                    // If the block below is not air, it has landed. Highlight with bottom color.
-                    event.renderer.box(pos, bottomColor.get(), bottomColor.get(), shapeMode.get(), 0);
-                } else {
-                    // This is not a bottom block, so it's part of the column or spread above the floor.
-                    // Render with the normal "fully-flowed" color.
-                    event.renderer.box(pos, color.get(), color.get(), shapeMode.get(), 0);
                 }
+                // Render all valid blocks with the main color.
+                event.renderer.box(pos, color.get(), color.get(), shapeMode.get(), 0);
             }
         }
     }
