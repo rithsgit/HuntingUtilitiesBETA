@@ -185,11 +185,7 @@ public class PortalMaker extends Module {
         portalFramePositions.clear();
         placementIndex = 0;
         tickTimer = 0;
-        mc.options.forwardKey.setPressed(false);
-        mc.options.backKey.setPressed(false);
-        mc.options.leftKey.setPressed(false);
-        mc.options.rightKey.setPressed(false);
-        mc.options.sprintKey.setPressed(false);
+        stopMovement();
     }
 
     @EventHandler
@@ -279,7 +275,6 @@ public class PortalMaker extends Module {
                 }
             }
         }
-
     }
 
 
@@ -323,119 +318,118 @@ public class PortalMaker extends Module {
     private void moveToPortal() {
         if (portalFramePositions.size() < 2 || mc.player == null || mc.world == null) return;
 
-        // 1. Define Target
+        // 1. Target — center of the two bottom portal blocks
         BlockPos p1 = portalFramePositions.get(0).up();
         BlockPos p2 = portalFramePositions.get(1).up();
         Vec3d portalCenter = new Vec3d(
             (p1.getX() + p2.getX()) / 2.0 + 0.5,
-            p1.getY() + 0.5, // Target middle of the portal block vertically
+            p1.getY(),
             (p1.getZ() + p2.getZ()) / 2.0 + 0.5
         );
 
-        // 2. Stop Conditions
-        if (mc.world.getBlockState(mc.player.getBlockPos()).isOf(Blocks.NETHER_PORTAL)) {
-            // We are in, stop all movement.
-            mc.options.forwardKey.setPressed(false);
-            mc.options.sprintKey.setPressed(false);
-            mc.options.backKey.setPressed(false);
-            mc.options.leftKey.setPressed(false);
-            mc.options.rightKey.setPressed(false);
+        // 2. Stop if already inside portal (check feet or head)
+        if (mc.world.getBlockState(mc.player.getBlockPos()).isOf(Blocks.NETHER_PORTAL) ||
+            mc.world.getBlockState(mc.player.getBlockPos().up()).isOf(Blocks.NETHER_PORTAL)) {
+            stopMovement();
             return;
         }
-        // The portal floor is at p1.getY(). Don't fall more than 2 blocks below it.
-        if (mc.player.getY() < p1.getY() - 2.0) {
+
+        // 3. Fall-off safety
+        if (mc.player.getY() < p1.getY() - 3.0) {
             error("Fell too far below the portal. Stopping.");
+            stopMovement();
             toggle();
             return;
         }
 
-        // 3. Rotation
-        // Always face the center of the portal for alignment.
-        Rotations.rotate(Rotations.getYaw(portalCenter), Rotations.getPitch(portalCenter));
+        // 4. Rotation — face portal center with a slight downward pitch to see the floor
+        float targetYaw = (float) Rotations.getYaw(portalCenter);
+        Rotations.rotate(targetYaw, -15f);
+        float yawDiff = MathHelper.wrapDegrees(targetYaw - mc.player.getYaw());
+        boolean isAligned = Math.abs(yawDiff) < 45f;
 
-        // 3.5. Scaffolding to prevent falling
-        if (mc.player.isOnGround()) {
+        double distSq = mc.player.squaredDistanceTo(portalCenter.x, mc.player.getY(), portalCenter.z);
+        boolean closeEnough = distSq < 1.5 * 1.5;
+
+        // 5. Lookahead scaffolding — check up to 2 blocks ahead for a missing floor
+        if (mc.player.isOnGround() && isAligned && !closeEnough) {
             Direction facing = mc.player.getHorizontalFacing();
-            BlockPos blockInFront = mc.player.getBlockPos().offset(facing);
-            BlockPos supportBlock = blockInFront.down();
+            BlockPos gapSupport = null;
 
-            // If the block under our next step is air, we need to bridge the gap.
-            // Only do this if we are generally facing the portal.
-            double yawDiff = MathHelper.wrapDegrees(Rotations.getYaw(portalCenter) - mc.player.getYaw());
-            if (Math.abs(yawDiff) < 60 && mc.world.getBlockState(supportBlock).isReplaceable()) {
-                if (placeBlock(supportBlock)) {
-                    // Wait for the block to be placed.
-                    tickTimer = placeDelay.get();
-                    return; // Return to wait for delay and block update
-                } else {
-                    error("Cannot bridge gap to portal (no obsidian?). Stopping.");
-                    toggle();
-                    return;
+            for (int look = 1; look <= 2; look++) {
+                BlockPos ahead       = mc.player.getBlockPos().offset(facing, look);
+                BlockPos aheadBelow  = ahead.down();
+
+                boolean walkable    = mc.world.getBlockState(ahead).isReplaceable();
+                boolean floorMissing = mc.world.getBlockState(aheadBelow).isReplaceable();
+
+                if (walkable && floorMissing) {
+                    gapSupport = aheadBelow;
+                    break;
                 }
             }
+
+            if (gapSupport != null) {
+                // Stop forward movement and sneak to the edge before placing
+                mc.options.forwardKey.setPressed(false);
+                mc.options.sprintKey.setPressed(false);
+                mc.options.sneakKey.setPressed(true);
+
+                if (tryScaffoldPlace(gapSupport)) {
+                    tickTimer = placeDelay.get(); // honour delay before next move
+                } else {
+                    error("Cannot scaffold to portal — no blocks available. Stopping.");
+                    mc.options.sneakKey.setPressed(false);
+                    stopMovement();
+                    toggle();
+                }
+                return;
+            }
+
+            // No gap found — release sneak so normal walking resumes
+            mc.options.sneakKey.setPressed(false);
+        } else {
+            mc.options.sneakKey.setPressed(false);
         }
 
-        // 4. Movement Control
-        // Reset other movement keys
+        // 6. Movement
         mc.options.backKey.setPressed(false);
         mc.options.leftKey.setPressed(false);
         mc.options.rightKey.setPressed(false);
 
-        // Sprinting logic
-        double distSq = mc.player.getPos().squaredDistanceTo(portalCenter.x, mc.player.getY(), portalCenter.z);
-        // Sprint if we are not too close to avoid overshooting and precise alignment issues.
-        mc.options.sprintKey.setPressed(distSq > 3.0 * 3.0);
-
-        // Forward movement logic
-        // Only move if we are roughly facing the target to prevent walking sideways into walls.
-        double yawDiff = MathHelper.wrapDegrees(Rotations.getYaw(portalCenter) - mc.player.getYaw());
-        if (Math.abs(yawDiff) < 45) { // More lenient angle
+        if (closeEnough) {
+            // Walk slowly into the portal; no sprint to avoid overshooting
+            mc.options.sprintKey.setPressed(false);
             mc.options.forwardKey.setPressed(true);
         } else {
-            mc.options.forwardKey.setPressed(false);
+            boolean shouldSprint = distSq > 4.0 && isAligned;
+            mc.options.sprintKey.setPressed(shouldSprint);
+            mc.options.forwardKey.setPressed(isAligned);
         }
 
-        // 5. Jumping Control
-        // Re-evaluate scaffolding and jumping conditions right before potentially jumping
-
-        Direction facing = mc.player.getHorizontalFacing();        
-        BlockPos blockInFront = mc.player.getBlockPos().offset(facing);
-        BlockPos supportBlock = blockInFront.down();
-
-        // If the block under our next step is air, we need to bridge the gap.
-        double yawDiff2 = MathHelper.wrapDegrees(Rotations.getYaw(portalCenter) - mc.player.getYaw());
-        if (mc.player.isOnGround() && Math.abs(yawDiff) < 60 && mc.world.getBlockState(supportBlock).isReplaceable()) {
-            if (placeBlock(supportBlock)) {
-
-                // Wait for the block to be placed.
-                tickTimer = placeDelay.get();
-                return; // Return to wait for delay and block update
-            } else {
-                error("Cannot bridge gap to portal (no obsidian?). Stopping.");
-                toggle();
-                return;
-            }
-         }
-
-
-
-        // Jump or walk into portal
+        // 7. Jumping
         if (mc.player.isOnGround()) {
-           // Jump if we are physically colliding with something.
+            Direction facing = mc.player.getHorizontalFacing();
+            BlockPos blockInFront = mc.player.getBlockPos().offset(facing);
+
+            // Horizontal collision → jump over obstacle
             if (mc.player.horizontalCollision) {
-
-                mc.player.jump();
-                return; // Let the jump happen before next evaluation
-            }
-
-            // Proactive jump: check for a 1-block step-up.            
-            if (!mc.world.getBlockState(blockInFront).isReplaceable() && mc.world.getBlockState(blockInFront.up()).isReplaceable()) {
+                mc.options.sprintKey.setPressed(false);
                 mc.player.jump();
                 return;
             }
 
-            // Jump if we are close and below the portal entrance to hop in.
-            if (distSq < 2.5 * 2.5 && mc.player.getY() < p1.getY()) {
+            // Proactive step-up: solid block ahead but passable above
+            if (!mc.world.getBlockState(blockInFront).isReplaceable() &&
+                mc.world.getBlockState(blockInFront.up()).isReplaceable()) {
+                mc.options.forwardKey.setPressed(true);
+                mc.options.sprintKey.setPressed(false);
+                mc.player.jump();
+                return;
+            }
+
+            // Close to portal but below it — jump up to enter
+            if (closeEnough && mc.player.getY() < p1.getY()) {
                 mc.player.jump();
             }
         }
@@ -443,21 +437,18 @@ public class PortalMaker extends Module {
 
 
 
+
+
+
     private boolean placeBlock(BlockPos pos) {
         // Find neighbor to place against
         BlockPos neighbor = null;
         Direction placeSide = null;
-
-        // First, try the sides
         for (Direction side : Direction.values()) {
             BlockPos check = pos.offset(side);
             if (!mc.world.getBlockState(check).isReplaceable()) {
                 neighbor = check;
                 placeSide = side.getOpposite();
-                if (side == Direction.DOWN) {
-                    // Prioritize placing against blocks below us, to reduce falls
-                    break;
-                }
                 break;
             }
         }
@@ -487,6 +478,75 @@ public class PortalMaker extends Module {
         return true;
     }
 
+    /** Releases all movement keys including sneak. */
+    private void stopMovement() {
+        mc.options.forwardKey.setPressed(false);
+        mc.options.backKey.setPressed(false);
+        mc.options.leftKey.setPressed(false);
+        mc.options.rightKey.setPressed(false);
+        mc.options.sprintKey.setPressed(false);
+        mc.options.sneakKey.setPressed(false);
+    }
+
+    /**
+     * Places a scaffold (floor-support) block at {@code pos} by finding the best
+     * adjacent solid neighbor to place against. Prefers DOWN, then cardinal sides,
+     * then UP, so the block snaps to the ground naturally.
+     * Ensures obsidian is in the main hand before placing.
+     */
+    private boolean tryScaffoldPlace(BlockPos pos) {
+        // Prioritise DOWN first so we place against the ground block beneath pos,
+        // then try cardinal sides, and UP last.
+        Direction[] order = {
+            Direction.DOWN,
+            Direction.NORTH, Direction.SOUTH, Direction.EAST, Direction.WEST,
+            Direction.UP
+        };
+
+        BlockPos neighbor  = null;
+        Direction placeSide = null;
+        for (Direction side : order) {
+            BlockPos check = pos.offset(side);
+            if (!mc.world.getBlockState(check).isReplaceable()) {
+                neighbor  = check;
+                placeSide = side.getOpposite();
+                break;
+            }
+        }
+        if (neighbor == null) return false;
+
+        // Make sure obsidian is in the main hand
+        if (!mc.player.getMainHandStack().isOf(Items.OBSIDIAN)) {
+            FindItemResult obsidian = InvUtils.find(Items.OBSIDIAN);
+            if (!obsidian.found()) return false;
+            if (obsidian.isHotbar()) {
+                mc.player.getInventory().selectedSlot = obsidian.slot();
+            } else {
+                InvUtils.move().from(obsidian.slot()).toHotbar(mc.player.getInventory().selectedSlot);
+            }
+        }
+
+        final BlockPos      finalNeighbor  = neighbor;
+        final Direction     finalPlaceSide = placeSide;
+
+        // Look at the face of the neighbor we are placing against
+        Rotations.rotate(
+            Rotations.getYaw(Vec3d.ofCenter(finalNeighbor)),
+            Rotations.getPitch(Vec3d.ofCenter(finalNeighbor)),
+            () -> {
+                BlockHitResult hit = new BlockHitResult(
+                    Vec3d.ofCenter(finalNeighbor).offset(finalPlaceSide, 0.5),
+                    finalPlaceSide,
+                    finalNeighbor,
+                    false
+                );
+                mc.interactionManager.interactBlock(mc.player, Hand.MAIN_HAND, hit);
+                mc.player.swingHand(Hand.MAIN_HAND);
+            }
+        );
+        return true;
+    }
+
     @EventHandler
     private void onRender(Render3DEvent event) {
         if (!render.get() || portalFramePositions.isEmpty()) return;
@@ -498,8 +558,6 @@ public class PortalMaker extends Module {
             }
         }
     }
-
-
 
 
 

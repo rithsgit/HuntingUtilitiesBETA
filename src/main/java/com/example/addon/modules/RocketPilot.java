@@ -5,6 +5,7 @@ import com.example.addon.HuntingUtilities;
 import meteordevelopment.meteorclient.events.world.TickEvent;
 import meteordevelopment.meteorclient.settings.BoolSetting;
 import meteordevelopment.meteorclient.settings.DoubleSetting;
+import meteordevelopment.meteorclient.settings.EnumSetting;
 import meteordevelopment.meteorclient.settings.IntSetting;
 import meteordevelopment.meteorclient.settings.Setting;
 import meteordevelopment.meteorclient.settings.SettingGroup;
@@ -33,6 +34,11 @@ public class RocketPilot extends Module {
     private final SettingGroup sgFlight = settings.createGroup("Flight");
     private final SettingGroup sgPitch40 = settings.createGroup("Pitch40");
     private final SettingGroup sgOscillation = settings.createGroup("Oscillation");
+
+    public enum FlightMode {
+        Normal,
+        Pitch40,
+        Oscillation}
     private final SettingGroup sgDrunk = settings.createGroup("DrunkPilot");
     private final SettingGroup sgFlightSafety = settings.createGroup("Flight Safety");
     private final SettingGroup sgPlayerSafety = settings.createGroup("Player Safety");
@@ -96,11 +102,22 @@ public class RocketPilot extends Module {
         .build()
     );
 
-    // ─────────────────────────────────────── Pitch40 Mode ───────────────────────────────────────
-    public final Setting<Boolean> pitch40Mode = sgPitch40.add(new BoolSetting.Builder()
-        .name("pitch40-mode")
-        .description("A flight mode that maintains a negative pitch to stay within a Y-level range.")
-        .defaultValue(false)
+     public final Setting<FlightMode> flightMode = sgFlight.add(new EnumSetting.Builder<FlightMode>()
+        .name("flight-mode")
+        .description("Normal = height-hold, Pitch40 = altitude-cycling, Oscillation = sine-wave pitch.")
+        .defaultValue(FlightMode.Normal)
+        .onChanged(v -> {
+            if (isActive() && mc.world != null) {
+                if (v == FlightMode.Oscillation) {
+                    info("Oscillation mode enabled.");
+                    lastOscillationMsg = System.currentTimeMillis();
+                } else if (v == FlightMode.Pitch40) {
+                    info("Pitch40 mode enabled.");
+                } else {
+                    info("Normal flight mode enabled.");
+                }
+            }
+        })
         .build()
     );
 
@@ -111,7 +128,7 @@ public class RocketPilot extends Module {
         .min(-64)
         .max(320)
         .sliderRange(0, 256)
-        .visible(pitch40Mode::get)
+        .visible(() -> flightMode.get() == FlightMode.Pitch40)
         .build()
     );
 
@@ -122,7 +139,7 @@ public class RocketPilot extends Module {
         .min(-64)
         .max(320)
         .sliderRange(0, 256)
-        .visible(pitch40Mode::get)
+        .visible(() -> flightMode.get() == FlightMode.Pitch40)
         .build()
     );
 
@@ -132,7 +149,7 @@ public class RocketPilot extends Module {
         .defaultValue(0.05)
         .min(0.01)
         .max(1.0)
-        .visible(pitch40Mode::get)
+        .visible(() -> flightMode.get() == FlightMode.Pitch40)
         .build()
     );
 
@@ -142,35 +159,19 @@ public class RocketPilot extends Module {
         .defaultValue(8000)
         .min(1000)
         .sliderRange(1000, 10000)
-        .visible(pitch40Mode::get)
+        .visible(() -> flightMode.get() == FlightMode.Pitch40)
         .build()
     );
 
-    // ─────────────────────────────────────── Oscillation Mode ───────────────────────────────────────
-    // MOVED UP: This must be defined before 'pitchSmoothing' because 'pitchSmoothing' references it.
-    public final Setting<Boolean> oscillationMode = sgOscillation.add(new BoolSetting.Builder()
-        .name("oscillation-mode")
-        .description("Auto-oscillates pitch between ±40° for efficient high-speed travel.")
-        .defaultValue(false)
-        .onChanged(v -> {
-            if (v && isActive() && mc.world != null && System.currentTimeMillis() - lastOscillationMsg > 1000) {
-                info("Oscillation mode enabled.");
-                lastOscillationMsg = System.currentTimeMillis();
-            } else if (!v && isActive() && mc.world != null) {
-                info("Oscillation disabled.");
-            }
-        })
-        .build()
-    );
-
+    // ─────────────────────────────────────── Oscillation / Normal smoothing ───────────────────────────────────────
     public final Setting<Double> pitchSmoothing = sgFlight.add(new DoubleSetting.Builder()
         .name("pitch-smoothing")
-        .description("How smoothly the pitch changes in normal mode (0.0 - 1.0).")
+        .description("How smoothly the pitch changes in Normal mode (0.0 - 1.0).")
         .defaultValue(0.15)
         .min(0.01)
         .max(1.0)
         .sliderRange(0.05, 0.5)
-        .visible(() -> !oscillationMode.get()) // Now this reference is valid
+        .visible(() -> flightMode.get() == FlightMode.Normal)
         .build()
     );
 
@@ -181,7 +182,7 @@ public class RocketPilot extends Module {
         .min(0.01)
         .max(0.5)
         .sliderRange(0.02, 0.2)
-        .visible(oscillationMode::get)
+        .visible(() -> flightMode.get() == FlightMode.Oscillation)
         .build()
     );
 
@@ -190,8 +191,7 @@ public class RocketPilot extends Module {
         .description("The minimum delay between firing rockets in oscillation mode.")
         .defaultValue(350)
         .min(0)
-        .sliderRange(0, 1000)
-        .visible(oscillationMode::get)
+        .visible(() -> flightMode.get() == FlightMode.Oscillation)
         .build()
     );
 
@@ -199,9 +199,11 @@ public class RocketPilot extends Module {
         .name("oscillation-rockets")
         .description("Automatically fire rockets at the peak of the upward pitch.")
         .defaultValue(true)
-        .visible(oscillationMode::get)
+        .visible(() -> flightMode.get() == FlightMode.Oscillation)
         .build()
     );
+
+    // ─────────────────────────────────────── Pitch40 Mode ───────────────────────────────────────
 
     // ─────────────────────────────────────── Drunk Pilot ───────────────────────────────────────
     public final Setting<Boolean> drunkMode = sgDrunk.add(new BoolSetting.Builder()
@@ -658,9 +660,9 @@ public class RocketPilot extends Module {
 
         // ─────────────────────────────── 4. Normal Flight Modes ───────────────────────────────
         if (desiredPitch == null) {
-            if (pitch40Mode.get()) {
+            if (flightMode.get() == FlightMode.Pitch40) {
                 desiredPitch = handlePitch40Mode();
-            } else if (oscillationMode.get()) {
+            } else if (flightMode.get() == FlightMode.Oscillation) {
                 desiredPitch = handleOscillationMode();
             } else {
                 handleFlightControl();

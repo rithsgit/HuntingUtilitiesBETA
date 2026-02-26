@@ -26,8 +26,8 @@ public class RocketPilotHud extends HudElement {
         if (!rp.isActive()) return;
 
         String status = "Normal";
-        if (rp.pitch40Mode.get()) status = "Pitch40";
-        else if (rp.oscillationMode.get()) status = "Oscillation";
+        if (rp.flightMode.get() == RocketPilot.FlightMode.Pitch40) status = "Pitch40";
+        else if (rp.flightMode.get() == RocketPilot.FlightMode.Oscillation) status = "Oscillation";
         else if (rp.drunkMode.get()) status = "Drunk";
 
         renderer.text("RocketPilot: " + status, x, y, Color.WHITE, true);
