@@ -279,6 +279,7 @@ public class PortalMaker extends Module {
                 }
             }
         }
+
     }
 
 
@@ -442,16 +443,21 @@ public class PortalMaker extends Module {
 
 
 
-
     private boolean placeBlock(BlockPos pos) {
         // Find neighbor to place against
         BlockPos neighbor = null;
         Direction placeSide = null;
+
+        // First, try the sides
         for (Direction side : Direction.values()) {
             BlockPos check = pos.offset(side);
             if (!mc.world.getBlockState(check).isReplaceable()) {
                 neighbor = check;
                 placeSide = side.getOpposite();
+                if (side == Direction.DOWN) {
+                    // Prioritize placing against blocks below us, to reduce falls
+                    break;
+                }
                 break;
             }
         }
@@ -492,6 +498,7 @@ public class PortalMaker extends Module {
             }
         }
     }
+
 
 
 
