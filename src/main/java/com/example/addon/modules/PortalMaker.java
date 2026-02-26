@@ -27,6 +27,7 @@ import net.minecraft.util.Hand;
 import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Direction;
+import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.Vec3d;
 
 public class PortalMaker extends Module {
@@ -312,75 +313,79 @@ public class PortalMaker extends Module {
     }
 
     private void moveToPortal() {
-        if (portalFramePositions.size() < 2) return;
+        if (portalFramePositions.size() < 2 || mc.player == null || mc.world == null) return;
+
+        // 1. Define Target
         BlockPos p1 = portalFramePositions.get(0).up();
         BlockPos p2 = portalFramePositions.get(1).up();
+        Vec3d portalCenter = new Vec3d(
+            (p1.getX() + p2.getX()) / 2.0 + 0.5,
+            p1.getY() + 0.5, // Target middle of the portal block vertically
+            (p1.getZ() + p2.getZ()) / 2.0 + 0.5
+        );
 
-        // Center of the 2x1 portal opening
-        double cx = (p1.getX() + p2.getX()) / 2.0 + 0.5;
-        double cz = (p1.getZ() + p2.getZ()) / 2.0 + 0.5;
-        double targetY = p1.getY();
-        Vec3d center = new Vec3d(cx, targetY, cz);
-
-        // Check surroundings / failure
-        if (mc.player.getY() < targetY - 2.0) {
-            error("I missed, Stopping..");
+        // 2. Stop Conditions
+        if (mc.world.getBlockState(mc.player.getBlockPos()).isOf(Blocks.NETHER_PORTAL)) {
+            // We are in, stop all movement.
+            mc.options.forwardKey.setPressed(false);
+            mc.options.sprintKey.setPressed(false);
+            mc.options.backKey.setPressed(false);
+            mc.options.leftKey.setPressed(false);
+            mc.options.rightKey.setPressed(false);
+            return;
+        }
+        // The portal floor is at p1.getY(). Don't fall more than 2 blocks below it.
+        if (mc.player.getY() < p1.getY() - 2.0) {
+            error("Fell too far below the portal. Stopping.");
             toggle();
             return;
         }
 
-        double yDiff = targetY - mc.player.getY();
-        double dist = Math.sqrt(mc.player.squaredDistanceTo(cx, mc.player.getY(), cz));
+        // 3. Rotation
+        // Always face the center of the portal for alignment.
+        Rotations.rotate(Rotations.getYaw(portalCenter), Rotations.getPitch(portalCenter));
 
-        // Check if we need to place a block to make the jump (pillar up)
-        if (yDiff > 1.1 && dist < 4.0) {
-            if (selectHotbarItem(Items.OBSIDIAN)) {
-                Rotations.rotate(mc.player.getYaw(), 90); // Look down
-                if (mc.player.isOnGround()) {
-                    mc.player.jump();
-                } else if (mc.player.getY() % 1 > 0.4) {
-                    BlockPos feet = mc.player.getBlockPos();
-                    if (mc.world.getBlockState(feet).isReplaceable()) {
-                        BlockHitResult hit = new BlockHitResult(Vec3d.ofCenter(feet), Direction.DOWN, feet, false);
-                        mc.interactionManager.interactBlock(mc.player, Hand.MAIN_HAND, hit);
-                        mc.player.swingHand(Hand.MAIN_HAND);
-                    }
-                }
-                return; // Focus on placing, don't move yet
-            }
-        }
-
-        // --- Pathfinding Movement Logic ---
-
-        // 1. Stop other movement keys to avoid conflicts
+        // 4. Movement Control
+        // Reset other movement keys
         mc.options.backKey.setPressed(false);
         mc.options.leftKey.setPressed(false);
         mc.options.rightKey.setPressed(false);
 
-        // 2. Rotate to face the portal's center
-        Rotations.rotate(Rotations.getYaw(center), 0);
+        // Sprinting logic
+        double distSq = mc.player.getPos().squaredDistanceTo(portalCenter.x, mc.player.getY(), portalCenter.z);
+        // Sprint if we are not too close to avoid overshooting and precise alignment issues.
+        mc.options.sprintKey.setPressed(distSq > 3.0 * 3.0);
 
-        // 3. Smart jumping based on obstacles
-        // This logic decides if a jump is necessary to overcome an obstacle.
+        // Forward movement logic
+        // Only move if we are roughly facing the target to prevent walking sideways into walls.
+        double yawDiff = MathHelper.wrapDegrees(Rotations.getYaw(portalCenter) - mc.player.getYaw());
+        if (Math.abs(yawDiff) < 45) { // More lenient angle
+            mc.options.forwardKey.setPressed(true);
+        } else {
+            mc.options.forwardKey.setPressed(false);
+        }
+
+        // 5. Jumping Control
         if (mc.player.isOnGround()) {
+            // Jump if we are physically colliding with something.
+            if (mc.player.horizontalCollision) {
+                mc.player.jump();
+                return; // Let the jump happen before next evaluation
+            }
+
+            // Proactive jump: check for a 1-block step-up.
             Direction facing = mc.player.getHorizontalFacing();
             BlockPos blockInFront = mc.player.getBlockPos().offset(facing);
-
-            // Check if there's a wall in front that isn't just a 1-block step-up.
-            boolean isWall = !mc.world.getBlockState(blockInFront).isReplaceable() && !mc.world.getBlockState(blockInFront.up()).isReplaceable();
-
-            if (mc.player.horizontalCollision || isWall) {
-                // Jump if we are physically colliding with something, or if we see a wall.
+            if (!mc.world.getBlockState(blockInFront).isReplaceable() && mc.world.getBlockState(blockInFront.up()).isReplaceable()) {
                 mc.player.jump();
-            } else if (dist < 2.5 && yDiff > 0) {
-                // Hop up if we are right below the portal entrance.
+                return;
+            }
+
+            // Jump if we are close and below the portal entrance to hop in.
+            if (distSq < 2.5 * 2.5 && mc.player.getY() < p1.getY()) {
                 mc.player.jump();
             }
         }
-
-        // 4. Always press forward and sprint to move towards the portal
-        mc.options.forwardKey.setPressed(true);
-        mc.options.sprintKey.setPressed(true);
     }
 
     @EventHandler
