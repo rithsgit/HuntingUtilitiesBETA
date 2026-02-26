@@ -13,183 +13,175 @@ import net.minecraft.block.BlockState;
 import net.minecraft.block.Blocks;
 import net.minecraft.fluid.FluidState;
 import net.minecraft.registry.tag.FluidTags;
-import net.minecraft.util.math.BlockPos;
 import net.minecraft.state.property.Properties;
-import net.minecraft.world.World;
+import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.ChunkPos;
+import net.minecraft.world.World;
 import net.minecraft.world.chunk.Chunk;
+import net.minecraft.world.chunk.ChunkSection;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.Deque;
-import java.util.HashSet;
 import java.util.List;
+import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
+/**
+ * LavaMarker — highlights fully-flowed lava falls in the Nether.
+ *
+ * Detection:
+ *   1. Find "fall tips" — the last FALLING lava block in a vertical column
+ *      (FALLING=true, block below has no lava).
+ *   2. BFS from each tip through all connected FLOWING (non-still) lava.
+ *      Still/source lava (lakes) acts as a natural boundary — the BFS stops there.
+ *      Going UP is only allowed if the block above is also FALLING
+ *      (traces the column without leaking into lake sources).
+ *   3. The result is the full spread of the fall on the floor, with no lake blocks.
+ *
+ * Anti-flicker:
+ *   Each chunk's result is stored as a complete Set and atomically replaced via
+ *   a single ConcurrentHashMap.put(), so the renderer never sees a partial clear.
+ */
 public class LavaMarker extends Module {
     private final SettingGroup sgGeneral = settings.getDefaultGroup();
 
     private final Setting<Integer> chunkRadius = sgGeneral.add(new IntSetting.Builder()
         .name("chunk-radius")
-        .description("The horizontal radius in chunks to scan for lava.")
-        .defaultValue(4)
-        .min(1)
-        .sliderMax(16)
-        .build()
+        .description("Horizontal scan radius in chunks.")
+        .defaultValue(4).min(1).sliderMax(16).build()
     );
 
     private final Setting<Integer> verticalRadius = sgGeneral.add(new IntSetting.Builder()
         .name("vertical-radius")
-        .description("The vertical radius to scan for lava.")
-        .defaultValue(64)
-        .min(0)
-        .sliderMax(64)
-        .build()
+        .description("Vertical scan radius in blocks.")
+        .defaultValue(64).min(0).sliderMax(128).build()
     );
 
     private final Setting<SettingColor> color = sgGeneral.add(new ColorSetting.Builder()
-        .name("fully-flown-color")
-        .description("The color of fully flown lava fall highlights.")
-        .defaultValue(new SettingColor(255, 100, 0, 50))
-        .build()
-    );
-
-    private final Setting<Boolean> trackFlowingLava = sgGeneral.add(new BoolSetting.Builder()
-        .name("track-flowing-lava")
-        .description("Highlights flowing lava blocks.")
-        .defaultValue(false)
-        .build()
-    );
-
-    private final Setting<SettingColor> flowingLavaColor = sgGeneral.add(new ColorSetting.Builder()
-        .name("flowing-lava-color")
-        .description("The color of the flowing lava highlight.")
-        .defaultValue(new SettingColor(139, 0, 0, 50))
-        .visible(trackFlowingLava::get)
-        .build()
+        .name("color")
+        .description("Colour for fully-flowed lava falls.")
+        .defaultValue(new SettingColor(255, 100, 0, 50)).build()
     );
 
     private final Setting<ShapeMode> shapeMode = sgGeneral.add(new EnumSetting.Builder<ShapeMode>()
         .name("shape-mode")
         .description("How the shapes are rendered.")
-        .defaultValue(ShapeMode.Sides)
-        .build()
+        .defaultValue(ShapeMode.Sides).build()
     );
 
-    private final Map<String, Set<BlockPos>> lavaFallPositions = new ConcurrentHashMap<>();
-    private final Map<String, Set<BlockPos>> flowingLavaPositions = new ConcurrentHashMap<>();
-    private final Map<String, Set<ChunkPos>> scannedChunksPerDimension = new ConcurrentHashMap<>();
-    private final Set<ChunkPos> dirtyChunks = ConcurrentHashMap.newKeySet();
+    // Per-chunk result sets — replaced atomically to prevent flicker
+    private final Map<ChunkPos, Set<BlockPos>> fallsByChunk = new ConcurrentHashMap<>();
+    private final Set<ChunkPos> scannedChunks = ConcurrentHashMap.newKeySet();
+    private final Set<ChunkPos> dirtyChunks   = ConcurrentHashMap.newKeySet();
 
     private String lastDimension = "";
 
     public LavaMarker() {
-        super(HuntingUtilities.CATEGORY, "lava-marker", "Highlights the bottom of fully flowed lava falls.");
-    }
-
-    @Override
-    public void onDeactivate() {
-        lavaFallPositions.clear();
-        flowingLavaPositions.clear();
-        scannedChunksPerDimension.clear();
-        dirtyChunks.clear();
-        lastDimension = "";
+        super(HuntingUtilities.CATEGORY, "lava-marker", "Highlights fully-flowed lava falls in the Nether.");
     }
 
     @Override
     public void onActivate() {
-        lavaFallPositions.clear();
-        flowingLavaPositions.clear();
-        scannedChunksPerDimension.clear();
-        dirtyChunks.clear();
-        if (mc.player != null && mc.world != null) {
-            lastDimension = mc.world.getRegistryKey().getValue().toString();
-        } else {
-            lastDimension = "";
-        }
+        clearData();
+        if (mc.world != null) lastDimension = mc.world.getRegistryKey().getValue().toString();
     }
+
+    @Override
+    public void onDeactivate() {
+        clearData();
+    }
+
+    private void clearData() {
+        fallsByChunk.clear();
+        scannedChunks.clear();
+        dirtyChunks.clear();
+    }
+
+    // -------------------------------------------------------------------------
+    // Tick: progressive chunk scanning
+    // -------------------------------------------------------------------------
 
     @EventHandler
     private void onTick(TickEvent.Post event) {
         if (mc.player == null || mc.world == null) return;
-        
-        String currentDimension = mc.world.getRegistryKey().getValue().toString();
-        
-        // Only run in the Nether
-        if (!currentDimension.equals("minecraft:the_nether")) {
+
+        String dim = mc.world.getRegistryKey().getValue().toString();
+        if (!dim.equals("minecraft:the_nether")) {
+            if (!fallsByChunk.isEmpty()) clearData();
             return;
         }
-
-        if (!currentDimension.equals(lastDimension)) {
-            lastDimension = currentDimension;
-            dirtyChunks.clear(); // discard stale dirty entries from the previous dimension
-        }
-
-        Set<BlockPos> fallPositions = lavaFallPositions.computeIfAbsent(currentDimension, k -> ConcurrentHashMap.newKeySet());
-        Set<BlockPos> flowPositions = flowingLavaPositions.computeIfAbsent(currentDimension, k -> ConcurrentHashMap.newKeySet());
-        Set<ChunkPos> scannedChunks = scannedChunksPerDimension.computeIfAbsent(currentDimension, k -> new HashSet<>());
-
-        if (!dirtyChunks.isEmpty()) {
-            dirtyChunks.forEach(scannedChunks::remove);
-            dirtyChunks.clear();
+        if (!dim.equals(lastDimension)) {
+            lastDimension = dim;
+            clearData();
         }
 
         BlockPos playerPos = mc.player.getBlockPos();
-        int chunkRadius = this.chunkRadius.get();
+        int radius = chunkRadius.get();
+        int pX = playerPos.getX() >> 4;
+        int pZ = playerPos.getZ() >> 4;
 
-        fallPositions.removeIf(pos -> pos.getSquaredDistance(playerPos) > (chunkRadius * 16 + 16) * (chunkRadius * 16 + 16));
-        flowPositions.removeIf(pos -> pos.getSquaredDistance(playerPos) > (chunkRadius * 16 + 16) * (chunkRadius * 16 + 16));
+        // Prune out-of-range data
+        scannedChunks.removeIf(cp -> isOutOfRange(cp, pX, pZ, radius));
+        fallsByChunk.keySet().removeIf(cp -> isOutOfRange(cp, pX, pZ, radius));
+        dirtyChunks.removeIf(cp -> isOutOfRange(cp, pX, pZ, radius));
 
-        scannedChunks.removeIf(chunkPos -> {
-            int dx = chunkPos.x - (playerPos.getX() >> 4);
-            int dz = chunkPos.z - (playerPos.getZ() >> 4);
-            return (dx * dx + dz * dz) > (chunkRadius * chunkRadius);
-        });
-
-        // Progressively scan a few new chunks each tick, prioritizing chunks closer to the player.
-        int chunksToScanPerTick = 4;
-        int scannedThisTick = 0;
-
-        List<ChunkPos> potentialChunks = new ArrayList<>();
-        for (int x = -chunkRadius; x <= chunkRadius; x++) {
-            for (int z = -chunkRadius; z <= chunkRadius; z++) {
-                potentialChunks.add(new ChunkPos((playerPos.getX() >> 4) + x, (playerPos.getZ() >> 4) + z));
+        // Queue unscanned in-range loaded chunks, sorted closest-first
+        List<ChunkPos> todo = new ArrayList<>();
+        for (int x = -radius; x <= radius; x++) {
+            for (int z = -radius; z <= radius; z++) {
+                ChunkPos cp = new ChunkPos(pX + x, pZ + z);
+                if (!scannedChunks.contains(cp) && mc.world.getChunkManager().isChunkLoaded(cp.x, cp.z)) {
+                    todo.add(cp);
+                }
             }
         }
+        todo.sort(Comparator.comparingDouble(cp -> {
+            double dx = ((ChunkPos)cp).x - pX, dz = ((ChunkPos)cp).z - pZ;
+            return dx * dx + dz * dz;
+        }));
 
-        potentialChunks.sort(Comparator.comparingDouble(c -> c.getSquaredDistance(new ChunkPos(playerPos))));
-
-        for (ChunkPos chunkPos : potentialChunks) {
-            if (scannedThisTick >= chunksToScanPerTick) break;
-
-            if (!scannedChunks.contains(chunkPos) && mc.world.getChunkManager().isChunkLoaded(chunkPos.x, chunkPos.z)) {
-                scanChunk(mc.world.getChunk(chunkPos.x, chunkPos.z), fallPositions, flowPositions);
-                scannedChunks.add(chunkPos);
-                scannedThisTick++;
+        // Process dirty queue first (block updates), then new chunks
+        int processed = 0;
+        while (!dirtyChunks.isEmpty() && processed < 4) {
+            ChunkPos cp = dirtyChunks.iterator().next();
+            dirtyChunks.remove(cp);
+            scannedChunks.remove(cp);
+            if (mc.world.getChunkManager().isChunkLoaded(cp.x, cp.z)) {
+                scanChunk(mc.world.getChunk(cp.x, cp.z));
+                scannedChunks.add(cp);
+                processed++;
             }
+        }
+        for (ChunkPos cp : todo) {
+            if (processed >= 4) break;
+            scanChunk(mc.world.getChunk(cp.x, cp.z));
+            scannedChunks.add(cp);
+            processed++;
         }
     }
 
-    public void onSettingsChanged() {
-        // Force rescan of all scanned chunks when settings change (e.g. toggling trackFlowingLava)
-        if (mc.world == null) return;
-        Set<ChunkPos> scanned = scannedChunksPerDimension.get(mc.world.getRegistryKey().getValue().toString());
-        if (scanned != null) dirtyChunks.addAll(scanned);
+    private boolean isOutOfRange(ChunkPos cp, int pX, int pZ, int radius) {
+        return Math.abs(cp.x - pX) > radius || Math.abs(cp.z - pZ) > radius;
     }
+
+    // -------------------------------------------------------------------------
+    // Block update
+    // -------------------------------------------------------------------------
 
     @EventHandler
     private void onBlockUpdate(BlockUpdateEvent event) {
         if (mc.world == null) return;
         if (!mc.world.getRegistryKey().getValue().toString().equals("minecraft:the_nether")) return;
-
-        BlockState newState = event.newState;
-        if (newState.isOf(Blocks.LAVA) || newState.isAir()) {
+        BlockState ns = event.newState;
+        if (ns.isOf(Blocks.LAVA) || ns.isAir()) {
             ChunkPos cp = new ChunkPos(event.pos);
+            scannedChunks.remove(cp);
             dirtyChunks.add(cp);
-            // Mark adjacent chunks dirty — lava near a border can affect neighbors
+            // Adjacent chunks may be affected by cross-border flows
             dirtyChunks.add(new ChunkPos(cp.x - 1, cp.z));
             dirtyChunks.add(new ChunkPos(cp.x + 1, cp.z));
             dirtyChunks.add(new ChunkPos(cp.x, cp.z - 1));
@@ -197,111 +189,91 @@ public class LavaMarker extends Module {
         }
     }
 
-    private void scanChunk(Chunk chunk, Set<BlockPos> fallPositions, Set<BlockPos> flowPositions) {
+    // -------------------------------------------------------------------------
+    // Chunk scan — builds local set, then atomically swaps it in
+    // -------------------------------------------------------------------------
+
+    private void scanChunk(Chunk chunk) {
         if (chunk == null || mc.player == null || mc.world == null) return;
 
-        // First, remove all existing positions within this chunk's bounds to prepare for a fresh scan.
-        ChunkPos chunkPos = chunk.getPos();
-        int startX = chunkPos.getStartX();
-        int startZ = chunkPos.getStartZ();
-        int endX = chunkPos.getEndX();
-        int endZ = chunkPos.getEndZ();
-        fallPositions.removeIf(p ->
-            p.getX() >= startX && p.getX() <= endX &&
-            p.getZ() >= startZ && p.getZ() <= endZ);
-        if (trackFlowingLava.get()) {
-            flowPositions.removeIf(p -> p.getX() >= startX && p.getX() <= endX &&
-                p.getZ() >= startZ && p.getZ() <= endZ);
-        }
-
+        ChunkPos cp = chunk.getPos();
         int vRadius = verticalRadius.get();
-        BlockPos.Mutable mpos = new BlockPos.Mutable();
+        int playerY = (int) mc.player.getY();
+        int minY = Math.max(mc.world.getBottomY(), playerY - vRadius);
+        int maxY = Math.min(mc.world.getBottomY() + mc.world.getHeight(), playerY + vRadius);
 
-        // Pass 1: find all fall tips (last block of a falling column) within this chunk.
-        // BFS is then used to mark the entire connected flow from each tip.
+        // Pass 1: find fall tips in this chunk
         Set<BlockPos> fallTips = new HashSet<>();
+        ChunkSection[] sections = chunk.getSectionArray();
 
-        // Clamp section iteration to vertical radius — skip irrelevant sections
-        int minSectionY = Math.max(chunk.getBottomSectionCoord(), (int) Math.floor((mc.player.getY() - vRadius) / 16.0));
-        int maxSectionY = Math.min(chunk.getTopSectionCoord() - 1, (int) Math.floor((mc.player.getY() + vRadius) / 16.0));
+        for (int i = 0; i < sections.length; i++) {
+            ChunkSection section = sections[i];
+            if (section == null || section.isEmpty()) continue;
 
-        for (int sectionY = minSectionY; sectionY <= maxSectionY; sectionY++) {
+            int sectionY    = chunk.getBottomSectionCoord() + i;
+            int sectionMinY = sectionY << 4;
+            int sectionMaxY = sectionMinY + 15;
+            if (sectionMaxY < minY || sectionMinY > maxY) continue;
+            if (!section.hasAny(s -> s.getFluidState().isIn(FluidTags.LAVA))) continue;
+
             for (int x = 0; x < 16; x++) {
-                for (int z = 0; z < 16; z++) {
-                    for (int y = 0; y < 16; y++) {
-                        mpos.set(chunk.getPos().getStartX() + x, sectionY * 16 + y, chunk.getPos().getStartZ() + z);
-                        if (Math.abs(mpos.getY() - mc.player.getY()) > vRadius) continue;
+                for (int y = 0; y < 16; y++) {
+                    for (int z = 0; z < 16; z++) {
+                        int worldY = sectionMinY + y;
+                        if (worldY < minY || worldY > maxY) continue;
 
-                        FluidState fs = mc.world.getFluidState(mpos);
-                        if (fs.isIn(FluidTags.LAVA) && !fs.isStill()
-                                && fs.contains(Properties.FALLING) && fs.get(Properties.FALLING)
-                                && !mc.world.getFluidState(mpos.down()).isIn(FluidTags.LAVA)) {
-                            // This is the last block of a falling lava column
-                            fallTips.add(mpos.toImmutable());
-                        }
+                        FluidState fs = section.getBlockState(x, y, z).getFluidState();
+                        if (!fs.isIn(FluidTags.LAVA)) continue;
 
-                        if (trackFlowingLava.get() && isActivelyFlowing(mpos, mc.world)) {
-                            flowPositions.add(mpos.toImmutable());
+                        boolean falling = fs.contains(Properties.FALLING) && fs.get(Properties.FALLING);
+                        if (!falling) continue;
+
+                        BlockPos pos = new BlockPos(cp.getStartX() + x, worldY, cp.getStartZ() + z);
+                        // Fall tip: last block of a falling column (nothing lava below)
+                        if (!mc.world.getFluidState(pos.down()).isIn(FluidTags.LAVA)) {
+                            fallTips.add(pos);
                         }
                     }
                 }
             }
         }
 
-        // Pass 2: BFS from each fall tip to mark the full connected flowing lava spread.
-        Set<BlockPos> globalVisited = new HashSet<>(fallPositions);
+        // Pass 2: BFS from each tip — all connected FLOWING (non-still) lava = "fully flowed"
+        Set<BlockPos> localFalls = new HashSet<>();
+        Set<BlockPos> visited    = new HashSet<>();
         for (BlockPos tip : fallTips) {
-            bfsConnectedFlow(tip, mc.world, fallPositions, globalVisited);
+            bfs(tip, localFalls, visited);
         }
+
+        // Atomic swap — renderer always sees a complete set, never a partial clear
+        if (!localFalls.isEmpty()) fallsByChunk.put(cp, localFalls);
+        else fallsByChunk.remove(cp);
     }
 
-    /**
-     * BFS from a fall tip through all connected FLOWING lava.
-     *
-     * Direction rules:
-     *  - Horizontal (N/S/E/W): always follow flowing lava — captures horizontal spread.
-     *  - Down: always follow — captures stepped/cascading flows.
-     *  - Up: ONLY follow if the block above is FALLING — traces the fall column
-     *    upward without leaking into lake sources or unrelated lava above the impact.
-     *
-     * Still/source lava always stops the BFS (lake boundary).
-     */
-    private void bfsConnectedFlow(BlockPos start, World world, Set<BlockPos> result, Set<BlockPos> visited) {
+    // -------------------------------------------------------------------------
+    // BFS — traces all connected FLOWING lava from a fall tip.
+    // Still/source lava (lakes) stops the BFS.
+    // Going UP is restricted to FALLING blocks only (no lake bleed).
+    // -------------------------------------------------------------------------
+
+    private void bfs(BlockPos start, Set<BlockPos> result, Set<BlockPos> visited) {
         if (visited.contains(start)) return;
 
         Deque<BlockPos> queue = new ArrayDeque<>();
         queue.add(start);
         visited.add(start);
 
-        int maxBlocks = 1024;
-        int count = 0;
-
-        while (!queue.isEmpty() && count < maxBlocks) {
+        while (!queue.isEmpty()) {
             BlockPos cur = queue.poll();
-            count++;
+            result.add(cur); // every reachable flowing block = fully flowed
 
-            // Only add to "fully flown" result if this block is:
-            //   - Part of the falling column (FALLING=true), OR
-            //   - At the outermost spread edge (LEVEL_1_8 == 1)
-            // Level 2+ blocks are still traversed to reach the edges but stay in
-            // flowPositions so they render with the "flowing" colour.
-            FluidState curFs = world.getFluidState(cur);
-            boolean isFalling = curFs.contains(Properties.FALLING) && curFs.get(Properties.FALLING);
-            // getLevel() is the reliable built-in method: returns 8 for source,
-            // 7 (adjacent to source) down to 1 (max spread distance / fully flown edge)
-            int level = curFs.getLevel();
-            if (isFalling || level <= 1) {
-                result.add(cur); // fall column + outermost edge → "fully flown"
-            }
-            // level 2-7 blocks are traversed but NOT added → stay in flowPositions
-
-            // Horizontal and downward: follow any connected flowing lava (chunk-loaded guard)
+            // Horizontal + down: follow all connected flowing lava
             for (BlockPos nb : new BlockPos[]{
                 cur.north(), cur.south(), cur.east(), cur.west(), cur.down()
             }) {
                 if (!visited.contains(nb)
-                        && world.getChunkManager().isChunkLoaded(nb.getX() >> 4, nb.getZ() >> 4)) {
-                    FluidState ns = world.getFluidState(nb);
+                        && mc.world.getChunkManager().isChunkLoaded(nb.getX() >> 4, nb.getZ() >> 4)) {
+                    FluidState ns = mc.world.getFluidState(nb);
                     if (ns.isIn(FluidTags.LAVA) && !ns.isStill()) {
                         visited.add(nb);
                         queue.add(nb);
@@ -309,11 +281,11 @@ public class LavaMarker extends Module {
                 }
             }
 
-            // Upward: only follow if the block above is a falling column (chunk-loaded guard)
+            // Up: only follow FALLING blocks (traces the column, prevents lake bleed)
             BlockPos up = cur.up();
             if (!visited.contains(up)
-                    && world.getChunkManager().isChunkLoaded(up.getX() >> 4, up.getZ() >> 4)) {
-                FluidState upFs = world.getFluidState(up);
+                    && mc.world.getChunkManager().isChunkLoaded(up.getX() >> 4, up.getZ() >> 4)) {
+                FluidState upFs = mc.world.getFluidState(up);
                 if (upFs.isIn(FluidTags.LAVA) && !upFs.isStill()
                         && upFs.contains(Properties.FALLING) && upFs.get(Properties.FALLING)) {
                     visited.add(up);
@@ -323,72 +295,17 @@ public class LavaMarker extends Module {
         }
     }
 
-    /**
-     * A flowing lava block (for trackFlowingLava):
-     * any non-still lava that is actively spreading — level >= 2 means it hasn't
-     * yet reached maximum spread distance, so it's genuinely in motion.
-     * Level 1 blocks (fully spread edge) are already captured by the fall BFS.
-     */
-    private boolean isActivelyFlowing(BlockPos pos, World world) {
-        FluidState state = world.getFluidState(pos);
-        if (!state.isIn(FluidTags.LAVA) || state.isStill()) return false;
-        // FALLING lava is the vertical column — already handled by bfsConnectedFlow
-        if (state.contains(Properties.FALLING) && state.get(Properties.FALLING)) return false;
-        // getLevel(): 7 = adjacent to source, 1 = fully spread edge.
-        // Level 2+ = still spreading (actively flowing); level 1 = edge (handled by BFS).
-        return state.getLevel() >= 2;
-    }
+    // -------------------------------------------------------------------------
+    // Render
+    // -------------------------------------------------------------------------
 
     @EventHandler
     private void onRender(Render3DEvent event) {
         if (mc.world == null) return;
-        String currentDimension = mc.world.getRegistryKey().getValue().toString();
-
-        Set<BlockPos> fallPositions = lavaFallPositions.get(currentDimension);
-        Set<BlockPos> netFlow = null;
-
-        if (trackFlowingLava.get()) {
-            Set<BlockPos> flowPositions = flowingLavaPositions.get(currentDimension);
-            if (flowPositions != null && !flowPositions.isEmpty()) {
-                netFlow = new HashSet<>(flowPositions);
-                if (fallPositions != null) netFlow.removeAll(fallPositions);
-                if (netFlow.isEmpty()) netFlow = null;
+        for (Set<BlockPos> set : fallsByChunk.values()) {
+            for (BlockPos pos : set) {
+                event.renderer.box(pos, color.get(), color.get(), shapeMode.get(), 0);
             }
         }
-
-        // Render fall-flow excluding faces shared with netFlow (to prevent color bleed at boundary)
-        if (fallPositions != null && !fallPositions.isEmpty()) {
-            renderFaceCulled(event, fallPositions, netFlow, color.get());
-        }
-
-        // Render flowing lava excluding faces shared with fallPositions
-        if (netFlow != null) {
-            renderFaceCulled(event, netFlow, fallPositions, flowingLavaColor.get());
-        }
-    }
-
-    /**
-     * Renders each block with face culling. Faces shared with blocks in either
-     * {@code positions} or {@code other} are excluded to prevent overlapping quads
-     * and colour mixing at region boundaries.
-     *
-     * Exclude bitmask (Direction.ordinal() order):
-     *   1=Down  2=Up  4=North  8=South  16=West  32=East
-     */
-    private void renderFaceCulled(Render3DEvent event, Set<BlockPos> positions, Set<BlockPos> other, SettingColor c) {
-        for (BlockPos pos : positions) {
-            int exclude = 0;
-            if (inEither(pos.down(),  positions, other)) exclude |= 1;
-            if (inEither(pos.up(),    positions, other)) exclude |= 2;
-            if (inEither(pos.north(), positions, other)) exclude |= 4;
-            if (inEither(pos.south(), positions, other)) exclude |= 8;
-            if (inEither(pos.west(),  positions, other)) exclude |= 16;
-            if (inEither(pos.east(),  positions, other)) exclude |= 32;
-            event.renderer.box(pos, c, c, shapeMode.get(), exclude);
-        }
-    }
-
-    private static boolean inEither(BlockPos pos, Set<BlockPos> a, Set<BlockPos> b) {
-        return a.contains(pos) || (b != null && b.contains(pos));
     }
 }
