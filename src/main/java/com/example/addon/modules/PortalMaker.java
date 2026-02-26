@@ -126,10 +126,12 @@ public class PortalMaker extends Module {
         Direction right = facing.rotateYClockwise();
 
         BlockPos feet = mc.player.getBlockPos();
+        boolean adjusted = false;
 
         // Minor adjustment if standing in/above non-solid block
         if (!mc.world.getBlockState(feet.down()).isFullCube(mc.world, feet.down())) {
             feet = feet.up();
+            adjusted = true;
         }
 
         BlockPos origin = feet.offset(facing, 2).offset(right, -1);
@@ -146,6 +148,11 @@ public class PortalMaker extends Module {
         portalFramePositions.add(origin.offset(right, 3).up(3));     // right 3
         portalFramePositions.add(origin.offset(right, 1).up(4));     // top 1
         portalFramePositions.add(origin.offset(right, 2).up(4));     // top 2
+
+        if (adjusted) {
+            BlockPos stepPos = feet.offset(facing, 1);
+            if (mc.world.getBlockState(stepPos).isReplaceable()) portalFramePositions.add(stepPos);
+        }
 
         // Check for obstructions
         boolean blocked = portalFramePositions.stream()
@@ -345,6 +352,28 @@ public class PortalMaker extends Module {
         // Always face the center of the portal for alignment.
         Rotations.rotate(Rotations.getYaw(portalCenter), Rotations.getPitch(portalCenter));
 
+        // 3.5. Scaffolding to prevent falling
+        if (mc.player.isOnGround()) {
+            Direction facing = mc.player.getHorizontalFacing();
+            BlockPos blockInFront = mc.player.getBlockPos().offset(facing);
+            BlockPos supportBlock = blockInFront.down();
+
+            // If the block under our next step is air, we need to bridge the gap.
+            // Only do this if we are generally facing the portal.
+            double yawDiff = MathHelper.wrapDegrees(Rotations.getYaw(portalCenter) - mc.player.getYaw());
+            if (Math.abs(yawDiff) < 60 && mc.world.getBlockState(supportBlock).isReplaceable()) {
+                if (placeBlock(supportBlock)) {
+                    // Wait for the block to be placed.
+                    tickTimer = placeDelay.get();
+                    return; // Return to wait for delay and block update
+                } else {
+                    error("Cannot bridge gap to portal (no obsidian?). Stopping.");
+                    toggle();
+                    return;
+                }
+            }
+        }
+
         // 4. Movement Control
         // Reset other movement keys
         mc.options.backKey.setPressed(false);
@@ -366,16 +395,39 @@ public class PortalMaker extends Module {
         }
 
         // 5. Jumping Control
+        // Re-evaluate scaffolding and jumping conditions right before potentially jumping
+
+        Direction facing = mc.player.getHorizontalFacing();        
+        BlockPos blockInFront = mc.player.getBlockPos().offset(facing);
+        BlockPos supportBlock = blockInFront.down();
+
+        // If the block under our next step is air, we need to bridge the gap.
+        double yawDiff2 = MathHelper.wrapDegrees(Rotations.getYaw(portalCenter) - mc.player.getYaw());
+        if (mc.player.isOnGround() && Math.abs(yawDiff) < 60 && mc.world.getBlockState(supportBlock).isReplaceable()) {
+            if (placeBlock(supportBlock)) {
+
+                // Wait for the block to be placed.
+                tickTimer = placeDelay.get();
+                return; // Return to wait for delay and block update
+            } else {
+                error("Cannot bridge gap to portal (no obsidian?). Stopping.");
+                toggle();
+                return;
+            }
+         }
+
+
+
+        // Jump or walk into portal
         if (mc.player.isOnGround()) {
-            // Jump if we are physically colliding with something.
+           // Jump if we are physically colliding with something.
             if (mc.player.horizontalCollision) {
+
                 mc.player.jump();
                 return; // Let the jump happen before next evaluation
             }
 
-            // Proactive jump: check for a 1-block step-up.
-            Direction facing = mc.player.getHorizontalFacing();
-            BlockPos blockInFront = mc.player.getBlockPos().offset(facing);
+            // Proactive jump: check for a 1-block step-up.            
             if (!mc.world.getBlockState(blockInFront).isReplaceable() && mc.world.getBlockState(blockInFront.up()).isReplaceable()) {
                 mc.player.jump();
                 return;
@@ -386,6 +438,47 @@ public class PortalMaker extends Module {
                 mc.player.jump();
             }
         }
+    }
+
+
+
+
+    private boolean placeBlock(BlockPos pos) {
+        // Find neighbor to place against
+        BlockPos neighbor = null;
+        Direction placeSide = null;
+        for (Direction side : Direction.values()) {
+            BlockPos check = pos.offset(side);
+            if (!mc.world.getBlockState(check).isReplaceable()) {
+                neighbor = check;
+                placeSide = side.getOpposite();
+                break;
+            }
+        }
+        if (neighbor == null) return false;
+
+        final BlockPos finalNeighbor = neighbor;
+        final Direction finalPlaceSide = placeSide;
+
+        // Ensure obsidian is in hand
+        if (!mc.player.getMainHandStack().isOf(Items.OBSIDIAN)) {
+            FindItemResult obsidian = InvUtils.find(Items.OBSIDIAN);
+            if (!obsidian.found()) return false;
+            if (obsidian.isHotbar()) {
+                mc.player.getInventory().selectedSlot = obsidian.slot();
+            } else {
+                InvUtils.move().from(obsidian.slot()).toHotbar(mc.player.getInventory().selectedSlot);
+            }
+        }
+
+        // Place the block
+        Rotations.rotate(Rotations.getYaw(finalNeighbor), Rotations.getPitch(finalNeighbor), () -> {
+            BlockHitResult hit = new BlockHitResult(Vec3d.ofCenter(finalNeighbor), finalPlaceSide, finalNeighbor, false);
+            mc.interactionManager.interactBlock(mc.player, Hand.MAIN_HAND, hit);
+            mc.player.swingHand(Hand.MAIN_HAND);
+        });
+
+        return true;
     }
 
     @EventHandler
@@ -399,6 +492,11 @@ public class PortalMaker extends Module {
             }
         }
     }
+
+
+
+
+
 
     // ── Helper methods ────────────────────────────────────────
 
