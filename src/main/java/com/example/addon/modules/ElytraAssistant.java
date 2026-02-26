@@ -185,6 +185,7 @@ public class ElytraAssistant extends Module {
     private int mendTimer = 0;
     private int middleClickTimer = 0;
     private int swingTimer = 0;
+    private int autoSwapReenableTimer = 0;
 
     public ElytraAssistant() {
         super(HuntingUtilities.CATEGORY, "elytra-assistant", "Smart elytra & rocket management.");
@@ -198,11 +199,22 @@ public class ElytraAssistant extends Module {
         mendTimer = 0;
         middleClickTimer = 0;
         swingTimer = 0;
+        autoSwapReenableTimer = 0;
     }
 
     @EventHandler
     private void onTick(TickEvent.Pre event) {
         if (mc.player == null || mc.world == null) return;
+
+        if (autoSwapReenableTimer > 0) {
+            autoSwapReenableTimer--;
+            if (autoSwapReenableTimer == 0) {
+                if (!autoSwap.get()) {
+                    autoSwap.set(true);
+                    info("Auto-mend finished. Re-enabling auto-swap.");
+                }
+            }
+        }
 
         if (middleClickTimer > 0) middleClickTimer--;
 
@@ -347,6 +359,7 @@ public class ElytraAssistant extends Module {
         if (!xp.found()) {
             info("No more XP bottles — disabling auto-mend.");
             autoMend.set(false);
+            autoSwapReenableTimer = 30; // 1.5 second delay
             return;
         }
 
@@ -361,6 +374,7 @@ public class ElytraAssistant extends Module {
             } else {
                 info("All Elytras mended!");
                 autoMend.set(false);
+                autoSwapReenableTimer = 30; // 1.5 second delay
             }
             return;
         }

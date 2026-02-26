@@ -2,15 +2,15 @@ package com.example.addon.modules;
 
 import com.example.addon.HuntingUtilities;
 
+import meteordevelopment.meteorclient.events.packets.PacketEvent;
 import meteordevelopment.meteorclient.events.render.Render3DEvent;
 import meteordevelopment.meteorclient.events.world.TickEvent;
-import meteordevelopment.meteorclient.events.packets.PacketEvent;
 import meteordevelopment.meteorclient.renderer.ShapeMode;
 import meteordevelopment.meteorclient.settings.BoolSetting;
 import meteordevelopment.meteorclient.settings.ColorSetting;
 import meteordevelopment.meteorclient.settings.DoubleSetting;
-import meteordevelopment.meteorclient.settings.IntSetting;
 import meteordevelopment.meteorclient.settings.EnumSetting;
+import meteordevelopment.meteorclient.settings.IntSetting;
 import meteordevelopment.meteorclient.settings.Setting;
 import meteordevelopment.meteorclient.settings.SettingGroup;
 import meteordevelopment.meteorclient.systems.modules.Module;
@@ -21,14 +21,12 @@ import meteordevelopment.meteorclient.utils.render.color.SettingColor;
 import meteordevelopment.meteorclient.utils.world.BlockUtils;
 import meteordevelopment.orbit.EventHandler;
 import net.minecraft.block.Blocks;
-import net.minecraft.item.Item;
 import net.minecraft.component.DataComponentTypes;
 import net.minecraft.component.type.ItemEnchantmentsComponent;
 import net.minecraft.enchantment.Enchantments;
 import net.minecraft.item.ItemStack;
 import net.minecraft.item.Items;
 import net.minecraft.network.packet.c2s.play.ClientCommandC2SPacket;
-import net.minecraft.network.packet.c2s.play.HandSwingC2SPacket;
 import net.minecraft.network.packet.c2s.play.PlayerActionC2SPacket;
 import net.minecraft.network.packet.s2c.play.BlockUpdateS2CPacket;
 import net.minecraft.network.packet.s2c.play.ChunkDeltaUpdateS2CPacket;
@@ -43,10 +41,10 @@ public class ObsidianFist extends Module {
     private final SettingGroup sgGeneral = settings.getDefaultGroup();
     private final SettingGroup sgRender = settings.createGroup("Render");
 
-    private final Setting<PickaxeMode> pickaxeMode = sgGeneral.add(new EnumSetting.Builder<PickaxeMode>()
-        .name("pickaxe-mode")
-        .description("Which pickaxe to use.")
-        .defaultValue(PickaxeMode.NoSilkTouch)
+    private final Setting<Boolean> debug = sgGeneral.add(new BoolSetting.Builder()
+        .name("debug-log")
+        .description("Logs detailed information to the console for debugging.")
+        .defaultValue(false)
         .build()
     );
 
@@ -57,10 +55,26 @@ public class ObsidianFist extends Module {
         .build()
     );
 
+    private final Setting<BreakMode> breakMode = sgGeneral.add(new EnumSetting.Builder<BreakMode>()
+        .name("break-mode")
+        .description("Safe waits for server confirmation, Instant is faster but may be less reliable.")
+        .defaultValue(BreakMode.Instant)
+        .build()
+    );
+
     private final Setting<Boolean> swapBack = sgGeneral.add(new BoolSetting.Builder()
         .name("swap-back")
         .description("Swaps back to the previous slot after mining.")
         .defaultValue(true)
+        .build()
+    );
+
+    private final Setting<Integer> delay = sgGeneral.add(new IntSetting.Builder()
+        .name("delay")
+        .description("Delay in ticks between actions (cycling or rebreaking).")
+        .defaultValue(2)
+        .min(0)
+        .sliderMax(20)
         .build()
     );
 
@@ -70,53 +84,6 @@ public class ObsidianFist extends Module {
         .defaultValue(5.0)
         .min(0)
         .sliderMax(6)
-        .build()
-    );
-
-    private final Setting<Integer> holdTicks = sgGeneral.add(new IntSetting.Builder()
-        .name("hold-ticks")
-        .description("Ticks to hold the start-break packet. (1-3 recommended for strict servers)")
-        .defaultValue(1)
-        .min(0)
-        .max(10)
-        .build()
-    );
-
-    private final Setting<Boolean> verifyPlace = sgGeneral.add(new BoolSetting.Builder()
-        .name("verify-place")
-        .description("Wait for server to confirm placement before mining.")
-        .defaultValue(false)
-        .build()
-    );
-
-    private final Setting<Integer> retryDelay = sgGeneral.add(new IntSetting.Builder()
-        .name("retry-delay")
-        .description("Ticks to wait before retrying if the server rejects the break.")
-        .defaultValue(5)
-        .min(0)
-        .build()
-    );
-
-    private final Setting<Integer> maxRetries = sgGeneral.add(new IntSetting.Builder()
-        .name("max-retries")
-        .description("Maximum retries for failed operations before aborting.")
-        .defaultValue(3)
-        .min(1)
-        .build()
-    );
-
-    private final Setting<Integer> restorationLimit = sgGeneral.add(new IntSetting.Builder()
-        .name("restoration-limit")
-        .description("Max times to attempt breaking if server restores the block (Desync protection).")
-        .defaultValue(2)
-        .min(1)
-        .build()
-    );
-
-    private final Setting<Boolean> strict = sgGeneral.add(new BoolSetting.Builder()
-        .name("strict")
-        .description("Sends extra packets (ABORT/STOP on different face) to bypass stricter anticheats.")
-        .defaultValue(false)
         .build()
     );
 
@@ -148,16 +115,23 @@ public class ObsidianFist extends Module {
         .build()
     );
 
-    private enum Mode {
-        Idle, Placing, WaitingPlace, MiningStart, MiningHold, WaitingBreak
+    private enum BreakMode {
+        Safe, Instant
     }
 
-    private Mode mode = Mode.Idle;
+    private enum State {
+        Idle, Placing, MiningStart, MiningHold, WaitingBreak
+    }
+
+    private State mode = State.Idle;
     private BlockPos currentPos;
     private Direction currentDir;
     private int timer;
     private int attempts;
     private int restorationCount;
+    private BlockPos placeTarget;
+    private Direction placeSide;
+    private int prevSlot = -1;
 
     public ObsidianFist() {
         super(HuntingUtilities.CATEGORY, "obsidian-fist", "WIP: Insta-mines Ender Chests. Optimized for 2b2t.");
@@ -174,12 +148,16 @@ public class ObsidianFist extends Module {
     }
 
     private void reset() {
-        mode = Mode.Idle;
+        if (debug.get()) info("Resetting state.");
+        mode = State.Idle;
         currentPos = null;
         currentDir = null;
         timer = 0;
         attempts = 0;
         restorationCount = 0;
+        placeTarget = null;
+        placeSide = null;
+        prevSlot = -1;
     }
 
     @EventHandler
@@ -188,20 +166,27 @@ public class ObsidianFist extends Module {
 
         if (timer > 0) {
             timer--;
-            if (mode == Mode.MiningHold && timer == 0) {
-                // Hold timer finished, proceed
-            } else {
-                return;
+            if (timer > 0) return; // If timer is still running, wait.
+
+            if (debug.get()) info("Timer finished. Current mode: %s", mode);
+            // Timer just finished. Handle timeouts for waiting states.
+            if (mode == State.WaitingBreak) {
+                // Break confirmation timed out, assume it failed.
+                handleBlockUpdate(currentPos, false);
+                // handleBlockUpdate might set a new timer, so we wait.
+                if (timer > 0) return;
             }
         }
 
         // State machine loop to allow instant transitions if delays are 0
         int steps = 0;
-        while (steps < 10) {
-            Mode prevMode = mode;
+        while (steps < 5) { // Limit iterations to prevent infinite loops
+            if (timer > 0) break;
+            State prevMode = mode;
             runStateMachine();
-            if (mode == prevMode && mode != Mode.Idle) break; // Waiting for something
-            if (mode == Mode.Idle && prevMode == Mode.Idle) break; // Nothing to do
+            if (debug.get() && mode != prevMode) info("State transition: %s -> %s", prevMode, mode);
+            if (mode == prevMode && mode != State.Idle) break; // Waiting for something
+            if (mode == State.Idle && prevMode == State.Idle) break; // Nothing to do
             steps++;
         }
     }
@@ -210,27 +195,35 @@ public class ObsidianFist extends Module {
         switch (mode) {
             case Idle -> handleIdle();
             case Placing -> handlePlacing();
-            case WaitingPlace -> { /* Handled in onPacket or timeout */ }
             case MiningStart -> handleMiningStart();
-            case MiningHold -> handleMiningHold();
+            case MiningHold -> handleMiningHold(); // This calls finishMining()
             case WaitingBreak -> { /* Handled in onPacket */ }
         }
     }
 
     private void handleIdle() {
         FindItemResult pickaxe = findPickaxe();
-        if (!pickaxe.found()) return;
+        if (!pickaxe.found()) {
+            return;
+        }
 
-        if (!(mc.crosshairTarget instanceof BlockHitResult hit) || hit.getType() != HitResult.Type.BLOCK) return;
+        if (!(mc.crosshairTarget instanceof BlockHitResult hit) || hit.getType() != HitResult.Type.BLOCK) {
+            if (debug.get()) info("Idle: Not looking at a block.");
+            return;
+        }
         BlockPos pos = hit.getBlockPos();
 
-        if (mc.player.squaredDistanceTo(pos.toCenterPos()) > range.get() * range.get()) return;
+        if (mc.player.squaredDistanceTo(pos.toCenterPos()) > range.get() * range.get()) {
+            if (debug.get()) info("Idle: Target out of range.");
+            return;
+        }
 
         // 1. Existing Ender Chest
         if (mc.world.getBlockState(pos).getBlock() == Blocks.ENDER_CHEST) {
+            if (debug.get()) info("Idle: Found existing Ender Chest at %s. Starting to mine.", pos);
             currentPos = pos;
             currentDir = hit.getSide();
-            mode = Mode.MiningStart;
+            mode = State.MiningStart;
             attempts = 0;
             restorationCount = 0;
             return;
@@ -238,16 +231,29 @@ public class ObsidianFist extends Module {
 
         // 2. Place and Mine
         FindItemResult echest = InvUtils.find(Items.ENDER_CHEST);
-        if (!echest.found()) return;
+        if (!echest.found()) {
+            if (debug.get()) info("Idle: No Ender Chest found for placement.");
+            return;
+        }
 
         BlockPos placePos = pos.offset(hit.getSide());
-        if (!BlockUtils.canPlace(placePos)) return;
-        if (!mc.world.getFluidState(placePos).isEmpty()) return;
-        if (mc.world.isOutOfHeightLimit(placePos)) return;
+        if (!BlockUtils.canPlace(placePos)) {
+            if (debug.get()) info("Idle: Cannot place at %s.", placePos);
+            return;
+        }
+        if (!mc.world.getFluidState(placePos).isEmpty()) {
+            if (debug.get()) info("Idle: Cannot place in fluid at %s.", placePos);
+            return;
+        }
+        if (mc.world.isOutOfHeightLimit(placePos)) {
+            if (debug.get()) info("Idle: Cannot place out of height limit at %s.", placePos);
+            return;
+        }
 
+        if (debug.get()) info("Idle: Found placeable spot at %s. Starting placement.", placePos);
         currentPos = placePos;
         currentDir = getBreakDirection(placePos); // Direction to mine from
-        mode = Mode.Placing;
+        mode = State.Placing;
         attempts = 0;
         restorationCount = 0;
 
@@ -256,19 +262,16 @@ public class ObsidianFist extends Module {
         placeSide = hit.getSide();
     }
 
-    // Temp storage for placement
-    private BlockPos placeTarget;
-    private Direction placeSide;
-
     private void handlePlacing() {
         FindItemResult echest = InvUtils.find(Items.ENDER_CHEST);
         if (!echest.found()) {
+            if (debug.get()) error("Placing: Lost Ender Chests. Resetting.");
             reset();
             return;
         }
 
         int prevSlot = mc.player.getInventory().selectedSlot;
-        InvUtils.swap(echest.slot(), false);
+        if (!InvUtils.swap(echest.slot(), false)) return;
 
         if (rotate.get()) {
             Rotations.rotate(Rotations.getYaw(placeTarget), Rotations.getPitch(placeTarget));
@@ -284,46 +287,41 @@ public class ObsidianFist extends Module {
             false
         );
 
+        if (debug.get()) info("Placing: Interacting with block at %s to place at %s.", placeTarget, currentPos);
         mc.interactionManager.interactBlock(mc.player, Hand.MAIN_HAND, placeHit);
-        mc.player.networkHandler.sendPacket(new HandSwingC2SPacket(Hand.MAIN_HAND));
+        mc.player.swingHand(Hand.MAIN_HAND);
+
+        // Client-side placement to prevent the client from trying to mine air.
+        mc.world.setBlockState(currentPos, Blocks.ENDER_CHEST.getDefaultState());
 
         if (sneaking) mc.player.networkHandler.sendPacket(new ClientCommandC2SPacket(mc.player, ClientCommandC2SPacket.Mode.RELEASE_SHIFT_KEY));
 
-        if (swapBack.get()) mc.player.getInventory().selectedSlot = prevSlot;
+        if (swapBack.get()) InvUtils.swap(prevSlot, false);
 
-        if (verifyPlace.get()) {
-            mode = Mode.WaitingPlace;
-            timer = 10; // Timeout for placement
-        } else {
-            mode = Mode.MiningStart;
-        }
+        mode = State.MiningStart;
+        timer = delay.get();
     }
 
     private void handleMiningStart() {
         FindItemResult pickaxe = findPickaxe();
         if (!pickaxe.found()) {
+            if (debug.get()) error("MiningStart: Lost pickaxe. Resetting.");
             reset();
             return;
         }
 
-        int prevSlot = mc.player.getInventory().selectedSlot;
+        prevSlot = mc.player.getInventory().selectedSlot;
         InvUtils.swap(pickaxe.slot(), false);
 
         if (rotate.get()) {
             Rotations.rotate(Rotations.getYaw(currentPos), Rotations.getPitch(currentPos));
         }
 
+        if (debug.get()) info("MiningStart: Sending START_DESTROY_BLOCK for %s.", currentPos);
         mc.player.networkHandler.sendPacket(new PlayerActionC2SPacket(PlayerActionC2SPacket.Action.START_DESTROY_BLOCK, currentPos, currentDir));
-        mc.player.networkHandler.sendPacket(new PlayerActionC2SPacket(PlayerActionC2SPacket.Action.ABORT_DESTROY_BLOCK, currentPos, currentDir));
 
-        if (holdTicks.get() > 0) {
-            mode = Mode.MiningHold;
-            timer = holdTicks.get();
-        } else {
-            finishMining();
-        }
-
-        if (swapBack.get()) mc.player.getInventory().selectedSlot = prevSlot;
+        mode = State.MiningHold;
+        timer = 0; // The hold is effectively instant, just a state transition
     }
 
     private void handleMiningHold() {
@@ -332,18 +330,34 @@ public class ObsidianFist extends Module {
     }
 
     private void finishMining() {
-        mc.player.networkHandler.sendPacket(new PlayerActionC2SPacket(PlayerActionC2SPacket.Action.STOP_DESTROY_BLOCK, currentPos, currentDir));
+        if (debug.get()) info("FinishMining: Sending STOP_DESTROY_BLOCK for %s.", currentPos);
+        mc.player.networkHandler.sendPacket(new PlayerActionC2SPacket(PlayerActionC2SPacket.Action.STOP_DESTROY_BLOCK, currentPos, currentDir.getOpposite()));
 
-        if (strict.get()) {
-            mc.player.networkHandler.sendPacket(new PlayerActionC2SPacket(PlayerActionC2SPacket.Action.ABORT_DESTROY_BLOCK, currentPos, currentDir));
-            mc.player.networkHandler.sendPacket(new PlayerActionC2SPacket(PlayerActionC2SPacket.Action.STOP_DESTROY_BLOCK, currentPos, currentDir.getOpposite()));
+        if (swapBack.get() && prevSlot != -1) {
+            InvUtils.swap(prevSlot, false);
+            prevSlot = -1;
         }
 
         mc.player.swingHand(Hand.MAIN_HAND);
+        if (debug.get()) info("FinishMining: Set block to AIR client-side.");
         mc.world.setBlockState(currentPos, Blocks.AIR.getDefaultState());
 
-        mode = Mode.WaitingBreak;
-        timer = 40; // Ghost block suppression timeout
+        if (breakMode.get() == BreakMode.Instant) {
+            if (placeTarget != null) {
+                if (debug.get()) info("FinishMining: Instant mode, cycling back to Placing.");
+                mode = State.Placing;
+                attempts = 0;
+                restorationCount = 0;
+                timer = delay.get();
+            } else {
+                if (debug.get()) info("FinishMining: Instant mode, no place target, resetting.");
+                reset();
+            }
+        } else {
+            if (debug.get()) info("FinishMining: Safe mode, waiting for server confirmation.");
+            mode = State.WaitingBreak;
+            timer = 40; // Ghost block suppression timeout
+        }
     }
 
     private Direction getBreakDirection(BlockPos pos) {
@@ -358,58 +372,101 @@ public class ObsidianFist extends Module {
         if (currentPos == null) return;
 
         if (event.packet instanceof BlockUpdateS2CPacket p) {
+            if (p.getPos().equals(currentPos)) {
+                if (debug.get()) info("OnPacket: Received BlockUpdateS2CPacket for target pos. New state is air: %b", p.getState().isAir());
+            }
             handleBlockUpdate(p.getPos(), p.getState().isAir());
         } else if (event.packet instanceof ChunkDeltaUpdateS2CPacket p) {
             p.visitUpdates((pos, state) -> {
+                if (pos.equals(currentPos)) {
+                    if (debug.get()) info("OnPacket: Received ChunkDeltaUpdateS2CPacket for target pos. New state is air: %b", state.isAir());
+                }
                 handleBlockUpdate(pos, state.isAir());
             });
         }
     }
 
     private void handleBlockUpdate(BlockPos pos, boolean isAir) {
-        if (!pos.equals(currentPos)) return;
+        if (currentPos == null || !pos.equals(currentPos)) return;
 
-        if (mode == Mode.WaitingPlace && !isAir) {
-            // Placement confirmed
-            mode = Mode.MiningStart;
-            timer = 0;
-        } else if (mode == Mode.WaitingBreak) {
+        // This handles the case where we do a client-side place, but the server rejects it.
+        // If we are trying to mine, but the server says the block is air, our placement failed.
+        if (isAir && (mode == State.MiningStart || mode == State.MiningHold)) {
+            if (debug.get()) error("Server rejected placement at %s. Retrying placement.", pos);
+            mode = State.Placing;
+            timer = delay.get();
+            return;
+        }
+
+        if (mode == State.WaitingBreak) {
             if (isAir) {
                 // Break confirmed
-                reset();
+                if (debug.get()) info("HandleBlockUpdate: Break confirmed by server.");
+                if (placeTarget != null) {
+                    // Loop back to placing
+                    mode = State.Placing;
+                    attempts = 0;
+                    restorationCount = 0;
+                    timer = delay.get();
+                } else {
+                    reset();
+                }
             } else {
                 // Block restored (Desync or failure)
-                restorationCount++;
-                if (restorationCount > restorationLimit.get()) {
-                    reset(); // Give up
-                } else {
-                    mode = Mode.MiningStart; // Retry break
-                    timer = retryDelay.get();
-                }
+                if (debug.get()) info("HandleBlockUpdate: Block restored by server.");
+                handleRestoration();
             }
+        } else if (breakMode.get() == BreakMode.Instant && !isAir) {
+            // Block restored in instant mode, interrupt and retry
+            if (debug.get()) info("HandleBlockUpdate: Block restored in Instant mode. Interrupting and retrying.");
+            handleRestoration();
+        }
+    }
+
+    private void handleRestoration() {
+        restorationCount++;
+        if (restorationCount > 3) { // restorationLimit
+            if (debug.get()) error("handleRestoration: Restoration limit exceeded.");
+            error("Block restored too many times, aborting.");
+            reset(); // Give up
+        } else {
+            if (debug.get()) info("Block restored by server, retrying break... (%d/%d)", restorationCount, 3);
+            if (debug.get()) info("handleRestoration: Retrying break. Count: %d", restorationCount);
+            mode = State.MiningStart; // Retry break
+            timer = delay.get();
         }
     }
 
     // ── Pickaxe selection ─────────────────────────────────────────────────────
 
     private FindItemResult findPickaxe() {
-        FindItemResult r = findPickaxeOfType(Items.NETHERITE_PICKAXE);
-        if (r.found()) return r;
-        r = findPickaxeOfType(Items.DIAMOND_PICKAXE);
-        if (r.found()) return r;
-        return InvUtils.find(s -> s.getItem() == Items.NETHERITE_PICKAXE || s.getItem() == Items.DIAMOND_PICKAXE);
-    }
+        // Prioritize non-silk touch for obsidian drops
+        FindItemResult r = InvUtils.find(s -> s.getItem() == Items.NETHERITE_PICKAXE && !hasSilkTouch(s));
+        if (r.found()) {
+            if (debug.get()) info("Found non-silk Netherite Pickaxe in slot %d.", r.slot());
+            return r;
+        }
 
-    private FindItemResult findPickaxeOfType(Item item) {
-        return InvUtils.find(s -> {
-            if (s.getItem() != item) return false;
-            boolean silk = hasSilkTouch(s);
-            return switch (pickaxeMode.get()) {
-                case NoSilkTouch -> !silk;
-                case SilkTouch   ->  silk;
-                case Any         -> true;
-            };
-        });
+        r = InvUtils.find(s -> s.getItem() == Items.DIAMOND_PICKAXE && !hasSilkTouch(s));
+        if (r.found()) {
+            if (debug.get()) info("Found non-silk Diamond Pickaxe in slot %d.", r.slot());
+            return r;
+        }
+
+        // Fallback to any pickaxe if no non-silk touch is available
+        r = InvUtils.find(Items.NETHERITE_PICKAXE);
+        if (r.found()) {
+            if (debug.get()) info("Found fallback Netherite Pickaxe in slot %d.", r.slot());
+            return r;
+        }
+
+        r = InvUtils.find(Items.DIAMOND_PICKAXE);
+        if (r.found()) {
+            if (debug.get()) info("Found fallback Diamond Pickaxe in slot %d.", r.slot());
+        } else {
+            if (debug.get()) info("No suitable pickaxe found.");
+        }
+        return r;
     }
 
     private boolean hasSilkTouch(ItemStack stack) {
@@ -424,9 +481,5 @@ public class ObsidianFist extends Module {
         if (render.get()) {
             event.renderer.box(currentPos, sideColor.get(), lineColor.get(), shapeMode.get(), 0);
         }
-    }
-
-    public enum PickaxeMode {
-        NoSilkTouch, SilkTouch, Any
     }
 }
