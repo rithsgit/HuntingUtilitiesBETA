@@ -18,8 +18,8 @@ import meteordevelopment.meteorclient.utils.player.FindItemResult;
 import meteordevelopment.meteorclient.utils.player.InvUtils;
 import meteordevelopment.meteorclient.utils.player.Rotations;
 import meteordevelopment.meteorclient.utils.render.color.SettingColor;
-import meteordevelopment.meteorclient.utils.world.BlockUtils;
 import meteordevelopment.orbit.EventHandler;
+import net.minecraft.block.Block;
 import net.minecraft.block.Blocks;
 import net.minecraft.component.DataComponentTypes;
 import net.minecraft.component.type.ItemEnchantmentsComponent;
@@ -27,7 +27,6 @@ import net.minecraft.enchantment.Enchantments;
 import net.minecraft.item.ItemStack;
 import net.minecraft.item.Items;
 import net.minecraft.network.packet.c2s.play.ClientCommandC2SPacket;
-import net.minecraft.network.packet.c2s.play.PlayerActionC2SPacket;
 import net.minecraft.network.packet.s2c.play.BlockUpdateS2CPacket;
 import net.minecraft.network.packet.s2c.play.ChunkDeltaUpdateS2CPacket;
 import net.minecraft.util.Hand;
@@ -36,6 +35,7 @@ import net.minecraft.util.hit.HitResult;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.Vec3d;
+import net.minecraft.world.World;
 
 public class ObsidianFist extends Module {
     private final SettingGroup sgGeneral = settings.getDefaultGroup();
@@ -69,12 +69,21 @@ public class ObsidianFist extends Module {
         .build()
     );
 
+    private final Setting<Integer> burstCount = sgGeneral.add(new IntSetting.Builder()
+        .name("burst-count")
+        .description("Number of ender chest place-break cycles to perform in one burst.")
+        .defaultValue(8)
+        .min(1)
+        .sliderMax(16)
+        .build()
+    );
+
     private final Setting<Integer> delay = sgGeneral.add(new IntSetting.Builder()
         .name("delay")
-        .description("Delay in ticks between actions (cycling or rebreaking).")
-        .defaultValue(2)
+        .description("Delay in ticks between place-break cycles (0 = instant chain).")
+        .defaultValue(0)
         .min(0)
-        .sliderMax(20)
+        .sliderMax(5)
         .build()
     );
 
@@ -132,9 +141,10 @@ public class ObsidianFist extends Module {
     private BlockPos placeTarget;
     private Direction placeSide;
     private int prevSlot = -1;
+    private int burstCyclesDone = 0;
 
     public ObsidianFist() {
-        super(HuntingUtilities.CATEGORY, "obsidian-fist", "WIP: Insta-mines Ender Chests. Optimized for 2b2t.");
+        super(HuntingUtilities.CATEGORY, "obsidian-fist", "Place-break Ender Chests. Fully self-contained, no other modules required.");
     }
 
     @Override
@@ -158,6 +168,7 @@ public class ObsidianFist extends Module {
         placeTarget = null;
         placeSide = null;
         prevSlot = -1;
+        burstCyclesDone = 0;
     }
 
     @EventHandler
@@ -218,14 +229,17 @@ public class ObsidianFist extends Module {
             return;
         }
 
-        // 1. Existing Ender Chest
+        // 1. Existing Ender Chest - mine it then instantly replace and continue burst
         if (mc.world.getBlockState(pos).getBlock() == Blocks.ENDER_CHEST) {
             if (debug.get()) info("Idle: Found existing Ender Chest at %s. Starting to mine.", pos);
             currentPos = pos;
             currentDir = hit.getSide();
+            placeTarget = pos.offset(hit.getSide().getOpposite()); // Block to place against when replacing
+            placeSide = hit.getSide();
             mode = State.MiningStart;
             attempts = 0;
             restorationCount = 0;
+            burstCyclesDone = 0;
             return;
         }
 
@@ -237,7 +251,7 @@ public class ObsidianFist extends Module {
         }
 
         BlockPos placePos = pos.offset(hit.getSide());
-        if (!BlockUtils.canPlace(placePos)) {
+        if (!canPlace(placePos)) {
             if (debug.get()) info("Idle: Cannot place at %s.", placePos);
             return;
         }
@@ -256,6 +270,7 @@ public class ObsidianFist extends Module {
         mode = State.Placing;
         attempts = 0;
         restorationCount = 0;
+        burstCyclesDone = 0;
 
         // Store interaction data for placement
         placeTarget = pos;
@@ -270,36 +285,38 @@ public class ObsidianFist extends Module {
             return;
         }
 
-        int prevSlot = mc.player.getInventory().selectedSlot;
-        if (!InvUtils.swap(echest.slot(), false)) return;
+        Runnable placeLogic = () -> {
+            int prevSlot = mc.player.getInventory().selectedSlot;
+            if (!InvUtils.swap(echest.slot(), false)) return;
+
+            boolean sneaking = !mc.player.isSneaking() && isClickable(mc.world.getBlockState(placeTarget).getBlock());
+            if (sneaking) mc.player.networkHandler.sendPacket(new ClientCommandC2SPacket(mc.player, ClientCommandC2SPacket.Mode.PRESS_SHIFT_KEY));
+
+            BlockHitResult placeHit = new BlockHitResult(
+                new Vec3d(placeTarget.getX() + 0.5 + placeSide.getOffsetX() * 0.5, placeTarget.getY() + 0.5 + placeSide.getOffsetY() * 0.5, placeTarget.getZ() + 0.5 + placeSide.getOffsetZ() * 0.5),
+                placeSide,
+                placeTarget,
+                false
+            );
+
+            if (debug.get()) info("Placing: Interacting with block at %s to place at %s.", placeTarget, currentPos);
+            mc.interactionManager.interactBlock(mc.player, Hand.MAIN_HAND, placeHit);
+            mc.player.swingHand(Hand.MAIN_HAND);
+
+            if (sneaking) mc.player.networkHandler.sendPacket(new ClientCommandC2SPacket(mc.player, ClientCommandC2SPacket.Mode.RELEASE_SHIFT_KEY));
+
+            if (swapBack.get()) InvUtils.swap(prevSlot, false);
+
+            mode = State.MiningStart;
+            // First block: 1 tick delay so server registers placement. Replacements: instant break.
+            timer = (burstCyclesDone == 0) ? 1 : 0;
+        };
 
         if (rotate.get()) {
-            Rotations.rotate(Rotations.getYaw(placeTarget), Rotations.getPitch(placeTarget));
+            Rotations.rotate(Rotations.getYaw(placeTarget), Rotations.getPitch(placeTarget), placeLogic);
+        } else {
+            placeLogic.run();
         }
-
-        boolean sneaking = !mc.player.isSneaking() && BlockUtils.isClickable(mc.world.getBlockState(placeTarget).getBlock());
-        if (sneaking) mc.player.networkHandler.sendPacket(new ClientCommandC2SPacket(mc.player, ClientCommandC2SPacket.Mode.PRESS_SHIFT_KEY));
-
-        BlockHitResult placeHit = new BlockHitResult(
-            new Vec3d(placeTarget.getX() + 0.5 + placeSide.getOffsetX() * 0.5, placeTarget.getY() + 0.5 + placeSide.getOffsetY() * 0.5, placeTarget.getZ() + 0.5 + placeSide.getOffsetZ() * 0.5),
-            placeSide,
-            placeTarget,
-            false
-        );
-
-        if (debug.get()) info("Placing: Interacting with block at %s to place at %s.", placeTarget, currentPos);
-        mc.interactionManager.interactBlock(mc.player, Hand.MAIN_HAND, placeHit);
-        mc.player.swingHand(Hand.MAIN_HAND);
-
-        // Client-side placement to prevent the client from trying to mine air.
-        mc.world.setBlockState(currentPos, Blocks.ENDER_CHEST.getDefaultState());
-
-        if (sneaking) mc.player.networkHandler.sendPacket(new ClientCommandC2SPacket(mc.player, ClientCommandC2SPacket.Mode.RELEASE_SHIFT_KEY));
-
-        if (swapBack.get()) InvUtils.swap(prevSlot, false);
-
-        mode = State.MiningStart;
-        timer = delay.get();
     }
 
     private void handleMiningStart() {
@@ -310,18 +327,24 @@ public class ObsidianFist extends Module {
             return;
         }
 
-        prevSlot = mc.player.getInventory().selectedSlot;
-        InvUtils.swap(pickaxe.slot(), false);
+        Runnable mineLogic = () -> {
+            if (prevSlot == -1) prevSlot = mc.player.getInventory().selectedSlot;
+            InvUtils.swap(pickaxe.slot(), false);
+
+            // Use interaction manager directly - self-contained, no BlockUtils/SpeedMine
+            if (mc.interactionManager.isBreakingBlock()) {
+                mc.interactionManager.updateBlockBreakingProgress(currentPos, currentDir);
+            } else {
+                mc.interactionManager.attackBlock(currentPos, currentDir);
+            }
+            mc.player.swingHand(Hand.MAIN_HAND);
+        };
 
         if (rotate.get()) {
-            Rotations.rotate(Rotations.getYaw(currentPos), Rotations.getPitch(currentPos));
+            Rotations.rotate(Rotations.getYaw(currentPos), Rotations.getPitch(currentPos), mineLogic);
+        } else {
+            mineLogic.run();
         }
-
-        if (debug.get()) info("MiningStart: Sending START_DESTROY_BLOCK for %s.", currentPos);
-        mc.player.networkHandler.sendPacket(new PlayerActionC2SPacket(PlayerActionC2SPacket.Action.START_DESTROY_BLOCK, currentPos, currentDir));
-
-        mode = State.MiningHold;
-        timer = 0; // The hold is effectively instant, just a state transition
     }
 
     private void handleMiningHold() {
@@ -329,35 +352,49 @@ public class ObsidianFist extends Module {
         finishMining();
     }
 
-    private void finishMining() {
-        if (debug.get()) info("FinishMining: Sending STOP_DESTROY_BLOCK for %s.", currentPos);
-        mc.player.networkHandler.sendPacket(new PlayerActionC2SPacket(PlayerActionC2SPacket.Action.STOP_DESTROY_BLOCK, currentPos, currentDir.getOpposite()));
-
+    /** Called when break is confirmed (from packet) or after MiningHold (instant mode). */
+    private void doFinishMiningCycle() {
         if (swapBack.get() && prevSlot != -1) {
             InvUtils.swap(prevSlot, false);
             prevSlot = -1;
         }
-
         mc.player.swingHand(Hand.MAIN_HAND);
-        if (debug.get()) info("FinishMining: Set block to AIR client-side.");
-        mc.world.setBlockState(currentPos, Blocks.AIR.getDefaultState());
 
         if (breakMode.get() == BreakMode.Instant) {
             if (placeTarget != null) {
-                if (debug.get()) info("FinishMining: Instant mode, cycling back to Placing.");
-                mode = State.Placing;
-                attempts = 0;
-                restorationCount = 0;
-                timer = delay.get();
+                if (burstCyclesDone == 0) {
+                    // First break done, cycle to replace -> auto break
+                    if (debug.get()) info("FinishMining: First break done, cycling to replace.");
+                    burstCyclesDone++;
+                    mode = State.Placing;
+                    attempts = 0;
+                    restorationCount = 0;
+                    timer = delay.get();
+                } else {
+                    burstCyclesDone++;
+                    if (burstCyclesDone >= burstCount.get()) {
+                        if (debug.get()) info("FinishMining: Burst complete (%d cycles), resetting.", burstCyclesDone);
+                        reset();
+                    } else {
+                        if (debug.get()) info("FinishMining: Auto break done, cycling to replace (%d/%d).", burstCyclesDone, burstCount.get());
+                        mode = State.Placing;
+                        attempts = 0;
+                        restorationCount = 0;
+                        timer = delay.get();
+                    }
+                }
             } else {
                 if (debug.get()) info("FinishMining: Instant mode, no place target, resetting.");
                 reset();
             }
         } else {
-            if (debug.get()) info("FinishMining: Safe mode, waiting for server confirmation.");
             mode = State.WaitingBreak;
-            timer = 40; // Ghost block suppression timeout
+            timer = 40;
         }
+    }
+
+    private void finishMining() {
+        doFinishMiningCycle();
     }
 
     private Direction getBreakDirection(BlockPos pos) {
@@ -367,6 +404,25 @@ public class ObsidianFist extends Module {
         return Direction.getFacing(diff.x, diff.y, diff.z);
     }
 
+    private boolean canPlace(BlockPos pos) {
+        if (!World.isValid(pos)) return false;
+        if (!mc.world.getBlockState(pos).isReplaceable()) return false;
+        if (!mc.world.getFluidState(pos).isEmpty()) return false;
+        return mc.world.canPlace(Blocks.ENDER_CHEST.getDefaultState(), pos, net.minecraft.block.ShapeContext.absent());
+    }
+
+    private boolean isClickable(Block block) {
+        return block instanceof net.minecraft.block.CraftingTableBlock
+            || block instanceof net.minecraft.block.AnvilBlock
+            || block instanceof net.minecraft.block.BlockWithEntity
+            || block instanceof net.minecraft.block.BedBlock
+            || block instanceof net.minecraft.block.FenceGateBlock
+            || block instanceof net.minecraft.block.DoorBlock
+            || block instanceof net.minecraft.block.TrapdoorBlock
+            || block == Blocks.CHEST
+            || block == Blocks.ENDER_CHEST;
+    }
+
     @EventHandler
     private void onPacket(PacketEvent.Receive event) {
         if (currentPos == null) return;
@@ -374,14 +430,14 @@ public class ObsidianFist extends Module {
         if (event.packet instanceof BlockUpdateS2CPacket p) {
             if (p.getPos().equals(currentPos)) {
                 if (debug.get()) info("OnPacket: Received BlockUpdateS2CPacket for target pos. New state is air: %b", p.getState().isAir());
+                handleBlockUpdate(p.getPos(), p.getState().isAir());
             }
-            handleBlockUpdate(p.getPos(), p.getState().isAir());
         } else if (event.packet instanceof ChunkDeltaUpdateS2CPacket p) {
             p.visitUpdates((pos, state) -> {
                 if (pos.equals(currentPos)) {
                     if (debug.get()) info("OnPacket: Received ChunkDeltaUpdateS2CPacket for target pos. New state is air: %b", state.isAir());
+                    handleBlockUpdate(pos, state.isAir());
                 }
-                handleBlockUpdate(pos, state.isAir());
             });
         }
     }
@@ -389,12 +445,16 @@ public class ObsidianFist extends Module {
     private void handleBlockUpdate(BlockPos pos, boolean isAir) {
         if (currentPos == null || !pos.equals(currentPos)) return;
 
-        // This handles the case where we do a client-side place, but the server rejects it.
-        // If we are trying to mine, but the server says the block is air, our placement failed.
-        if (isAir && (mode == State.MiningStart || mode == State.MiningHold)) {
-            if (debug.get()) error("Server rejected placement at %s. Retrying placement.", pos);
-            mode = State.Placing;
-            timer = delay.get();
+        // Air in MiningStart = block broke (we call attackBlock/updateBlockBreakingProgress each tick until server confirms)
+        if (isAir && mode == State.MiningStart) {
+            if (debug.get()) info("HandleBlockUpdate: Break confirmed (MiningStart).");
+            doFinishMiningCycle();
+            return;
+        }
+
+        // Air in MiningHold = late break confirmation from previous cycle, ignore (we've already placed next)
+        if (isAir && mode == State.MiningHold) {
+            if (debug.get()) info("HandleBlockUpdate: Ignoring late air (MiningHold).");
             return;
         }
 
@@ -403,11 +463,16 @@ public class ObsidianFist extends Module {
                 // Break confirmed
                 if (debug.get()) info("HandleBlockUpdate: Break confirmed by server.");
                 if (placeTarget != null) {
-                    // Loop back to placing
-                    mode = State.Placing;
-                    attempts = 0;
-                    restorationCount = 0;
-                    timer = delay.get();
+                    burstCyclesDone++;
+                    if (burstCyclesDone >= burstCount.get()) {
+                        if (debug.get()) info("HandleBlockUpdate: Burst complete (%d cycles), resetting.", burstCyclesDone);
+                        reset();
+                    } else {
+                        mode = State.Placing;
+                        attempts = 0;
+                        restorationCount = 0;
+                        timer = delay.get();
+                    }
                 } else {
                     reset();
                 }
@@ -416,11 +481,12 @@ public class ObsidianFist extends Module {
                 if (debug.get()) info("HandleBlockUpdate: Block restored by server.");
                 handleRestoration();
             }
-        } else if (breakMode.get() == BreakMode.Instant && !isAir) {
-            // Block restored in instant mode, interrupt and retry
-            if (debug.get()) info("HandleBlockUpdate: Block restored in Instant mode. Interrupting and retrying.");
+        } else if (breakMode.get() == BreakMode.Instant && !isAir && mode == State.Placing) {
+            // Block still there while we want to place: our previous break failed, retry break
+            if (debug.get()) info("HandleBlockUpdate: Block still present in Placing, previous break failed. Retrying.");
             handleRestoration();
         }
+        // MiningStart + block present = placement confirmed, ignore (block being there is correct)
     }
 
     private void handleRestoration() {
