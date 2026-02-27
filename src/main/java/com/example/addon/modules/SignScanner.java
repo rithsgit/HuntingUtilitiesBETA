@@ -21,12 +21,14 @@ import meteordevelopment.meteorclient.settings.BoolSetting;
 import meteordevelopment.meteorclient.settings.ColorSetting;
 import meteordevelopment.meteorclient.settings.DoubleSetting;
 import meteordevelopment.meteorclient.settings.IntSetting;
+import meteordevelopment.meteorclient.settings.KeybindSetting;
 import meteordevelopment.meteorclient.settings.Setting;
 import meteordevelopment.meteorclient.settings.SettingGroup;
 import meteordevelopment.meteorclient.settings.StringListSetting;
 import meteordevelopment.meteorclient.settings.StringSetting;
 import meteordevelopment.meteorclient.systems.modules.Module;
 import meteordevelopment.meteorclient.utils.Utils;
+import meteordevelopment.meteorclient.utils.misc.Keybind;
 import meteordevelopment.meteorclient.utils.player.FindItemResult;
 import meteordevelopment.meteorclient.utils.player.InvUtils;
 import meteordevelopment.meteorclient.utils.player.Rotations;
@@ -37,6 +39,7 @@ import net.minecraft.block.entity.BlockEntity;
 import net.minecraft.block.entity.HangingSignBlockEntity;
 import net.minecraft.block.entity.SignBlockEntity;
 import net.minecraft.block.entity.SignText;
+import net.minecraft.item.Items;
 import net.minecraft.item.SignItem;
 import net.minecraft.network.packet.c2s.play.UpdateSignC2SPacket;
 import net.minecraft.text.MutableText;
@@ -78,6 +81,18 @@ public class SignScanner extends Module {
         .name("auto-sign")
         .description("Automatically places signs with custom text.")
         .defaultValue(false)
+        .build()
+    );
+
+    private final Setting<Keybind> autoSignKey = sgAutoSign.add(new KeybindSetting.Builder()
+        .name("toggle-key")
+        .description("Key to toggle auto sign.")
+        .defaultValue(Keybind.none())
+        .action(() -> {
+            boolean newVal = !autoSign.get();
+            autoSign.set(newVal);
+            info("Auto Sign " + (newVal ? "enabled" : "disabled") + ".");
+        })
         .build()
     );
 
@@ -129,6 +144,14 @@ public class SignScanner extends Module {
         .defaultValue(1.0)
         .min(0)
         .sliderMax(5)
+        .visible(autoSign::get)
+        .build()
+    );
+
+    private final Setting<Boolean> autoGlow = sgAutoSign.add(new BoolSetting.Builder()
+        .name("auto-glow")
+        .description("Automatically applies a glow ink sac to the sign.")
+        .defaultValue(false)
         .visible(autoSign::get)
         .build()
     );
@@ -295,6 +318,15 @@ public class SignScanner extends Module {
                                 String l4 = line4.get();
 
                                 mc.player.networkHandler.sendPacket(new UpdateSignC2SPacket(pos, true, l1, l2, l3, l4));
+
+                                if (autoGlow.get()) {
+                                    FindItemResult glowResult = InvUtils.findInHotbar(Items.GLOW_INK_SAC);
+                                    if (glowResult.found()) {
+                                        InvUtils.swap(glowResult.slot(), false);
+                                        mc.interactionManager.interactBlock(mc.player, Hand.MAIN_HAND, new BlockHitResult(Vec3d.ofCenter(pos), finalSide, pos, false));
+                                        mc.player.swingHand(Hand.MAIN_HAND);
+                                    }
+                                }
 
                                 InvUtils.swap(prevSlot, false);
                             };
