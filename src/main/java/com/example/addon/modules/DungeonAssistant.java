@@ -194,18 +194,18 @@ public class DungeonAssistant extends Module {
         .build()
     );
 
-    private final Setting<Boolean> notifySpawnerBreak = sgSpawners.add(new BoolSetting.Builder()
-        .name("notify-break")
-        .description("Notifies you when a spawner is broken.")
-        .defaultValue(false)
-        .visible(trackSpawners::get)
-        .build()
-    );
-
     private final Setting<SettingColor> spawnerColor = sgSpawners.add(new ColorSetting.Builder()
         .name("spawner-color")
         .description("Monster spawner highlight color.")
         .defaultValue(new SettingColor(255, 0, 0, 100))
+        .visible(trackSpawners::get)
+        .build()
+    );
+
+    private final Setting<Boolean> notifySpawnerBreak = sgSpawners.add(new BoolSetting.Builder()
+        .name("notify-break")
+        .description("Notifies you when a spawner is broken.")
+        .defaultValue(false)
         .visible(trackSpawners::get)
         .build()
     );
@@ -271,22 +271,6 @@ public class DungeonAssistant extends Module {
         .visible(autoBreakSpawners::get)
         .build()
     );
-    
-    private final Setting<Boolean> highlightSpawnerTorches = sgSpawners.add(new BoolSetting.Builder()
-        .name("highlight-torches")
-        .description("Highlights torches within 5 blocks of a spawner.")
-        .defaultValue(true)
-        .visible(trackSpawners::get)
-        .build()
-    );
-
-    private final Setting<SettingColor> spawnerTorchColor = sgSpawners.add(new ColorSetting.Builder()
-        .name("torch-color")
-        .description("Color for torches near spawners.")
-        .defaultValue(new SettingColor(255, 255, 0, 150))
-        .visible(() -> trackSpawners.get() && highlightSpawnerTorches.get())
-        .build()
-    );
 
     // Chest Settings
     private final Setting<Boolean> trackChests = sgChests.add(new BoolSetting.Builder()
@@ -334,19 +318,11 @@ public class DungeonAssistant extends Module {
         .visible(() -> trackChestMinecarts.get() && highlightStacked.get())
         .build()
     );
-    
-    private final Setting<Boolean> countBrokenChests = sgChests.add(new BoolSetting.Builder()
-        .name("count-broken-chests")
-        .description("Counts how many chests have been broken.")
-        .defaultValue(true)
-        .build()
-    );
 
-    private final Setting<Boolean> showBrokenChestCount = sgChests.add(new BoolSetting.Builder()
-        .name("show-broken-chest-count")
-        .description("Shows the broken chest count in chat.")
+    private final Setting<Boolean> brokenChestCounter = sgChests.add(new BoolSetting.Builder()
+        .name("broken-chest-counter")
+        .description("Counts and displays how many chests have been broken.")
         .defaultValue(true)
-        .visible(countBrokenChests::get)
         .build()
     );
 
@@ -393,6 +369,22 @@ public class DungeonAssistant extends Module {
         .build()
     );
 
+    private final Setting<Boolean> highlightSpawnerTorches = sgClutterBlocks.add(new BoolSetting.Builder()
+        .name("highlight-spawner-torches")
+        .description("Highlights torches within 5 blocks of a spawner.")
+        .defaultValue(true)
+        .visible(trackSpawners::get)
+        .build()
+    );
+
+    private final Setting<SettingColor> spawnerTorchColor = sgClutterBlocks.add(new ColorSetting.Builder()
+        .name("spawner-torch-color")
+        .description("Color for torches near spawners.")
+        .defaultValue(new SettingColor(255, 255, 0, 150))
+        .visible(() -> trackSpawners.get() && highlightSpawnerTorches.get())
+        .build()
+    );
+
     private final Setting<Boolean> trackEndermites = sgEndermites.add(new BoolSetting.Builder()
         .name("track-endermites")
         .description("Highlights Endermites in the Overworld.")
@@ -430,14 +422,6 @@ public class DungeonAssistant extends Module {
         .name("endermite-color")
         .description("The highlight color for Endermites.")
         .defaultValue(new SettingColor(138, 43, 226, 150))
-        .visible(trackEndermites::get)
-        .build()
-    );
-
-    private final Setting<Boolean> endermiteMessage = sgEndermites.add(new BoolSetting.Builder()
-        .name("notification-message")
-        .description("Sends a message when an Endermite is detected.")
-        .defaultValue(true)
         .visible(trackEndermites::get)
         .build()
     );
@@ -719,9 +703,9 @@ public class DungeonAssistant extends Module {
 
             if (done) {
                 if (isBreakingChest && mc.world.getBlockState(blockToBreak).isAir()) {
-                    if (countBrokenChests.get()) {
+                    if (brokenChestCounter.get()) {
                         brokenChestsCount++;
-                        if (showBrokenChestCount.get()) info("Chests broken: " + brokenChestsCount);
+                        info("Chests broken: " + brokenChestsCount);
                     }
                 }
                 isBreaking = false;
@@ -1099,9 +1083,7 @@ public class DungeonAssistant extends Module {
             currentIds.add(endermite.getId());
 
             if (notifiedEndermites.add(endermite.getId())) {
-                if (endermiteMessage.get()) {
-                    info("Endermite Detected, Beam created");
-                }
+                info("Endermite Detected, Beam created");
                 mc.player.playSound(SoundEvents.ENTITY_ENDERMITE_AMBIENT, 1.0f, 1.0f);
             }
         }
