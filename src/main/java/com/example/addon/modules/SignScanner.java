@@ -128,22 +128,22 @@ public class SignScanner extends Module {
         .build()
     );
 
-    private final Setting<Double> minDelay = sgAutoSign.add(new DoubleSetting.Builder()
-        .name("min-delay")
-        .description("The minimum delay before placing a sign (in seconds).")
-        .defaultValue(0.0)
+    private final Setting<Double> placeDelay = sgAutoSign.add(new DoubleSetting.Builder()
+        .name("place-delay")
+        .description("The delay between placing signs automatically (in seconds).")
+        .defaultValue(1.0)
         .min(0)
-        .sliderMax(5)
+        .sliderMax(10)
         .visible(autoSign::get)
         .build()
     );
 
-    private final Setting<Double> maxDelay = sgAutoSign.add(new DoubleSetting.Builder()
-        .name("max-delay")
-        .description("The maximum delay before placing a sign (in seconds).")
-        .defaultValue(1.0)
+    private final Setting<Double> manualEditDelay = sgAutoSign.add(new DoubleSetting.Builder()
+        .name("manual-edit-delay")
+        .description("The delay after placing a sign with empty lines for manual editing (in seconds).")
+        .defaultValue(5.0)
         .min(0)
-        .sliderMax(5)
+        .sliderMax(20)
         .visible(autoSign::get)
         .build()
     );
@@ -304,6 +304,12 @@ public class SignScanner extends Module {
                             final Direction finalSide = dir.getOpposite();
                             final int slot = signResult.slot();
 
+                            String l1 = line1.get();
+                            String l2 = line2.get();
+                            String l3 = line3.get();
+                            String l4 = line4.get();
+                            boolean hasEmptyLine = l1.isEmpty() || l2.isEmpty() || l3.isEmpty() || l4.isEmpty();
+
                             Runnable action = () -> {
                                 int prevSlot = mc.player.getInventory().selectedSlot;
                                 InvUtils.swap(slot, false);
@@ -312,19 +318,16 @@ public class SignScanner extends Module {
                                 mc.interactionManager.interactBlock(mc.player, Hand.MAIN_HAND, hit);
                                 mc.player.swingHand(Hand.MAIN_HAND);
 
-                                String l1 = line1.get();
-                                String l2 = line2.get();
-                                String l3 = line3.get();
-                                String l4 = line4.get();
+                                if (!hasEmptyLine) {
+                                    mc.player.networkHandler.sendPacket(new UpdateSignC2SPacket(pos, true, l1, l2, l3, l4));
 
-                                mc.player.networkHandler.sendPacket(new UpdateSignC2SPacket(pos, true, l1, l2, l3, l4));
-
-                                if (autoGlow.get()) {
-                                    FindItemResult glowResult = InvUtils.findInHotbar(Items.GLOW_INK_SAC);
-                                    if (glowResult.found()) {
-                                        InvUtils.swap(glowResult.slot(), false);
-                                        mc.interactionManager.interactBlock(mc.player, Hand.MAIN_HAND, new BlockHitResult(Vec3d.ofCenter(pos), finalSide, pos, false));
-                                        mc.player.swingHand(Hand.MAIN_HAND);
+                                    if (autoGlow.get()) {
+                                        FindItemResult glowResult = InvUtils.findInHotbar(Items.GLOW_INK_SAC);
+                                        if (glowResult.found()) {
+                                            InvUtils.swap(glowResult.slot(), false);
+                                            mc.interactionManager.interactBlock(mc.player, Hand.MAIN_HAND, new BlockHitResult(Vec3d.ofCenter(pos), finalSide, pos, false));
+                                            mc.player.swingHand(Hand.MAIN_HAND);
+                                        }
                                     }
                                 }
 
@@ -337,10 +340,11 @@ public class SignScanner extends Module {
                                 action.run();
                             }
 
-                            int min = (int) (minDelay.get() * 20);
-                            int max = (int) (maxDelay.get() * 20);
-                            if (max < min) max = min;
-                            autoSignTimer = Utils.random(min, max);
+                            if (hasEmptyLine) {
+                                autoSignTimer = (int) (manualEditDelay.get() * 20);
+                            } else {
+                                autoSignTimer = (int) (placeDelay.get() * 20);
+                            }
                             return;
                         }
                     }
