@@ -57,13 +57,6 @@ public class SignScanner extends Module {
         .build()
     );
 
-    private final Setting<Boolean> chatFeedback = sgGeneral.add(new BoolSetting.Builder()
-        .name("chat-feedback")
-        .description("Notify in chat when a sign is found.")
-        .defaultValue(true)
-        .build()
-    );
-
     private final Setting<Boolean> ignoreEmpty = sgGeneral.add(new BoolSetting.Builder()
         .name("ignore-empty")
         .description("Ignore signs with no text.")
@@ -75,6 +68,13 @@ public class SignScanner extends Module {
         .name("preserve-lines")
         .description("Preserves the 4-line layout of signs, including empty lines.")
         .defaultValue(false)
+        .build()
+    );
+
+    private final Setting<Boolean> chatMessages = sgGeneral.add(new BoolSetting.Builder()
+        .name("chat-messages")
+        .description("Notify in chat when a sign is found.")
+        .defaultValue(true)
         .build()
     );
 
@@ -241,7 +241,7 @@ public class SignScanner extends Module {
                 signs.put(be.getPos(), lines);
                 currentSigns.add(be.getPos());
 
-                if (chatFeedback.get() && !notified.contains(be.getPos())) {
+                if (chatMessages.get() && !notified.contains(be.getPos())) {
                     List<String> lineStrings = lines.stream().map(Text::getString).filter(s -> !s.isBlank()).toList();
                     if (!lineStrings.isEmpty()) {
                         info("Sign found: " + String.join(" | ", lineStrings));
