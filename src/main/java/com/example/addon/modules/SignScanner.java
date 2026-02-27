@@ -113,22 +113,22 @@ public class SignScanner extends Module {
         .build()
     );
 
-    private final Setting<Integer> minDelay = sgAutoSign.add(new IntSetting.Builder()
+    private final Setting<Double> minDelay = sgAutoSign.add(new DoubleSetting.Builder()
         .name("min-delay")
-        .description("The minimum delay before placing a sign (in ticks).")
-        .defaultValue(0)
+        .description("The minimum delay before placing a sign (in seconds).")
+        .defaultValue(0.0)
         .min(0)
-        .sliderMax(900)
+        .sliderMax(5)
         .visible(autoSign::get)
         .build()
     );
 
-    private final Setting<Integer> maxDelay = sgAutoSign.add(new IntSetting.Builder()
+    private final Setting<Double> maxDelay = sgAutoSign.add(new DoubleSetting.Builder()
         .name("max-delay")
-        .description("The maximum delay before placing a sign (in ticks).")
-        .defaultValue(20)
+        .description("The maximum delay before placing a sign (in seconds).")
+        .defaultValue(1.0)
         .min(0)
-        .sliderMax(900)
+        .sliderMax(5)
         .visible(autoSign::get)
         .build()
     );
@@ -261,8 +261,8 @@ public class SignScanner extends Module {
             return;
         }
 
-        FindItemResult signResult = InvUtils.find(item -> item.getItem() instanceof SignItem);
-        if (!signResult.found() || !signResult.isHotbar()) return;
+        FindItemResult signResult = InvUtils.findInHotbar(item -> item.getItem() instanceof SignItem);
+        if (!signResult.found()) return;
 
         BlockPos playerPos = mc.player.getBlockPos();
         int r = 4;
@@ -305,8 +305,8 @@ public class SignScanner extends Module {
                                 action.run();
                             }
 
-                            int min = minDelay.get();
-                            int max = maxDelay.get();
+                            int min = (int) (minDelay.get() * 20);
+                            int max = (int) (maxDelay.get() * 20);
                             if (max < min) max = min;
                             autoSignTimer = Utils.random(min, max);
                             return;
