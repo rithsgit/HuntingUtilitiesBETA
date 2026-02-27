@@ -24,8 +24,12 @@ import meteordevelopment.meteorclient.settings.IntSetting;
 import meteordevelopment.meteorclient.settings.Setting;
 import meteordevelopment.meteorclient.settings.SettingGroup;
 import meteordevelopment.meteorclient.settings.StringListSetting;
+import meteordevelopment.meteorclient.settings.StringSetting;
 import meteordevelopment.meteorclient.systems.modules.Module;
 import meteordevelopment.meteorclient.utils.Utils;
+import meteordevelopment.meteorclient.utils.player.FindItemResult;
+import meteordevelopment.meteorclient.utils.player.InvUtils;
+import meteordevelopment.meteorclient.utils.player.Rotations;
 import meteordevelopment.meteorclient.utils.render.NametagUtils;
 import meteordevelopment.meteorclient.utils.render.color.SettingColor;
 import meteordevelopment.orbit.EventHandler;
@@ -33,17 +37,22 @@ import net.minecraft.block.entity.BlockEntity;
 import net.minecraft.block.entity.HangingSignBlockEntity;
 import net.minecraft.block.entity.SignBlockEntity;
 import net.minecraft.block.entity.SignText;
+import net.minecraft.item.SignItem;
+import net.minecraft.network.packet.c2s.play.UpdateSignC2SPacket;
 import net.minecraft.text.MutableText;
 import net.minecraft.text.PlainTextContent;
-import net.minecraft.text.Style;
 import net.minecraft.text.Text;
 import net.minecraft.text.TextContent;
 import net.minecraft.util.Formatting;
+import net.minecraft.util.Hand;
+import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.math.BlockPos;
+import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.Vec3d;
 
 public class SignScanner extends Module {
     private final SettingGroup sgGeneral = settings.getDefaultGroup();
+    private final SettingGroup sgAutoSign = settings.createGroup("Auto Sign");
     private final SettingGroup sgRender = settings.createGroup("Render");
     private final SettingGroup sgFilter = settings.createGroup("Filter");
     private final SettingGroup sgOptimization = settings.createGroup("Optimization");
@@ -57,24 +66,78 @@ public class SignScanner extends Module {
         .build()
     );
 
-    private final Setting<Boolean> ignoreEmpty = sgGeneral.add(new BoolSetting.Builder()
-        .name("ignore-empty")
-        .description("Ignore signs with no text.")
-        .defaultValue(true)
-        .build()
-    );
-
-    private final Setting<Boolean> preserveLines = sgGeneral.add(new BoolSetting.Builder()
-        .name("preserve-lines")
-        .description("Preserves the 4-line layout of signs, including empty lines.")
-        .defaultValue(false)
-        .build()
-    );
-
     private final Setting<Boolean> chatMessages = sgGeneral.add(new BoolSetting.Builder()
         .name("chat-messages")
         .description("Notify in chat when a sign is found.")
         .defaultValue(true)
+        .build()
+    );
+
+    // Auto Sign Settings
+    private final Setting<Boolean> autoSign = sgAutoSign.add(new BoolSetting.Builder()
+        .name("auto-sign")
+        .description("Automatically places signs with custom text.")
+        .defaultValue(false)
+        .build()
+    );
+
+    private final Setting<String> line1 = sgAutoSign.add(new StringSetting.Builder()
+        .name("line-1")
+        .description("Line 1 of the sign.")
+        .defaultValue("Hello")
+        .visible(autoSign::get)
+        .build()
+    );
+
+    private final Setting<String> line2 = sgAutoSign.add(new StringSetting.Builder()
+        .name("line-2")
+        .description("Line 2 of the sign.")
+        .defaultValue("World")
+        .visible(autoSign::get)
+        .build()
+    );
+
+    private final Setting<String> line3 = sgAutoSign.add(new StringSetting.Builder()
+        .name("line-3")
+        .description("Line 3 of the sign.")
+        .defaultValue(":)")
+        .visible(autoSign::get)
+        .build()
+    );
+
+    private final Setting<String> line4 = sgAutoSign.add(new StringSetting.Builder()
+        .name("line-4")
+        .description("Line 4 of the sign.")
+        .defaultValue("")
+        .visible(autoSign::get)
+        .build()
+    );
+
+    private final Setting<Integer> minDelay = sgAutoSign.add(new IntSetting.Builder()
+        .name("min-delay")
+        .description("The minimum delay before placing a sign (in ticks).")
+        .defaultValue(0)
+        .min(0)
+        .sliderMax(900)
+        .visible(autoSign::get)
+        .build()
+    );
+
+    private final Setting<Integer> maxDelay = sgAutoSign.add(new IntSetting.Builder()
+        .name("max-delay")
+        .description("The maximum delay before placing a sign (in ticks).")
+        .defaultValue(20)
+        .min(0)
+        .sliderMax(900)
+        .visible(autoSign::get)
+        .build()
+    );
+
+    private final Setting<Boolean> rotate = sgAutoSign.add(new BoolSetting.Builder()
+        .name("rotate")
+        .description("Rotates towards the block when placing.")
+        .defaultValue(true)
+        .visible(autoSign::get)
         .build()
     );
 
@@ -133,6 +196,13 @@ public class SignScanner extends Module {
         .build()
     );
 
+    private final Setting<Boolean> ignoreEmpty = sgFilter.add(new BoolSetting.Builder()
+        .name("ignore-empty")
+        .description("Ignore signs with no text.")
+        .defaultValue(true)
+        .build()
+    );
+
     private final Setting<Boolean> censorship = sgFilter.add(new BoolSetting.Builder()
         .name("censorship")
         .description("Censors bad words on signs.")
@@ -168,6 +238,7 @@ public class SignScanner extends Module {
     private final Map<BlockPos, List<Text>> signs = new ConcurrentHashMap<>();
     private final Set<BlockPos> notified = new HashSet<>();
     private int timer = 0;
+    private int autoSignTimer = 0;
 
     public SignScanner() {
         super(HuntingUtilities.CATEGORY, "sign-scanner", "Scans and displays sign text.");
@@ -178,6 +249,72 @@ public class SignScanner extends Module {
         signs.clear();
         notified.clear();
         timer = 0;
+        autoSignTimer = 0;
+    }
+
+    @EventHandler
+    private void onTickPre(TickEvent.Pre event) {
+        if (!autoSign.get()) return;
+
+        if (autoSignTimer > 0) {
+            autoSignTimer--;
+            return;
+        }
+
+        FindItemResult signResult = InvUtils.find(item -> item.getItem() instanceof SignItem);
+        if (!signResult.found() || !signResult.isHotbar()) return;
+
+        BlockPos playerPos = mc.player.getBlockPos();
+        int r = 4;
+
+        for (int x = -r; x <= r; x++) {
+            for (int y = -2; y <= 2; y++) {
+                for (int z = -r; z <= r; z++) {
+                    BlockPos pos = playerPos.add(x, y, z);
+                    if (!mc.world.getBlockState(pos).isReplaceable()) continue;
+
+                    for (Direction dir : Direction.values()) {
+                        BlockPos neighbor = pos.offset(dir);
+                        if (mc.world.getBlockState(neighbor).isSolidBlock(mc.world, neighbor)) {
+                            
+                            final BlockPos finalNeighbor = neighbor;
+                            final Direction finalSide = dir.getOpposite();
+                            final int slot = signResult.slot();
+
+                            Runnable action = () -> {
+                                int prevSlot = mc.player.getInventory().selectedSlot;
+                                InvUtils.swap(slot, false);
+
+                                BlockHitResult hit = new BlockHitResult(Vec3d.ofCenter(finalNeighbor), finalSide, finalNeighbor, false);
+                                mc.interactionManager.interactBlock(mc.player, Hand.MAIN_HAND, hit);
+                                mc.player.swingHand(Hand.MAIN_HAND);
+
+                                String l1 = line1.get();
+                                String l2 = line2.get();
+                                String l3 = line3.get();
+                                String l4 = line4.get();
+
+                                mc.player.networkHandler.sendPacket(new UpdateSignC2SPacket(pos, true, l1, l2, l3, l4));
+
+                                InvUtils.swap(prevSlot, false);
+                            };
+
+                            if (rotate.get()) {
+                                Rotations.rotate(Rotations.getYaw(finalNeighbor), Rotations.getPitch(finalNeighbor), action);
+                            } else {
+                                action.run();
+                            }
+
+                            int min = minDelay.get();
+                            int max = maxDelay.get();
+                            if (max < min) max = min;
+                            autoSignTimer = Utils.random(min, max);
+                            return;
+                        }
+                    }
+                }
+            }
+        }
     }
 
     @EventHandler
@@ -219,22 +356,8 @@ public class SignScanner extends Module {
                     back = censorSignText(back);
                 }
 
-                if (preserveLines.get()) {
-                    int frontColor = front.getColor().getSignColor();
-                    for (Text t : front.getMessages(false)) lines.add(applyColor(cleanSignText(t), frontColor));
-                    
-                    boolean backHasText = false;
-                    for (Text t : back.getMessages(false)) {
-                        if (!t.getString().isBlank()) backHasText = true;
-                    }
-                    if (backHasText) {
-                        int backColor = back.getColor().getSignColor();
-                        for (Text t : back.getMessages(false)) lines.add(applyColor(cleanSignText(t), backColor));
-                    }
-                } else {
-                    readSignText(front, lines);
-                    readSignText(back, lines);
-                }
+                readSignText(front, lines);
+                readSignText(back, lines);
 
                 if (lines.stream().allMatch(t -> t.getString().isBlank()) && ignoreEmpty.get()) continue;
 
