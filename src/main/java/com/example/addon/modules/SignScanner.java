@@ -5,7 +5,6 @@ import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -85,13 +84,6 @@ public class SignScanner extends Module {
         .defaultValue(1.5)
         .min(0.1)
         .sliderMax(5.0)
-        .build()
-    );
-
-    private final Setting<Boolean> useLegacyFormatting = sgRender.add(new BoolSetting.Builder()
-        .name("legacy-formatting")
-        .description("Preserves Minecraft color/style codes.")
-        .defaultValue(true)
         .build()
     );
 
@@ -327,25 +319,7 @@ public class SignScanner extends Module {
     }
 
     private String getTextContent(Text text) {
-        if (!useLegacyFormatting.get()) {
-            return text.getString();
-        }
-
-        StringBuilder sb = new StringBuilder();
-        text.visit((style, asString) -> {
-            if (style.getColor() != null) {
-                Formatting f = Formatting.byName(style.getColor().getName());
-                if (f != null) sb.append(f);
-            }
-            if (style.isObfuscated()) sb.append(Formatting.OBFUSCATED);
-            if (style.isBold()) sb.append(Formatting.BOLD);
-            if (style.isStrikethrough()) sb.append(Formatting.STRIKETHROUGH);
-            if (style.isUnderlined()) sb.append(Formatting.UNDERLINE);
-            if (style.isItalic()) sb.append(Formatting.ITALIC);
-            sb.append(asString);
-            return Optional.empty();
-        }, Style.EMPTY);
-        return sb.toString();
+        return text.getString();
     }
 
     @EventHandler
@@ -437,18 +411,37 @@ public class SignScanner extends Module {
         // Text
         tr.begin(1.0, false, true);
         double y = -(linesToRender.size() * lh) / 2.0;
+        int i = 0;
         for (Text lineText : linesToRender) {
-            String line = getTextContent(lineText);
+            boolean isMergedCountLine = entry.count > 1 && i == linesToRender.size() - 1;
+
+            String line;
+            // For the merged count line, always use the plain string to avoid legacy formatting issues.
+            if (isMergedCountLine) {
+                line = lineText.getString();
+            } else {
+                line = getTextContent(lineText);
+            }
+
             double x = -tr.getWidth(line) / 2.0;
 
-            SettingColor color = textColor.get();
-            if (useSignColor.get() && lineText.getStyle().getColor() != null) {
-                int rgb = lineText.getStyle().getColor().getRgb();
-                color = new SettingColor((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF, 255);
+            SettingColor color;
+            if (isMergedCountLine) {
+                // The merged count line is always yellow.
+                color = new SettingColor(255, 255, 0, 255);
+            } else {
+                color = textColor.get();
+                if (useSignColor.get() && lineText.getStyle().getColor() != null) {
+                    int rgb = lineText.getStyle().getColor().getRgb();
+                    if (rgb != 0) {
+                        color = new SettingColor((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF, 255);
+                    }
+                }
             }
 
             tr.render(line, x, y, color, true);
             y += lh;
+            i++;
         }
         tr.end();
 
