@@ -35,20 +35,15 @@ import net.minecraft.world.chunk.Chunk;
 import net.minecraft.world.chunk.ChunkSection;
 
 /**
- * LavaMarker — highlights fully-flowed lava falls in the Nether.
+ * LavaMarker — highlights fully-flowed lava in the Nether.
+ *
+ * Highlights the entire lava fall: column + floor pool (all flowing lava).
+ * Excludes: source blocks (lakes).
  *
  * Detection:
- *   1. Find "fall tips" — the last FALLING lava block in a vertical column
- *      (FALLING=true, block below has no lava).
- *   2. BFS from each tip through all connected FLOWING (non-still) lava.
- *      Still/source lava (lakes) acts as a natural boundary — the BFS stops there.
- *      Going UP is only allowed if the block above is also FALLING
- *      (traces the column without leaking into lake sources).
- *   3. The result is the full spread of the fall on the floor, with no lake blocks.
- *
- * Anti-flicker:
- *   Each chunk's result is stored as a complete Set and atomically replaced via
- *   a single ConcurrentHashMap.put(), so the renderer never sees a partial clear.
+ *   1. Find fall tips (bottom of falling columns).
+ *   2. BFS through connected flowing lava (column + floor spread).
+ *   3. All non-still lava in the fall is highlighted.
  */
 public class LavaMarker extends Module {
     private final SettingGroup sgGeneral = settings.getDefaultGroup();
@@ -251,7 +246,7 @@ public class LavaMarker extends Module {
             }
         }
 
-        // Pass 2: BFS from each tip, check height, and collect valid falls
+        // Pass 2: BFS from each tip, collect floor spread, filter to fully-flowed only
         Set<BlockPos> allValidFallBlocks = new HashSet<>();
         Set<BlockPos> visitedInScan      = new HashSet<>();
         for (BlockPos tip : fallTips) {
@@ -262,18 +257,21 @@ public class LavaMarker extends Module {
 
             if (currentFall.isEmpty()) continue;
 
-            // Calculate height
+            // Check fall height from original BFS (includes falling column)
             int fallMinY = Integer.MAX_VALUE;
             int fallMaxY = Integer.MIN_VALUE;
             for (BlockPos pos : currentFall) {
                 fallMinY = Math.min(fallMinY, pos.getY());
                 fallMaxY = Math.max(fallMaxY, pos.getY());
             }
-            int height = fallMaxY - fallMinY + 1;
+            if (fallMaxY - fallMinY + 1 < minFallHeight.get()) continue;
 
-            // Add to results if tall enough
-            if (height >= minFallHeight.get()) {
-                allValidFallBlocks.addAll(currentFall);
+            // Include entire fall: column + floor pool (all flowing lava, including falling)
+            for (BlockPos pos : currentFall) {
+                FluidState fs = mc.world.getFluidState(pos);
+                if (fs.isIn(FluidTags.LAVA) && !fs.isStill()) {
+                    allValidFallBlocks.add(pos);
+                }
             }
         }
 
@@ -339,21 +337,13 @@ public class LavaMarker extends Module {
         if (mc.world == null) return;
         for (Set<BlockPos> set : fallsByChunk.values()) {
             for (BlockPos pos : set) {
-                // Check if the block at the cached position is still lava.
-                if (!mc.world.getFluidState(pos).isIn(FluidTags.LAVA)) continue;
+                FluidState fs = mc.world.getFluidState(pos);
+                if (!fs.isIn(FluidTags.LAVA)) continue;
+                if (fs.isStill()) continue;
 
-                // A "bottom block" is one where the block below is not also lava.
                 boolean isBottomBlock = !mc.world.getFluidState(pos.down()).isIn(FluidTags.LAVA);
+                if (isBottomBlock && mc.world.getBlockState(pos.down()).isAir()) continue;
 
-                if (isBottomBlock) {
-                    // This is the last lava block in a downward column.
-                    // Now, apply the user's rule: "if = last block is air, ignore"
-                    if (mc.world.getBlockState(pos.down()).isAir()) {
-                        // Ignore rendering this block.
-                        continue;
-                    }
-                }
-                // Render all valid blocks with the main color.
                 event.renderer.box(pos, color.get(), color.get(), shapeMode.get(), 0);
             }
         }
