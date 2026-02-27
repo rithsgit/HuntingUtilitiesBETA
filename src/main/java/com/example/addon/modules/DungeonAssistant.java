@@ -70,6 +70,7 @@ public class DungeonAssistant extends Module {
     private final List<EndermiteEntity> endermiteTargets = new ArrayList<>();
     private final Set<Integer> notifiedEndermites = new HashSet<>();
     private final Set<Integer> checkedEntityIds = new HashSet<>();
+    private final Set<BlockPos> spawnerTorches = new HashSet<>();
 
     private final SettingGroup sgGeneral      = settings.getDefaultGroup();
     private final SettingGroup sgAutoOpen     = settings.createGroup("Auto Open");
@@ -270,6 +271,22 @@ public class DungeonAssistant extends Module {
         .visible(autoBreakSpawners::get)
         .build()
     );
+    
+    private final Setting<Boolean> highlightSpawnerTorches = sgSpawners.add(new BoolSetting.Builder()
+        .name("highlight-torches")
+        .description("Highlights torches within 5 blocks of a spawner.")
+        .defaultValue(true)
+        .visible(trackSpawners::get)
+        .build()
+    );
+
+    private final Setting<SettingColor> spawnerTorchColor = sgSpawners.add(new ColorSetting.Builder()
+        .name("torch-color")
+        .description("Color for torches near spawners.")
+        .defaultValue(new SettingColor(255, 255, 0, 150))
+        .visible(() -> trackSpawners.get() && highlightSpawnerTorches.get())
+        .build()
+    );
 
     // Chest Settings
     private final Setting<Boolean> trackChests = sgChests.add(new BoolSetting.Builder()
@@ -315,6 +332,21 @@ public class DungeonAssistant extends Module {
         .description("Highlight color for stacked chest minecarts.")
         .defaultValue(new SettingColor(255, 0, 255, 120))
         .visible(() -> trackChestMinecarts.get() && highlightStacked.get())
+        .build()
+    );
+    
+    private final Setting<Boolean> countBrokenChests = sgChests.add(new BoolSetting.Builder()
+        .name("count-broken-chests")
+        .description("Counts how many chests have been broken.")
+        .defaultValue(true)
+        .build()
+    );
+
+    private final Setting<Boolean> showBrokenChestCount = sgChests.add(new BoolSetting.Builder()
+        .name("show-broken-chest-count")
+        .description("Shows the broken chest count in chat.")
+        .defaultValue(true)
+        .visible(countBrokenChests::get)
         .build()
     );
 
@@ -474,6 +506,8 @@ public class DungeonAssistant extends Module {
     private boolean isBreaking = false;
     private boolean isBreakingEntity = false;
     private BlockPos blockToBreak = null;
+    private boolean isBreakingChest = false;
+    private int brokenChestsCount = 0;
     private Entity entityToBreak = null;
     private String lastDimension = "";
     private int dimensionChangeCooldown = 0;
@@ -513,6 +547,9 @@ public class DungeonAssistant extends Module {
         endermiteTargets.clear();
         notifiedEndermites.clear();
         checkedEntityIds.clear();
+        spawnerTorches.clear();
+        brokenChestsCount = 0;
+        isBreakingChest = false;
         isEating = false;
         hasPlayedSoundForCurrentScreen = false;
         
@@ -533,6 +570,7 @@ public class DungeonAssistant extends Module {
         endermiteTargets.clear();
         notifiedEndermites.clear();
         checkedEntityIds.clear();
+        spawnerTorches.clear();
         if (isEating) {
             mc.options.useKey.setPressed(false);
             isEating = false;
@@ -543,6 +581,7 @@ public class DungeonAssistant extends Module {
         isBreaking = false;
         isBreakingEntity = false;
         blockToBreak = null;
+        isBreakingChest = false;
         entityToBreak = null;
         // Silent state cleanup
         silentOpenPending = false;
@@ -649,6 +688,7 @@ public class DungeonAssistant extends Module {
                     Block targetBlock = mc.world.getBlockState(blockToBreak).getBlock();
                     if (targetBlock == Blocks.CHEST || targetBlock == Blocks.TRAPPED_CHEST || targetBlock == Blocks.SPAWNER) {
                         isBreaking = true;
+                        isBreakingChest = (targetBlock == Blocks.CHEST || targetBlock == Blocks.TRAPPED_CHEST);
                         // Silent switch: save current slot before we change tools
                         if (silentSwitch.get() && previousSlot < 0) {
                             previousSlot = mc.player.getInventory().selectedSlot;
@@ -678,8 +718,15 @@ public class DungeonAssistant extends Module {
                 || Math.sqrt(mc.player.squaredDistanceTo(blockToBreak.toCenterPos())) > 6;
 
             if (done) {
+                if (isBreakingChest && mc.world.getBlockState(blockToBreak).isAir()) {
+                    if (countBrokenChests.get()) {
+                        brokenChestsCount++;
+                        if (showBrokenChestCount.get()) info("Chests broken: " + brokenChestsCount);
+                    }
+                }
                 isBreaking = false;
                 blockToBreak = null;
+                isBreakingChest = false;
                 mc.interactionManager.cancelBlockBreaking();
                 // Restore slot after silent switch
                 if (silentSwitch.get() && previousSlot >= 0) {
@@ -908,6 +955,7 @@ public class DungeonAssistant extends Module {
         scanChestMinecarts(centerChunkX, centerChunkZ);
         scanNewChunks(centerChunkX, centerChunkZ);
         scanEndermites();
+        scanSpawnerTorches();
     }
 
     private boolean runSpawnerCheck() {
@@ -1062,6 +1110,30 @@ public class DungeonAssistant extends Module {
         notifiedEndermites.retainAll(currentIds);
     }
 
+    private void scanSpawnerTorches() {
+        spawnerTorches.clear();
+        if (!trackSpawners.get() || !highlightSpawnerTorches.get()) return;
+
+        for (Map.Entry<BlockPos, TargetType> entry : targets.entrySet()) {
+            if (entry.getValue() == TargetType.SPAWNER) {
+                BlockPos spawnerPos = entry.getKey();
+                if (!mc.world.getChunkManager().isChunkLoaded(spawnerPos.getX() >> 4, spawnerPos.getZ() >> 4)) continue;
+
+                for (int x = -5; x <= 5; x++) {
+                    for (int y = -5; y <= 5; y++) {
+                        for (int z = -5; z <= 5; z++) {
+                            BlockPos pos = spawnerPos.add(x, y, z);
+                            BlockState state = mc.world.getBlockState(pos);
+                            Block b = state.getBlock();
+                            if (b == Blocks.TORCH || b == Blocks.WALL_TORCH || b == Blocks.SOUL_TORCH || b == Blocks.SOUL_WALL_TORCH) {
+                                spawnerTorches.add(pos);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     private void scanNewChunks(int centerChunkX, int centerChunkZ) {
         int r = range.get();
@@ -1385,6 +1457,13 @@ public class DungeonAssistant extends Module {
                     );
                     event.renderer.box(beamBox, color, color, ShapeMode.Both, 0);
                 }
+            }
+        }
+
+        if (!spawnerTorches.isEmpty()) {
+            SettingColor color = spawnerTorchColor.get();
+            for (BlockPos pos : spawnerTorches) {
+                event.renderer.box(pos, color, color, mode, 0);
             }
         }
 
