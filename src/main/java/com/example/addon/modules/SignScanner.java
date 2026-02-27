@@ -1,5 +1,6 @@
 package com.example.addon.modules;
 
+import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
@@ -31,7 +32,6 @@ import meteordevelopment.meteorclient.utils.Utils;
 import meteordevelopment.meteorclient.utils.misc.Keybind;
 import meteordevelopment.meteorclient.utils.player.FindItemResult;
 import meteordevelopment.meteorclient.utils.player.InvUtils;
-import meteordevelopment.meteorclient.utils.player.Rotations;
 import meteordevelopment.meteorclient.utils.render.NametagUtils;
 import meteordevelopment.meteorclient.utils.render.color.SettingColor;
 import meteordevelopment.orbit.EventHandler;
@@ -39,8 +39,8 @@ import net.minecraft.block.entity.BlockEntity;
 import net.minecraft.block.entity.HangingSignBlockEntity;
 import net.minecraft.block.entity.SignBlockEntity;
 import net.minecraft.block.entity.SignText;
+import net.minecraft.client.gui.screen.ingame.AbstractSignEditScreen;
 import net.minecraft.item.Items;
-import net.minecraft.item.SignItem;
 import net.minecraft.network.packet.c2s.play.UpdateSignC2SPacket;
 import net.minecraft.text.MutableText;
 import net.minecraft.text.PlainTextContent;
@@ -128,38 +128,10 @@ public class SignScanner extends Module {
         .build()
     );
 
-    private final Setting<Double> placeDelay = sgAutoSign.add(new DoubleSetting.Builder()
-        .name("place-delay")
-        .description("The delay between placing signs automatically (in seconds).")
-        .defaultValue(1.0)
-        .min(0)
-        .sliderMax(10)
-        .visible(autoSign::get)
-        .build()
-    );
-
-    private final Setting<Double> manualEditDelay = sgAutoSign.add(new DoubleSetting.Builder()
-        .name("manual-edit-delay")
-        .description("The delay after placing a sign with empty lines for manual editing (in seconds).")
-        .defaultValue(5.0)
-        .min(0)
-        .sliderMax(20)
-        .visible(autoSign::get)
-        .build()
-    );
-
     private final Setting<Boolean> autoGlow = sgAutoSign.add(new BoolSetting.Builder()
         .name("auto-glow")
         .description("Automatically applies a glow ink sac to the sign.")
         .defaultValue(false)
-        .visible(autoSign::get)
-        .build()
-    );
-
-    private final Setting<Boolean> rotate = sgAutoSign.add(new BoolSetting.Builder()
-        .name("rotate")
-        .description("Rotates towards the block when placing.")
-        .defaultValue(true)
         .visible(autoSign::get)
         .build()
     );
@@ -261,7 +233,7 @@ public class SignScanner extends Module {
     private final Map<BlockPos, List<Text>> signs = new ConcurrentHashMap<>();
     private final Set<BlockPos> notified = new HashSet<>();
     private int timer = 0;
-    private int autoSignTimer = 0;
+    private final Set<BlockPos> handledSigns = new HashSet<>();
 
     public SignScanner() {
         super(HuntingUtilities.CATEGORY, "sign-scanner", "Scans and displays sign text.");
@@ -272,85 +244,79 @@ public class SignScanner extends Module {
         signs.clear();
         notified.clear();
         timer = 0;
-        autoSignTimer = 0;
+        handledSigns.clear();
     }
 
     @EventHandler
     private void onTickPre(TickEvent.Pre event) {
         if (!autoSign.get()) return;
 
-        if (autoSignTimer > 0) {
-            autoSignTimer--;
-            return;
+        if (!(mc.currentScreen instanceof AbstractSignEditScreen screen)) return;
+
+        SignBlockEntity sign = getSignFromScreen(screen);
+        if (sign == null) return;
+        BlockPos signPos = sign.getPos();
+
+        if (handledSigns.contains(signPos)) return;
+
+        boolean isFront = isFrontSide(screen);
+
+        String l1 = line1.get();
+        String l2 = line2.get();
+        String l3 = line3.get();
+        String l4 = line4.get();
+
+        // Send the packet to update the sign
+        mc.player.networkHandler.sendPacket(new UpdateSignC2SPacket(signPos, isFront, l1, l2, l3, l4));
+
+        if (autoGlow.get()) {
+            FindItemResult glowResult = InvUtils.findInHotbar(Items.GLOW_INK_SAC);
+            if (glowResult.found()) {
+                int prevSlot = mc.player.getInventory().selectedSlot;
+                InvUtils.swap(glowResult.slot(), false);
+
+                BlockHitResult hit = mc.world.raycast(new net.minecraft.world.RaycastContext(mc.player.getEyePos(), Vec3d.ofCenter(signPos), net.minecraft.world.RaycastContext.ShapeType.COLLIDER, net.minecraft.world.RaycastContext.FluidHandling.NONE, mc.player));
+                Direction side = (hit.getType() == net.minecraft.util.hit.HitResult.Type.BLOCK) ? hit.getSide() : mc.player.getHorizontalFacing().getOpposite();
+
+                mc.interactionManager.interactBlock(mc.player, Hand.MAIN_HAND, new BlockHitResult(Vec3d.ofCenter(signPos), side, signPos, false));
+                mc.player.swingHand(Hand.MAIN_HAND);
+                InvUtils.swap(prevSlot, false);
+            }
         }
 
-        FindItemResult signResult = InvUtils.findInHotbar(item -> item.getItem() instanceof SignItem);
-        if (!signResult.found()) return;
+        // Close the GUI
+        screen.close();
+        
+        // Mark as handled so we don't process it again if opened manually
+        handledSigns.add(signPos);
+    }
 
-        BlockPos playerPos = mc.player.getBlockPos();
-        int r = 4;
-
-        for (int x = -r; x <= r; x++) {
-            for (int y = -2; y <= 2; y++) {
-                for (int z = -r; z <= r; z++) {
-                    BlockPos pos = playerPos.add(x, y, z);
-                    if (!mc.world.getBlockState(pos).isReplaceable()) continue;
-
-                    for (Direction dir : Direction.values()) {
-                        BlockPos neighbor = pos.offset(dir);
-                        if (mc.world.getBlockState(neighbor).isSolidBlock(mc.world, neighbor)) {
-                            
-                            final BlockPos finalNeighbor = neighbor;
-                            final Direction finalSide = dir.getOpposite();
-                            final int slot = signResult.slot();
-
-                            String l1 = line1.get();
-                            String l2 = line2.get();
-                            String l3 = line3.get();
-                            String l4 = line4.get();
-                            boolean hasEmptyLine = l1.isEmpty() || l2.isEmpty() || l3.isEmpty() || l4.isEmpty();
-
-                            Runnable action = () -> {
-                                int prevSlot = mc.player.getInventory().selectedSlot;
-                                InvUtils.swap(slot, false);
-
-                                BlockHitResult hit = new BlockHitResult(Vec3d.ofCenter(finalNeighbor), finalSide, finalNeighbor, false);
-                                mc.interactionManager.interactBlock(mc.player, Hand.MAIN_HAND, hit);
-                                mc.player.swingHand(Hand.MAIN_HAND);
-
-                                if (!hasEmptyLine) {
-                                    mc.player.networkHandler.sendPacket(new UpdateSignC2SPacket(pos, true, l1, l2, l3, l4));
-
-                                    if (autoGlow.get()) {
-                                        FindItemResult glowResult = InvUtils.findInHotbar(Items.GLOW_INK_SAC);
-                                        if (glowResult.found()) {
-                                            InvUtils.swap(glowResult.slot(), false);
-                                            mc.interactionManager.interactBlock(mc.player, Hand.MAIN_HAND, new BlockHitResult(Vec3d.ofCenter(pos), finalSide, pos, false));
-                                            mc.player.swingHand(Hand.MAIN_HAND);
-                                        }
-                                    }
-                                }
-
-                                InvUtils.swap(prevSlot, false);
-                            };
-
-                            if (rotate.get()) {
-                                Rotations.rotate(Rotations.getYaw(finalNeighbor), Rotations.getPitch(finalNeighbor), action);
-                            } else {
-                                action.run();
-                            }
-
-                            if (hasEmptyLine) {
-                                autoSignTimer = (int) (manualEditDelay.get() * 20);
-                            } else {
-                                autoSignTimer = (int) (placeDelay.get() * 20);
-                            }
-                            return;
-                        }
-                    }
+    private SignBlockEntity getSignFromScreen(AbstractSignEditScreen screen) {
+        for (Field field : AbstractSignEditScreen.class.getDeclaredFields()) {
+            if (field.getType() == SignBlockEntity.class) {
+                try {
+                    field.setAccessible(true);
+                    return (SignBlockEntity) field.get(screen);
+                } catch (IllegalAccessException e) {
+                    e.printStackTrace();
                 }
             }
         }
+        return null;
+    }
+
+    private boolean isFrontSide(AbstractSignEditScreen screen) {
+        for (Field field : AbstractSignEditScreen.class.getDeclaredFields()) {
+            if (field.getType() == boolean.class) {
+                try {
+                    field.setAccessible(true);
+                    return field.getBoolean(screen);
+                } catch (IllegalAccessException e) {
+                    e.printStackTrace();
+                }
+            }
+        }
+        return true;
     }
 
     @EventHandler
