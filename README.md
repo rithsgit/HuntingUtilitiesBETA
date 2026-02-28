@@ -18,6 +18,7 @@ Current modules;
 - Obsidian Fist (WIP)
 - Sign Scanner
 - Lava Marker
+- Inventory 101
 
 More modules coming soon — 
 
