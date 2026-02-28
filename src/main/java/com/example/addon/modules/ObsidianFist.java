@@ -317,6 +317,10 @@ public class ObsidianFist extends Module {
                 mc.interactionManager.attackBlock(currentPos, currentDir);
             }
             mc.player.swingHand(Hand.MAIN_HAND);
+
+            if (breakMode.get() == BreakMode.Instant && burstCyclesDone > 0) {
+                doFinishMiningCycle();
+            }
         };
 
         if (rotate.get()) {

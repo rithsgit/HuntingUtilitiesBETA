@@ -1,10 +1,13 @@
 package com.example.addon.modules;
 
+import java.lang.reflect.Field;
+import java.util.Set;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 
 import com.example.addon.HuntingUtilities;
+import org.lwjgl.glfw.GLFW;
 
 import meteordevelopment.meteorclient.events.world.TickEvent;
 import meteordevelopment.meteorclient.settings.BoolSetting;
@@ -16,14 +19,17 @@ import meteordevelopment.meteorclient.settings.SettingGroup;
 import meteordevelopment.meteorclient.settings.StringSetting;
 import meteordevelopment.meteorclient.systems.modules.Module;
 import meteordevelopment.meteorclient.utils.misc.Keybind;
+import meteordevelopment.meteorclient.utils.misc.input.Input;
 import meteordevelopment.meteorclient.utils.player.InvUtils;
 import meteordevelopment.orbit.EventHandler;
 import net.minecraft.block.ShulkerBoxBlock;
 import net.minecraft.client.gui.screen.ingame.GenericContainerScreen;
+import net.minecraft.client.gui.screen.ingame.HandledScreen;
 import net.minecraft.client.gui.screen.ingame.ShulkerBoxScreen;
 import net.minecraft.item.BlockItem;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
+import net.minecraft.item.Items;
 import net.minecraft.nbt.NbtCompound;
 import net.minecraft.nbt.NbtElement;
 import net.minecraft.nbt.NbtList;
@@ -33,14 +39,15 @@ import net.minecraft.registry.RegistryOps;
 import net.minecraft.screen.GenericContainerScreenHandler;
 import net.minecraft.screen.ScreenHandler;
 import net.minecraft.screen.ShulkerBoxScreenHandler;
+import net.minecraft.screen.slot.Slot;
 import net.minecraft.screen.slot.SlotActionType;
+import net.minecraft.sound.SoundEvents;
 import net.minecraft.util.DyeColor;
 
 public class Inventory101 extends Module {
     private final SettingGroup sgRegearing = settings.createGroup("Regearing 101");
     private final SettingGroup sgCleaner   = settings.createGroup("Inventory Cleaner");
     private final SettingGroup sgOrganizer = settings.createGroup("Shulker Organizer");
-    private final SettingGroup sgRefill    = settings.createGroup("Refill");
 
     // ── Regearing ──
     private final Setting<Integer> regearDelay = sgRegearing.add(new IntSetting.Builder()
@@ -66,12 +73,6 @@ public class Inventory101 extends Module {
         .description("Automatically drops whitelisted items from your inventory.")
         .defaultValue(false).build()
     );
-    private final Setting<Keybind> autoDropKey = sgCleaner.add(new KeybindSetting.Builder()
-        .name("auto-drop-key").description("Key to toggle auto drop.")
-        .defaultValue(Keybind.none())
-        .action(() -> { boolean v = !autoDrop.get(); autoDrop.set(v); info("Inventory Cleaner " + (v ? "enabled" : "disabled") + "."); })
-        .build()
-    );
     private final Setting<List<Item>> itemsToDrop = sgCleaner.add(new ItemListSetting.Builder()
         .name("items-to-drop").description("Items to automatically drop.")
         .defaultValue(new ArrayList<>()).visible(autoDrop::get)
@@ -86,12 +87,6 @@ public class Inventory101 extends Module {
         .name("auto-trash")
         .description("Automatically throws away junk items when opening a container.")
         .defaultValue(false).build()
-    );
-    private final Setting<Keybind> autoTrashKey = sgCleaner.add(new KeybindSetting.Builder()
-        .name("auto-trash-key").description("Key to toggle auto trash.")
-        .defaultValue(Keybind.none())
-        .action(() -> { boolean v = !autoTrash.get(); autoTrash.set(v); info("Auto Trash " + (v ? "enabled" : "disabled") + "."); })
-        .build()
     );
     private final Setting<List<Item>> trashItems = sgCleaner.add(new ItemListSetting.Builder()
         .name("trash-items").description("Items to throw away.")
@@ -115,30 +110,6 @@ public class Inventory101 extends Module {
         .build()
     );
 
-    // ── Refill ──
-    private final Setting<Boolean> autoRefill = sgRefill.add(new BoolSetting.Builder()
-        .name("auto-refill")
-        .description("Automatically refills hotbar slots from your inventory when they become empty.")
-        .defaultValue(false).build()
-    );
-    private final Setting<Keybind> autoRefillKey = sgRefill.add(new KeybindSetting.Builder()
-        .name("auto-refill-key").description("Key to toggle auto refill.")
-        .defaultValue(Keybind.none())
-        .action(() -> { boolean v = !autoRefill.get(); autoRefill.set(v); info("Auto Refill " + (v ? "enabled" : "disabled") + "."); })
-        .build()
-    );
-    private final Setting<Integer> refillThreshold = sgRefill.add(new IntSetting.Builder()
-        .name("refill-threshold")
-        .description("Refill a hotbar slot when its count drops BELOW this value (0 = only when completely empty).")
-        .defaultValue(0).min(0).sliderMax(16).visible(autoRefill::get)
-        .build()
-    );
-    private final Setting<Integer> refillDelay = sgRefill.add(new IntSetting.Builder()
-        .name("refill-delay").description("Delay in ticks between refill actions.")
-        .defaultValue(10).min(1).sliderMax(40).visible(autoRefill::get)
-        .build()
-    );
-
     // ── State ──
     private boolean isRegearing = false;
     private int     regearTimer = 0;
@@ -148,10 +119,11 @@ public class Inventory101 extends Module {
     private boolean isTrashing  = false;
     private int     trashTimer  = 0;
     private boolean trashedForCurrentScreen = false;
-    private int     refillTimer = 0;
-    private final   Item[] hotbarCache = new Item[9];
+    private boolean wasClicking = false;
     private int     targetPresetIndex = 0;
     private boolean saveMode = false;
+    private double lastMouseX = -1, lastMouseY = -1;
+    private final Set<Integer> processedInDrag = new java.util.HashSet<>();
 
     public Inventory101() {
         super(HuntingUtilities.CATEGORY, "inventory-101", "Manages inventory layouts with shulker boxes.");
@@ -162,8 +134,11 @@ public class Inventory101 extends Module {
         isRegearing = false;
         saveMode    = false;
         isSorting   = false;
-        refillTimer = 0;
         isTrashing  = false;
+        wasClicking = false;
+        lastMouseX = -1;
+        lastMouseY = -1;
+        processedInDrag.clear();
     }
 
     // ─────────────────────── Public API for HandledScreenMixin ───────────────────────
@@ -236,7 +211,14 @@ public class Inventory101 extends Module {
         if (isRegearing) {
             if (!(mc.currentScreen instanceof ShulkerBoxScreen)) { isRegearing = false; return; }
             if (regearTimer > 0) { regearTimer--; return; }
-            if (performRegearStep()) { regearTimer = regearDelay.get(); } else { isRegearing = false; info("Regearing complete."); }
+            if (performRegearStep()) {
+                regearTimer = regearDelay.get();
+            } else {
+                mc.player.closeHandledScreen();
+                info("Regearing complete.");
+                mc.player.playSound(SoundEvents.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
+                isRegearing = false;
+            }
             return;
         }
 
@@ -245,6 +227,65 @@ public class Inventory101 extends Module {
             if (sortTimer > 0) { sortTimer--; return; }
             if (performSortStep()) { sortTimer = sortDelay.get(); } else { isSorting = false; info("Sorting complete."); }
             return;
+        }
+
+        // Mouse Drag Item Move (user interaction, high priority)
+        if (mc.currentScreen instanceof HandledScreen) {
+            HandledScreen<?> screen = (HandledScreen<?>) mc.currentScreen;
+            boolean isClicking = Input.isButtonPressed(GLFW.GLFW_MOUSE_BUTTON_LEFT);
+            boolean isShift = Input.isKeyPressed(GLFW.GLFW_KEY_LEFT_SHIFT) || Input.isKeyPressed(GLFW.GLFW_KEY_RIGHT_SHIFT);
+    
+            if (isClicking && isShift) {
+                double mouseX = mc.mouse.getX();
+                double mouseY = mc.mouse.getY();
+    
+                if (!wasClicking) { // Drag start
+                    processedInDrag.clear();
+                } else if (lastMouseX != -1) { // Drag continue - interpolate
+                    double deltaX = mouseX - lastMouseX;
+                    double deltaY = mouseY - lastMouseY;
+                    double dist = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
+    
+                    if (dist > 1) {
+                        int steps = (int) Math.ceil(dist / 2.0); // Check every 2 pixels
+                        for (int i = 0; i <= steps; i++) {
+                            double currentX = lastMouseX + (deltaX * i / steps);
+                            double currentY = lastMouseY + (deltaY * i / steps);
+    
+                            Slot slot = getSlotAt(screen, currentX, currentY);
+    
+                            if (slot != null && slot.hasStack() && !processedInDrag.contains(slot.id)) {
+                                mc.interactionManager.clickSlot(screen.getScreenHandler().syncId, slot.id, 0, SlotActionType.QUICK_MOVE, mc.player);
+                                processedInDrag.add(slot.id);
+                            }
+                        }
+                    }
+                }
+    
+                // Always process current slot in case interpolation missed it or it's the first click
+                Slot focused = getFocusedSlot(screen);
+                if (focused != null && focused.hasStack() && !processedInDrag.contains(focused.id)) {
+                    mc.interactionManager.clickSlot(screen.getScreenHandler().syncId, focused.id, 0, SlotActionType.QUICK_MOVE, mc.player);
+                    processedInDrag.add(focused.id);
+                }
+    
+                lastMouseX = mouseX;
+                lastMouseY = mouseY;
+                wasClicking = true;
+                return; // Done for this tick
+            } else {
+                if (wasClicking) { // Drag ended
+                    processedInDrag.clear();
+                    lastMouseX = -1;
+                }
+                wasClicking = false;
+            }
+        } else {
+            if (wasClicking) { // Screen closed during drag
+                processedInDrag.clear();
+                lastMouseX = -1;
+            }
+            wasClicking = false;
         }
 
         // Auto-trash
@@ -256,10 +297,14 @@ public class Inventory101 extends Module {
                 isTrashing = false;
             }
             if (isTrashing) {
-                if (trashTimer > 0) { trashTimer--; }
-                else if (performTrashStep()) { trashTimer = trashDelay.get(); }
-                else { isTrashing = false; }
-                return;
+                if (trashTimer > 0) {
+                    trashTimer--;
+                } else if (performTrashStep()) {
+                    trashTimer = trashDelay.get();
+                    return; // Action performed, end tick
+                } else {
+                    isTrashing = false;
+                }
             }
         }
 
@@ -272,32 +317,7 @@ public class Inventory101 extends Module {
                     if (!stack.isEmpty() && itemsToDrop.get().contains(stack.getItem())) {
                         InvUtils.drop().slot(i);
                         cleanerTimer = dropDelay.get();
-                        return;
-                    }
-                }
-            }
-        }
-
-        // Auto-refill — only runs when no screen is open and the player is idle
-        if (autoRefill.get() && mc.currentScreen == null) {
-            if (refillTimer > 0) { refillTimer--; }
-            else {
-                for (int i = 0; i < 9; i++) {
-                    ItemStack stack = mc.player.getInventory().getStack(i);
-                    // Update the cache only when the slot has the same item (or is being set for the first time)
-                    if (!stack.isEmpty() && (hotbarCache[i] == null || hotbarCache[i] == stack.getItem())) {
-                        hotbarCache[i] = stack.getItem();
-                    }
-                    // Refill when the slot is STRICTLY BELOW threshold (0 = empty only)
-                    boolean needsRefill = stack.isEmpty()
-                        || (refillThreshold.get() > 0 && stack.getCount() < refillThreshold.get());
-                    if (needsRefill && hotbarCache[i] != null) {
-                        int slot = findReplacement(hotbarCache[i]);
-                        if (slot != -1) {
-                            InvUtils.move().from(slot).toHotbar(i);
-                            refillTimer = refillDelay.get();
-                            return;
-                        }
+                        return; // Action performed, end tick
                     }
                 }
             }
@@ -451,11 +471,51 @@ public class Inventory101 extends Module {
         return false;
     }
 
-    private int findReplacement(Item item) {
-        for (int i = 9; i < 36; i++) {
-            if (mc.player.getInventory().getStack(i).getItem() == item) return i;
+    private Slot getSlotAt(HandledScreen<?> screen, double mouseX, double mouseY) {
+        double scaledMouseX = mouseX * mc.getWindow().getScaledWidth() / (double)mc.getWindow().getWidth();
+        double scaledMouseY = mouseY * mc.getWindow().getScaledHeight() / (double)mc.getWindow().getHeight();
+
+        int guiLeft = 0, guiTop = 0;
+        try {
+            Field fX = HandledScreen.class.getDeclaredField("x"); fX.setAccessible(true);
+            Field fY = HandledScreen.class.getDeclaredField("y"); fY.setAccessible(true);
+            guiLeft = fX.getInt(screen); guiTop = fY.getInt(screen);
+        } catch (Exception e) {
+            try {
+                Field fX = HandledScreen.class.getDeclaredField("field_2776"); fX.setAccessible(true);
+                Field fY = HandledScreen.class.getDeclaredField("field_2777"); fY.setAccessible(true);
+                guiLeft = fX.getInt(screen); guiTop = fY.getInt(screen);
+            } catch (Exception e2) {
+                // Fallback for screens that don't have x/y fields
+                guiLeft = (screen.width - 176) / 2;
+                guiTop = (screen.height - 166) / 2;
+            }
         }
-        return -1;
+        for (Slot slot : screen.getScreenHandler().slots) {
+            int x = guiLeft + slot.x; int y = guiTop + slot.y;
+            if (scaledMouseX >= x && scaledMouseX < x + 16 && scaledMouseY >= y && scaledMouseY < y + 16) return slot;
+        }
+        return null;
+    }
+
+    private Slot getFocusedSlot(HandledScreen<?> screen) {
+        try {
+            Field f = HandledScreen.class.getDeclaredField("focusedSlot");
+            f.setAccessible(true);
+            return (Slot) f.get(screen);
+        } catch (Exception e) {
+            try {
+                Field f = HandledScreen.class.getDeclaredField("field_2787"); // Intermediary fallback
+                f.setAccessible(true);
+                return (Slot) f.get(screen);
+            } catch (Exception e2) {
+                return getSlotUnderMouse(screen);
+            }
+        }
+    }
+
+    private Slot getSlotUnderMouse(HandledScreen<?> screen) {
+        return getSlotAt(screen, mc.mouse.getX(), mc.mouse.getY());
     }
 
     private int mapInventoryToSlotId(int invIndex) {

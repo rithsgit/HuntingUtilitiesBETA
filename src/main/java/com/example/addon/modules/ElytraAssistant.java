@@ -150,7 +150,7 @@ public class ElytraAssistant extends Module {
     private final Setting<Integer> burstDelay = sgMending.add(new IntSetting.Builder()
         .name("burst-delay")
         .description("Ticks to wait between bursts.")
-        .defaultValue(3)
+        .defaultValue(4)
         .min(0)
         .sliderMax(20)
         .visible(autoMend::get)
