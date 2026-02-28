@@ -14,6 +14,7 @@ import org.joml.Vector3d;
 import com.example.addon.HuntingUtilities;
 import com.mojang.blaze3d.systems.RenderSystem;
 
+import meteordevelopment.meteorclient.events.game.OpenScreenEvent;
 import meteordevelopment.meteorclient.events.render.Render2DEvent;
 import meteordevelopment.meteorclient.events.world.TickEvent;
 import meteordevelopment.meteorclient.renderer.Renderer2D;
@@ -21,17 +22,16 @@ import meteordevelopment.meteorclient.renderer.text.TextRenderer;
 import meteordevelopment.meteorclient.settings.BoolSetting;
 import meteordevelopment.meteorclient.settings.ColorSetting;
 import meteordevelopment.meteorclient.settings.DoubleSetting;
+import meteordevelopment.meteorclient.settings.EnumSetting;
 import meteordevelopment.meteorclient.settings.IntSetting;
-import meteordevelopment.meteorclient.settings.KeybindSetting;
 import meteordevelopment.meteorclient.settings.Setting;
 import meteordevelopment.meteorclient.settings.SettingGroup;
 import meteordevelopment.meteorclient.settings.StringListSetting;
-import meteordevelopment.meteorclient.settings.StringSetting;
 import meteordevelopment.meteorclient.systems.modules.Module;
 import meteordevelopment.meteorclient.utils.Utils;
-import meteordevelopment.meteorclient.utils.misc.Keybind;
 import meteordevelopment.meteorclient.utils.player.FindItemResult;
 import meteordevelopment.meteorclient.utils.player.InvUtils;
+import meteordevelopment.meteorclient.utils.player.Rotations;
 import meteordevelopment.meteorclient.utils.render.NametagUtils;
 import meteordevelopment.meteorclient.utils.render.color.SettingColor;
 import meteordevelopment.orbit.EventHandler;
@@ -40,14 +40,21 @@ import net.minecraft.block.entity.HangingSignBlockEntity;
 import net.minecraft.block.entity.SignBlockEntity;
 import net.minecraft.block.entity.SignText;
 import net.minecraft.client.gui.screen.ingame.AbstractSignEditScreen;
+import net.minecraft.item.DyeItem;
+import net.minecraft.item.HangingSignItem;
+import net.minecraft.item.Item;
 import net.minecraft.item.Items;
+import net.minecraft.item.SignItem;
+import net.minecraft.network.packet.c2s.play.UpdateSignC2SPacket;
 import net.minecraft.text.MutableText;
 import net.minecraft.text.PlainTextContent;
 import net.minecraft.text.Text;
 import net.minecraft.text.TextContent;
+import net.minecraft.util.DyeColor;
 import net.minecraft.util.Formatting;
 import net.minecraft.util.Hand;
 import net.minecraft.util.hit.BlockHitResult;
+import net.minecraft.util.hit.HitResult;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.Vec3d;
@@ -75,62 +82,68 @@ public class SignScanner extends Module {
         .build()
     );
 
-    // Auto Sign Settings
+    // --- Auto Sign ---
     private final Setting<Boolean> autoSign = sgAutoSign.add(new BoolSetting.Builder()
         .name("auto-sign")
-        .description("Automatically places signs with custom text.")
+        .description("Enables the auto-sign feature to place and write on signs automatically.")
         .defaultValue(false)
         .build()
     );
 
-    private final Setting<Keybind> autoSignKey = sgAutoSign.add(new KeybindSetting.Builder()
-        .name("toggle-key")
-        .description("Key to toggle auto sign.")
-        .defaultValue(Keybind.none())
-        .action(() -> {
-            boolean newVal = !autoSign.get();
-            autoSign.set(newVal);
-            info("Auto Sign " + (newVal ? "enabled" : "disabled") + ".");
-        })
-        .build()
-    );
-
-    private final Setting<String> line1 = sgAutoSign.add(new StringSetting.Builder()
-        .name("line-1")
-        .description("Line 1 of the sign.")
-        .defaultValue("Hello")
+    private final Setting<SignType> signType = sgAutoSign.add(new EnumSetting.Builder<SignType>()
+        .name("sign-type")
+        .description("Which type of sign to place.")
+        .defaultValue(SignType.Normal)
         .visible(autoSign::get)
         .build()
     );
 
-    private final Setting<String> line2 = sgAutoSign.add(new StringSetting.Builder()
-        .name("line-2")
-        .description("Line 2 of the sign.")
-        .defaultValue("World")
+    private final Setting<Integer> placeDelay = sgAutoSign.add(new IntSetting.Builder()
+        .name("place-delay")
+        .description("Delay in ticks before placing a sign.")
+        .defaultValue(5)
+        .min(0)
         .visible(autoSign::get)
         .build()
     );
 
-    private final Setting<String> line3 = sgAutoSign.add(new StringSetting.Builder()
-        .name("line-3")
-        .description("Line 3 of the sign.")
-        .defaultValue(":)")
-        .visible(autoSign::get)
-        .build()
-    );
-
-    private final Setting<String> line4 = sgAutoSign.add(new StringSetting.Builder()
-        .name("line-4")
-        .description("Line 4 of the sign.")
-        .defaultValue("")
+    private final Setting<Integer> editorDelay = sgAutoSign.add(new IntSetting.Builder()
+        .name("editor-delay")
+        .description("Delay in ticks before clicking done.")
+        .defaultValue(5)
+        .min(0)
         .visible(autoSign::get)
         .build()
     );
 
     private final Setting<Boolean> autoGlow = sgAutoSign.add(new BoolSetting.Builder()
         .name("auto-glow")
-        .description("Automatically applies a glow ink sac to the sign.")
+        .description("Automatically applies a glow ink sac to the sign after editing.")
         .defaultValue(false)
+        .visible(autoSign::get)
+        .build()
+    );
+
+    private final Setting<Boolean> autoDye = sgAutoSign.add(new BoolSetting.Builder()
+        .name("auto-dye")
+        .description("Automatically applies a selected dye to the sign after editing.")
+        .defaultValue(false)
+        .visible(autoSign::get)
+        .build()
+    );
+
+    private final Setting<DyeColor> dyeColor = sgAutoSign.add(new EnumSetting.Builder<DyeColor>()
+        .name("dye-color")
+        .description("Which color dye to apply to the sign.")
+        .defaultValue(DyeColor.WHITE)
+        .visible(() -> autoSign.get() && autoDye.get())
+        .build()
+    );
+
+    private final Setting<List<String>> lines = sgAutoSign.add(new StringListSetting.Builder()
+        .name("lines")
+        .description("The text to put on the sign.")
+        .defaultValue("Hello", "World")
         .visible(autoSign::get)
         .build()
     );
@@ -232,7 +245,11 @@ public class SignScanner extends Module {
     private final Map<BlockPos, List<Text>> signs = new ConcurrentHashMap<>();
     private final Set<BlockPos> notified = new HashSet<>();
     private int timer = 0;
-    private final Set<BlockPos> handledSigns = new HashSet<>();
+
+    // AutoSign state
+    private int placeTimer = 0;
+    private int editTimer = 0;
+    private AbstractSignEditScreen currentScreen = null;
 
     public SignScanner() {
         super(HuntingUtilities.CATEGORY, "sign-scanner", "Scans and displays sign text.");
@@ -243,103 +260,60 @@ public class SignScanner extends Module {
         signs.clear();
         notified.clear();
         timer = 0;
-        handledSigns.clear();
+        placeTimer = 0;
+        editTimer = 0;
+        currentScreen = null;
     }
 
     @EventHandler
-    private void onTickPre(TickEvent.Pre event) {
+    private void onTick(TickEvent.Pre event) {
         if (!autoSign.get()) return;
 
-        if (!(mc.currentScreen instanceof AbstractSignEditScreen screen)) return;
-
-        SignBlockEntity sign = getSignFromScreen(screen);
-        if (sign == null) return;
-        BlockPos signPos = sign.getPos();
-
-        if (handledSigns.contains(signPos)) return;
-
-        if (autoGlow.get()) {
-            FindItemResult glowResult = InvUtils.findInHotbar(Items.GLOW_INK_SAC);
-            if (glowResult.found()) {
-                int prevSlot = mc.player.getInventory().selectedSlot;
-                InvUtils.swap(glowResult.slot(), false);
-
-                BlockHitResult hit = mc.world.raycast(new net.minecraft.world.RaycastContext(
-                        mc.player.getEyePos(), Vec3d.ofCenter(signPos),
-                        net.minecraft.world.RaycastContext.ShapeType.COLLIDER,
-                        net.minecraft.world.RaycastContext.FluidHandling.NONE, mc.player));
-
-                Direction side = (hit.getType() == net.minecraft.util.hit.HitResult.Type.BLOCK)
-                        ? hit.getSide()
-                        : mc.player.getHorizontalFacing().getOpposite();
-
-                mc.interactionManager.interactBlock(mc.player, Hand.MAIN_HAND,
-                        new BlockHitResult(Vec3d.ofCenter(signPos), side, signPos, false));
-                mc.player.swingHand(Hand.MAIN_HAND);
-
-                InvUtils.swap(prevSlot, false);
+        // If we are currently editing a sign (waiting for delay), handle that
+        if (currentScreen != null) {
+            editTimer++;
+            if (editTimer >= editorDelay.get()) {
+                finishEditing();
             }
+            return; // Don't try to place while editing
         }
 
-        // Mark as handled BEFORE closing so we don't re-enter on the same sign.
-        handledSigns.add(signPos);
+        // Handle placement delay
+        if (placeTimer < placeDelay.get()) {
+            placeTimer++;
+            return;
+        }
 
-        // Inject our text directly into the screen's buffer so the vanilla packet contains it.
-        setSignTextInScreen(screen, new String[]{line1.get(), line2.get(), line3.get(), line4.get()});
+        // Try to place a sign
+        if (mc.crosshairTarget instanceof BlockHitResult hit && hit.getType() == HitResult.Type.BLOCK) {
+            if (mc.player.isUsingItem()) return;
+            if (mc.world.getBlockState(hit.getBlockPos()).isAir()) return;
 
-        screen.close();
-    }
+            FindItemResult item = findSign();
+            if (item.found()) {
+                placeTimer = 0; // Reset timer
 
-    private SignBlockEntity getSignFromScreen(AbstractSignEditScreen screen) {
-        for (Field field : AbstractSignEditScreen.class.getDeclaredFields()) {
-            if (field.getType() == SignBlockEntity.class) {
-                try {
-                    field.setAccessible(true);
-                    return (SignBlockEntity) field.get(screen);
-                } catch (IllegalAccessException e) {
-                    e.printStackTrace();
-                }
+                Rotations.rotate(Rotations.getYaw(hit.getBlockPos()), Rotations.getPitch(hit.getBlockPos()), () -> {
+                    InvUtils.swap(item.slot(), false);
+                    mc.interactionManager.interactBlock(mc.player, Hand.MAIN_HAND, hit);
+                    mc.player.swingHand(Hand.MAIN_HAND);
+                    InvUtils.swapBack();
+                });
             }
         }
-        return null;
     }
 
-    private void setSignTextInScreen(AbstractSignEditScreen screen, String[] lines) {
-        try {
-            // 1. Update the BlockEntity itself
-            Field signField = AbstractSignEditScreen.class.getDeclaredField("sign");
-            signField.setAccessible(true);
-            SignBlockEntity sign = (SignBlockEntity) signField.get(screen);
+    @EventHandler
+    private void onOpenScreen(OpenScreenEvent event) {
+        if (!autoSign.get()) return;
 
-            SignText front = sign.getFrontText();
-            for (int i = 0; i < 4 && i < lines.length; i++) {
-                front = front.withMessage(i, Text.literal(lines[i]));
-            }
-            sign.setText(front, true); // front side only (back is rarely used in auto-sign)
-
-            // 2. Update the screen's internal text buffer so the outgoing UpdateSignC2SPacket contains our text
-            try {
-                Field textField = AbstractSignEditScreen.class.getDeclaredField("text");
-                textField.setAccessible(true);
-                SignText screenText = (SignText) textField.get(screen);
-                for (int i = 0; i < 4 && i < lines.length; i++) {
-                    screenText = screenText.withMessage(i, Text.literal(lines[i]));
-                }
-                textField.set(screen, screenText);
-            } catch (NoSuchFieldException ignored) {
-                // Some snapshots use "signText" instead of "text"
-                try {
-                    Field textField = AbstractSignEditScreen.class.getDeclaredField("signText");
-                    textField.setAccessible(true);
-                    SignText screenText = (SignText) textField.get(screen);
-                    for (int i = 0; i < 4 && i < lines.length; i++) {
-                        screenText = screenText.withMessage(i, Text.literal(lines[i]));
-                    }
-                    textField.set(screen, screenText);
-                } catch (Exception ignored2) {}
-            } catch (Exception ignored) {}
-        } catch (Exception e) {
-            e.printStackTrace();
+        if (event.screen instanceof AbstractSignEditScreen screen) {
+            currentScreen = screen;
+            editTimer = 0;
+            // We do NOT cancel the event, allowing the screen to "open" visually/logically
+            // so the delay feels natural before we close it.
+        } else {
+            currentScreen = null;
         }
     }
 
@@ -480,7 +454,15 @@ public class SignScanner extends Module {
                 List<Text> lines = entry.getValue();
                 if (lines.isEmpty()) continue;
 
-                Vec3d vec = Vec3d.ofCenter(pos).add(0, 0.5, 0);
+                BlockEntity be = mc.world.getBlockEntity(pos);
+                Vec3d vec;
+                if (be instanceof HangingSignBlockEntity) {
+                    // Hanging signs are positioned lower than standard signs, so we adjust the render position downwards.
+                    vec = Vec3d.ofCenter(pos).add(0, -0.2, 0);
+                } else {
+                    // Default position for standard signs.
+                    vec = Vec3d.ofCenter(pos).add(0, 0.5, 0);
+                }
                 Vector3d pos3d = new Vector3d(vec.x, vec.y, vec.z);
                 
                 if (!NametagUtils.to2D(pos3d, scale.get())) continue;
@@ -592,6 +574,96 @@ public class SignScanner extends Module {
         RenderSystem.depthMask(true);
         RenderSystem.enableDepthTest();
         NametagUtils.end(event.drawContext);
+    }
+
+    private void finishEditing() {
+        if (currentScreen == null) return;
+
+        SignBlockEntity sign = getSignFromScreen(currentScreen);
+        if (sign != null) {
+            List<String> text = lines.get();
+            String[] rows = new String[4];
+            for (int i = 0; i < 4; i++) {
+                rows[i] = (i < text.size()) ? text.get(i) : "";
+            }
+
+            mc.player.networkHandler.sendPacket(new UpdateSignC2SPacket(sign.getPos(), true, rows[0], rows[1], rows[2], rows[3]));
+
+            // Apply glow ink sac
+            if (autoGlow.get()) {
+                FindItemResult glowSac = InvUtils.findInHotbar(Items.GLOW_INK_SAC);
+                if (glowSac.found()) {
+                    InvUtils.swap(glowSac.slot(), false);
+
+                    BlockHitResult hit = new BlockHitResult(
+                        Vec3d.ofCenter(sign.getPos()),
+                        Direction.UP, // The side doesn't matter for applying glow ink sac
+                        sign.getPos(),
+                        false
+                    );
+
+                    mc.interactionManager.interactBlock(mc.player, Hand.MAIN_HAND, hit);
+                    mc.player.swingHand(Hand.MAIN_HAND);
+
+                    InvUtils.swapBack();
+                }
+            }
+
+            // Apply dye
+            if (autoDye.get()) {
+                DyeColor selectedDye = dyeColor.get();
+                Item dyeItem = DyeItem.byColor(selectedDye);
+                FindItemResult dyeResult = InvUtils.findInHotbar(dyeItem);
+
+                if (dyeResult.found()) {
+                    InvUtils.swap(dyeResult.slot(), false);
+
+                    BlockHitResult hit = new BlockHitResult(
+                        Vec3d.ofCenter(sign.getPos()),
+                        Direction.UP, // The side doesn't matter for applying dye
+                        sign.getPos(),
+                        false
+                    );
+                    mc.interactionManager.interactBlock(mc.player, Hand.MAIN_HAND, hit);
+                    mc.player.swingHand(Hand.MAIN_HAND);
+                    InvUtils.swapBack();
+                } else {
+                    error("Selected dye (%s) not found in hotbar. Disabling auto-dye.", selectedDye.getName());
+                    autoDye.set(false);
+                }
+            }
+        }
+
+        mc.player.closeScreen();
+        currentScreen = null;
+    }
+
+    private SignBlockEntity getSignFromScreen(AbstractSignEditScreen screen) {
+        for (Field f : AbstractSignEditScreen.class.getDeclaredFields()) {
+            if (f.getType().isAssignableFrom(SignBlockEntity.class)) {
+                try {
+                    f.setAccessible(true);
+                    return (SignBlockEntity) f.get(screen);
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+            }
+        }
+        return null;
+    }
+
+    private FindItemResult findSign() {
+        return InvUtils.findInHotbar(itemStack -> {
+            Item item = itemStack.getItem();
+            if (signType.get() == SignType.Normal) return item instanceof SignItem;
+            if (signType.get() == SignType.Hanging) return item instanceof HangingSignItem;
+            return false;
+        });
+    }
+
+    public enum SignType {
+        Normal,
+        Hanging
     }
 
     private static class SignEntry {

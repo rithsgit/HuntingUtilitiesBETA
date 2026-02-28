@@ -39,12 +39,50 @@ import net.minecraft.world.World;
 
 public class ObsidianFist extends Module {
     private final SettingGroup sgGeneral = settings.getDefaultGroup();
+    private final SettingGroup sgRepair = settings.createGroup("Auto Repair");
     private final SettingGroup sgRender = settings.createGroup("Render");
 
     private final Setting<Boolean> rotate = sgGeneral.add(new BoolSetting.Builder()
         .name("rotate")
         .description("Rotates towards the block when mining/placing.")
         .defaultValue(true)
+        .build()
+    );
+
+    private final Setting<Boolean> autoRepair = sgRepair.add(new BoolSetting.Builder()
+        .name("auto-repair")
+        .description("Automatically repairs your pickaxe with XP bottles when its durability is low.")
+        .defaultValue(false)
+        .build()
+    );
+
+    private final Setting<Integer> repairThreshold = sgRepair.add(new IntSetting.Builder()
+        .name("durability-threshold")
+        .description("Remaining durability below which to start repairing.")
+        .defaultValue(50)
+        .min(1)
+        .sliderMax(500)
+        .visible(autoRepair::get)
+        .build()
+    );
+
+    private final Setting<Integer> repairPacketsPerBurst = sgRepair.add(new IntSetting.Builder()
+        .name("packets-per-burst")
+        .description("How many XP bottles to throw in one burst.")
+        .defaultValue(3)
+        .min(1)
+        .sliderMax(10)
+        .visible(autoRepair::get)
+        .build()
+    );
+
+    private final Setting<Integer> repairBurstDelay = sgRepair.add(new IntSetting.Builder()
+        .name("burst-delay")
+        .description("Ticks to wait between repair bursts.")
+        .defaultValue(4)
+        .min(0)
+        .sliderMax(20)
+        .visible(autoRepair::get)
         .build()
     );
 
@@ -135,6 +173,9 @@ public class ObsidianFist extends Module {
     private Direction placeSide;
     private int prevSlot = -1;
     private int burstCyclesDone = 0;
+    // Auto Repair state
+    private boolean isRepairing = false;
+    private int repairTimer = 0;
 
     public ObsidianFist() {
         super(HuntingUtilities.CATEGORY, "obsidian-fist", "Place-break Ender Chests. Fully self-contained, no other modules required.");
@@ -161,11 +202,33 @@ public class ObsidianFist extends Module {
         placeSide = null;
         prevSlot = -1;
         burstCyclesDone = 0;
+        isRepairing = false;
+        repairTimer = 0;
     }
 
     @EventHandler
     private void onTick(TickEvent.Pre event) {
         if (mc.player == null || mc.world == null) return;
+
+        // Auto-repair logic
+        if (autoRepair.get()) {
+            FindItemResult pickaxe = findPickaxe();
+            ItemStack stack = pickaxe.found() ? mc.player.getInventory().getStack(pickaxe.slot()) : ItemStack.EMPTY;
+            boolean needsRepair = pickaxe.found() && stack.isDamaged() && (stack.getMaxDamage() - stack.getDamage() <= repairThreshold.get());
+
+            if (needsRepair) {
+                isRepairing = true;
+            } else if (isRepairing) {
+                isRepairing = false;
+                info("Pickaxe repaired.");
+            }
+
+            if (isRepairing) {
+                handleRepair(pickaxe);
+                // Halt main obsidian fist logic while repairing
+                return;
+            }
+        }
 
         if (timer > 0) {
             timer--;
@@ -470,6 +533,44 @@ public class ObsidianFist extends Module {
             mode = State.MiningStart; // Retry break
             timer = delay.get();
         }
+    }
+
+    private void handleRepair(FindItemResult pickaxe) {
+        if (mode != State.Idle) reset();
+
+        if (repairTimer > 0) {
+            repairTimer--;
+            return;
+        }
+
+        // 1. Ensure pickaxe is in main hand to receive XP
+        if (!pickaxe.isMainHand()) {
+            InvUtils.swap(pickaxe.slot(), false);
+        }
+
+        // 2. Find and position XP bottles in offhand
+        if (!mc.player.getOffHandStack().isOf(Items.EXPERIENCE_BOTTLE)) {
+            FindItemResult xp = InvUtils.find(Items.EXPERIENCE_BOTTLE);
+            if (!xp.found()) {
+                error("No XP bottles found. Disabling auto-repair.");
+                autoRepair.set(false);
+                isRepairing = false;
+                return;
+            }
+            InvUtils.move().from(xp.slot()).toOffhand();
+            // Wait a couple ticks for item move to register
+            repairTimer = 2;
+            return;
+        }
+
+        // 3. Throw XP from offhand while looking down
+        Rotations.rotate(mc.player.getYaw(), 90, () -> {
+            for (int i = 0; i < repairPacketsPerBurst.get(); i++) {
+                mc.interactionManager.interactItem(mc.player, Hand.OFF_HAND);
+            }
+        });
+
+        repairTimer = repairBurstDelay.get();
     }
 
     // ── Pickaxe selection ─────────────────────────────────────────────────────
