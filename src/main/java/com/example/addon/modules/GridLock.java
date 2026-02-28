@@ -4,7 +4,13 @@ import com.example.addon.HuntingUtilities;
 import meteordevelopment.meteorclient.events.render.Render3DEvent;
 import meteordevelopment.meteorclient.events.world.TickEvent;
 import meteordevelopment.meteorclient.systems.modules.Modules;
-import meteordevelopment.meteorclient.settings.*;
+import meteordevelopment.meteorclient.settings.BoolSetting;
+import meteordevelopment.meteorclient.settings.DoubleSetting;
+import meteordevelopment.meteorclient.settings.EnumSetting;
+import meteordevelopment.meteorclient.settings.IntSetting;
+import meteordevelopment.meteorclient.settings.KeybindSetting;
+import meteordevelopment.meteorclient.settings.Setting;
+import meteordevelopment.meteorclient.settings.SettingGroup;
 import meteordevelopment.meteorclient.systems.modules.Module;
 import meteordevelopment.meteorclient.utils.misc.Keybind;
 import meteordevelopment.meteorclient.utils.render.color.Color;
@@ -16,7 +22,7 @@ import net.minecraft.world.RaycastContext;
 public class GridLock extends Module {
 
     // ─────────────────────────── Enums ───────────────────────────
-    public enum Pattern { SquareSpiral, ArchimedeanSpiral, DiagonalGrid, Lawnmower }
+    public enum Pattern { SquareSpiral, ArchimedeanSpiral, DiagonalGrid, Lawnmower, Circle, Random }
     public enum Direction { South, East, North, West }
     public enum ShiftDirection { Right, Left }
 
@@ -83,6 +89,38 @@ public class GridLock extends Module {
         .description("Keybind to pause/resume the flight.")
         .defaultValue(Keybind.none())
         .action(this::togglePause)
+        .build()
+    );
+
+    // Circle Pattern
+    private final Setting<Integer> circleRadius = sgGeneral.add(new IntSetting.Builder()
+        .name("circle-radius")
+        .description("Radius of the circle in chunks.")
+        .defaultValue(10)
+        .min(1)
+        .sliderRange(5, 50)
+        .visible(() -> pattern.get() == Pattern.Circle)
+        .build()
+    );
+
+    private final Setting<Integer> circleSegments = sgGeneral.add(new IntSetting.Builder()
+        .name("circle-segments")
+        .description("Number of waypoints on the circle's circumference.")
+        .defaultValue(32)
+        .min(4)
+        .sliderRange(8, 128)
+        .visible(() -> pattern.get() == Pattern.Circle)
+        .build()
+    );
+
+    // Random Pattern
+    private final Setting<Integer> randomMaxRadius = sgGeneral.add(new IntSetting.Builder()
+        .name("random-radius")
+        .description("Maximum radius from origin for random waypoints, in chunks.")
+        .defaultValue(20)
+        .min(1)
+        .sliderRange(10, 100)
+        .visible(() -> pattern.get() == Pattern.Random)
         .build()
     );
 
@@ -215,6 +253,9 @@ public class GridLock extends Module {
     // Archimedean spiral state
     private double spiralTheta = 0;
 
+    // Circle state
+    private int circleCurrentSegment = 0;
+
     private static final Color PATH_COLOR = new Color(85, 255, 85, 200);
 
     // ─────────────────────────── Constructor ───────────────────────────
@@ -246,6 +287,7 @@ public class GridLock extends Module {
         spiralTheta = Math.PI / 4;
         lawnmowerReturning = false;
         lawnmowerForward = true;
+        circleCurrentSegment = 0;
 
         currentTarget = null;
         calculateNextTarget();
@@ -366,8 +408,15 @@ public class GridLock extends Module {
         int space = chunkSpacing.get() * 16;
 
         if (currentTarget == null) {
-            currentTarget = new Vec3d(origin.x, origin.y, origin.z).add(getDirectionOffset(direction, space));
-            stepsInLeg = 1;
+            // Set initial target based on pattern
+            if (pattern.get() == Pattern.Circle) {
+                double radius = circleRadius.get() * 16;
+                currentTarget = new Vec3d(origin.x + radius, origin.y, origin.z);
+                circleCurrentSegment = 1;
+            } else { // Default for spiral/grid/lawnmower/random
+                currentTarget = new Vec3d(origin.x, origin.y, origin.z).add(getDirectionOffset(direction, space));
+                stepsInLeg = 1;
+            }
             return;
         }
 
@@ -402,7 +451,7 @@ public class GridLock extends Module {
             }
             currentTarget = new Vec3d(currentTarget.x + offset.x, mc.player.getY(), currentTarget.z + offset.z);
 
-        } else { // ArchimedeanSpiral
+        } else if (p == Pattern.ArchimedeanSpiral) {
             double b = space / (2.0 * Math.PI);
             double currentRadius = b * spiralTheta;
             spiralTheta += space / (currentRadius + space);
@@ -411,6 +460,27 @@ public class GridLock extends Module {
                 origin.x + r * Math.cos(spiralTheta),
                 mc.player.getY(),
                 origin.z + r * Math.sin(spiralTheta)
+            );
+        } else if (p == Pattern.Circle) {
+            circleCurrentSegment++;
+            double radius = circleRadius.get() * 16;
+            int segments = circleSegments.get();
+            double angle = (2.0 * Math.PI / segments) * circleCurrentSegment;
+
+            currentTarget = new Vec3d(
+                origin.x + radius * Math.cos(angle),
+                mc.player.getY(),
+                origin.z + radius * Math.sin(angle)
+            );
+        } else if (p == Pattern.Random) {
+            double radius = randomMaxRadius.get() * 16;
+            double angle = Math.random() * 2 * Math.PI;
+            double r = radius * Math.sqrt(Math.random()); // Distribute points evenly across the circle area
+
+            currentTarget = new Vec3d(
+                origin.x + r * Math.cos(angle),
+                mc.player.getY(),
+                origin.z + r * Math.sin(angle)
             );
         }
     }

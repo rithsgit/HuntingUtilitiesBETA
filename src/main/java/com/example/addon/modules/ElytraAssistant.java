@@ -13,7 +13,6 @@ import meteordevelopment.meteorclient.settings.KeybindSetting;
 import meteordevelopment.meteorclient.settings.Setting;
 import meteordevelopment.meteorclient.settings.SettingGroup;
 import meteordevelopment.meteorclient.systems.modules.Module;
-import meteordevelopment.meteorclient.systems.modules.Modules;
 import meteordevelopment.meteorclient.utils.misc.Keybind;
 import meteordevelopment.meteorclient.utils.misc.input.Input;
 import meteordevelopment.meteorclient.utils.player.FindItemResult;
@@ -25,6 +24,7 @@ import net.minecraft.item.ItemStack;
 import net.minecraft.item.Items;
 import net.minecraft.sound.SoundEvents;
 import net.minecraft.util.Hand;
+import net.minecraft.util.math.Vec3d;
 
 public class ElytraAssistant extends Module {
 
@@ -342,6 +342,26 @@ public class ElytraAssistant extends Module {
         mendTimer = burstDelay.get();
     }
 
+    private void fireRocket() {
+        if (mc.player == null || mc.interactionManager == null) return;
+        if (preventGroundUsage.get() && mc.player.isOnGround()) return;
+
+        // Use offhand if rocket is there
+        if (mc.player.getOffHandStack().isOf(Items.FIREWORK_ROCKET)) {
+            mc.interactionManager.interactItem(mc.player, Hand.OFF_HAND);
+            return;
+        }
+
+        // Find rocket in hotbar
+        FindItemResult rocketResult = InvUtils.findInHotbar(Items.FIREWORK_ROCKET);
+        if (rocketResult.found()) {
+            int prevSlot = mc.player.getInventory().selectedSlot;
+            InvUtils.swap(rocketResult.slot(), false);
+            mc.interactionManager.interactItem(mc.player, Hand.MAIN_HAND);
+            InvUtils.swap(prevSlot, false); // swap back
+        }
+    }
+
     private void runMiddleClickAction() {
         if (mc.currentScreen != null) return;
 
@@ -386,6 +406,7 @@ public class ElytraAssistant extends Module {
             info("Auto Swap has been disabled as it conflicts with Auto Mend.");
         }
     }
+
 
     // Helper for addons to check if rocket should be blocked
     public boolean shouldPreventRocketUse() {

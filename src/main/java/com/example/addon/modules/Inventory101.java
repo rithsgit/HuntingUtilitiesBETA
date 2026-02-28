@@ -1,6 +1,7 @@
 package com.example.addon.modules;
 
 import java.lang.reflect.Field;
+import java.util.HashSet;
 import java.util.Set;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -123,7 +124,7 @@ public class Inventory101 extends Module {
     private int     targetPresetIndex = 0;
     private boolean saveMode = false;
     private double lastMouseX = -1, lastMouseY = -1;
-    private final Set<Integer> processedInDrag = new java.util.HashSet<>();
+    private final Set<Integer> processedInDrag = new HashSet<>();
 
     public Inventory101() {
         super(HuntingUtilities.CATEGORY, "inventory-101", "Manages inventory layouts with shulker boxes.");
