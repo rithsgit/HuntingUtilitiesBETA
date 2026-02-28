@@ -41,7 +41,6 @@ import net.minecraft.block.entity.SignBlockEntity;
 import net.minecraft.block.entity.SignText;
 import net.minecraft.client.gui.screen.ingame.AbstractSignEditScreen;
 import net.minecraft.item.Items;
-import net.minecraft.network.packet.c2s.play.UpdateSignC2SPacket;
 import net.minecraft.text.MutableText;
 import net.minecraft.text.PlainTextContent;
 import net.minecraft.text.Text;
@@ -259,36 +258,36 @@ public class SignScanner extends Module {
 
         if (handledSigns.contains(signPos)) return;
 
-        boolean isFront = isFrontSide(screen);
-
-        String l1 = line1.get();
-        String l2 = line2.get();
-        String l3 = line3.get();
-        String l4 = line4.get();
-
-        // Send the packet to update the sign
-        mc.player.networkHandler.sendPacket(new UpdateSignC2SPacket(signPos, isFront, l1, l2, l3, l4));
-
         if (autoGlow.get()) {
             FindItemResult glowResult = InvUtils.findInHotbar(Items.GLOW_INK_SAC);
             if (glowResult.found()) {
                 int prevSlot = mc.player.getInventory().selectedSlot;
                 InvUtils.swap(glowResult.slot(), false);
 
-                BlockHitResult hit = mc.world.raycast(new net.minecraft.world.RaycastContext(mc.player.getEyePos(), Vec3d.ofCenter(signPos), net.minecraft.world.RaycastContext.ShapeType.COLLIDER, net.minecraft.world.RaycastContext.FluidHandling.NONE, mc.player));
-                Direction side = (hit.getType() == net.minecraft.util.hit.HitResult.Type.BLOCK) ? hit.getSide() : mc.player.getHorizontalFacing().getOpposite();
+                BlockHitResult hit = mc.world.raycast(new net.minecraft.world.RaycastContext(
+                        mc.player.getEyePos(), Vec3d.ofCenter(signPos),
+                        net.minecraft.world.RaycastContext.ShapeType.COLLIDER,
+                        net.minecraft.world.RaycastContext.FluidHandling.NONE, mc.player));
 
-                mc.interactionManager.interactBlock(mc.player, Hand.MAIN_HAND, new BlockHitResult(Vec3d.ofCenter(signPos), side, signPos, false));
+                Direction side = (hit.getType() == net.minecraft.util.hit.HitResult.Type.BLOCK)
+                        ? hit.getSide()
+                        : mc.player.getHorizontalFacing().getOpposite();
+
+                mc.interactionManager.interactBlock(mc.player, Hand.MAIN_HAND,
+                        new BlockHitResult(Vec3d.ofCenter(signPos), side, signPos, false));
                 mc.player.swingHand(Hand.MAIN_HAND);
+
                 InvUtils.swap(prevSlot, false);
             }
         }
 
-        // Close the GUI
-        screen.close();
-        
-        // Mark as handled so we don't process it again if opened manually
+        // Mark as handled BEFORE closing so we don't re-enter on the same sign.
         handledSigns.add(signPos);
+
+        // Inject our text directly into the screen's buffer so the vanilla packet contains it.
+        setSignTextInScreen(screen, new String[]{line1.get(), line2.get(), line3.get(), line4.get()});
+
+        screen.close();
     }
 
     private SignBlockEntity getSignFromScreen(AbstractSignEditScreen screen) {
@@ -305,18 +304,43 @@ public class SignScanner extends Module {
         return null;
     }
 
-    private boolean isFrontSide(AbstractSignEditScreen screen) {
-        for (Field field : AbstractSignEditScreen.class.getDeclaredFields()) {
-            if (field.getType() == boolean.class) {
-                try {
-                    field.setAccessible(true);
-                    return field.getBoolean(screen);
-                } catch (IllegalAccessException e) {
-                    e.printStackTrace();
-                }
+    private void setSignTextInScreen(AbstractSignEditScreen screen, String[] lines) {
+        try {
+            // 1. Update the BlockEntity itself
+            Field signField = AbstractSignEditScreen.class.getDeclaredField("sign");
+            signField.setAccessible(true);
+            SignBlockEntity sign = (SignBlockEntity) signField.get(screen);
+
+            SignText front = sign.getFrontText();
+            for (int i = 0; i < 4 && i < lines.length; i++) {
+                front = front.withMessage(i, Text.literal(lines[i]));
             }
+            sign.setText(front, true); // front side only (back is rarely used in auto-sign)
+
+            // 2. Update the screen's internal text buffer so the outgoing UpdateSignC2SPacket contains our text
+            try {
+                Field textField = AbstractSignEditScreen.class.getDeclaredField("text");
+                textField.setAccessible(true);
+                SignText screenText = (SignText) textField.get(screen);
+                for (int i = 0; i < 4 && i < lines.length; i++) {
+                    screenText = screenText.withMessage(i, Text.literal(lines[i]));
+                }
+                textField.set(screen, screenText);
+            } catch (NoSuchFieldException ignored) {
+                // Some snapshots use "signText" instead of "text"
+                try {
+                    Field textField = AbstractSignEditScreen.class.getDeclaredField("signText");
+                    textField.setAccessible(true);
+                    SignText screenText = (SignText) textField.get(screen);
+                    for (int i = 0; i < 4 && i < lines.length; i++) {
+                        screenText = screenText.withMessage(i, Text.literal(lines[i]));
+                    }
+                    textField.set(screen, screenText);
+                } catch (Exception ignored2) {}
+            } catch (Exception ignored) {}
+        } catch (Exception e) {
+            e.printStackTrace();
         }
-        return true;
     }
 
     @EventHandler
@@ -341,18 +365,18 @@ public class SignScanner extends Module {
             Set<BlockPos> currentSigns = new HashSet<>();
 
             for (BlockEntity be : Utils.blockEntities()) {
-                // Check both sign types simultaneously via switch expression
                 SignText[] texts = switch (be) {
                     case HangingSignBlockEntity h -> new SignText[]{ h.getFrontText(), h.getBackText() };
                     case SignBlockEntity s        -> new SignText[]{ s.getFrontText(), s.getBackText() };
                     default -> null;
                 };
                 if (texts == null) continue;
-                SignText front = texts[0], back = texts[1];
+
                 if (be.getPos().getSquaredDistance(mc.player.getPos()) > rangeSq) continue;
 
                 List<Text> lines = new ArrayList<>();
 
+                SignText front = texts[0], back = texts[1];
                 if (censorship.get()) {
                     front = censorSignText(front);
                     back = censorSignText(back);
@@ -378,8 +402,7 @@ public class SignScanner extends Module {
             signs.keySet().retainAll(currentSigns);
             notified.retainAll(currentSigns);
 
-        } catch (Exception ignored) {
-        }
+        } catch (Exception ignored) {}
     }
 
     private void readSignText(SignText signText, List<Text> output) {
@@ -424,14 +447,12 @@ public class SignScanner extends Module {
                 if (input.matches("(?i).*" + bad + ".*")) {
                     return "****";
                 }
-            } catch (Exception ignored) {
-            }
+            } catch (Exception ignored) {}
         }
         return input;
     }
 
     private Text cleanSignText(Text text) {
-        // Removes formatting codes and artifacts by converting to plain string then back to literal
         String s = text.getString().replaceAll("§.", "");
         return Text.literal(s).setStyle(text.getStyle());
     }
@@ -541,7 +562,6 @@ public class SignScanner extends Module {
             boolean isMergedCountLine = entry.count > 1 && i == linesToRender.size() - 1;
 
             String line;
-            // For the merged count line, always use the plain string to avoid legacy formatting issues.
             if (isMergedCountLine) {
                 line = lineText.getString();
             } else {
@@ -552,7 +572,6 @@ public class SignScanner extends Module {
 
             SettingColor color;
             if (isMergedCountLine) {
-                // The merged count line is always yellow.
                 color = new SettingColor(255, 255, 0, 255);
             } else {
                 color = textColor.get();
@@ -582,7 +601,9 @@ public class SignScanner extends Module {
         int count = 1;
 
         public SignEntry(BlockPos pos, List<Text> lines, Vector3d pos3d) {
-            this.pos = pos; this.lines = lines; this.pos3d = pos3d;
+            this.pos = pos;
+            this.lines = lines;
+            this.pos3d = pos3d;
         }
     }
 }

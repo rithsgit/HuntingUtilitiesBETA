@@ -288,8 +288,9 @@ public class ObsidianFist extends Module {
             if (swapBack.get()) InvUtils.swap(prevSlot, false);
 
             mode = State.MiningStart;
-            // First block: 1 tick delay so server registers placement. Replacements: instant break.
-            timer = (burstCyclesDone == 0) ? 1 : 0;
+            // Always wait 1 tick after placing before attempting to mine.
+            // This gives the server time to process the placement and prevents desync.
+            timer = 1;
         };
 
         if (rotate.get()) {

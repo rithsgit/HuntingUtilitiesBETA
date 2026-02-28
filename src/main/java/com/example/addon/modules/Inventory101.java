@@ -1,25 +1,24 @@
 package com.example.addon.modules;
 
 import java.lang.reflect.Field;
-import java.util.HashSet;
-import java.util.Set;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
+
+import org.lwjgl.glfw.GLFW;
 
 import com.example.addon.HuntingUtilities;
-import org.lwjgl.glfw.GLFW;
 
 import meteordevelopment.meteorclient.events.world.TickEvent;
 import meteordevelopment.meteorclient.settings.BoolSetting;
 import meteordevelopment.meteorclient.settings.IntSetting;
 import meteordevelopment.meteorclient.settings.ItemListSetting;
-import meteordevelopment.meteorclient.settings.KeybindSetting;
 import meteordevelopment.meteorclient.settings.Setting;
 import meteordevelopment.meteorclient.settings.SettingGroup;
 import meteordevelopment.meteorclient.settings.StringSetting;
 import meteordevelopment.meteorclient.systems.modules.Module;
-import meteordevelopment.meteorclient.utils.misc.Keybind;
 import meteordevelopment.meteorclient.utils.misc.input.Input;
 import meteordevelopment.meteorclient.utils.player.InvUtils;
 import meteordevelopment.orbit.EventHandler;
@@ -30,7 +29,6 @@ import net.minecraft.client.gui.screen.ingame.ShulkerBoxScreen;
 import net.minecraft.item.BlockItem;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
-import net.minecraft.item.Items;
 import net.minecraft.nbt.NbtCompound;
 import net.minecraft.nbt.NbtElement;
 import net.minecraft.nbt.NbtList;
@@ -110,6 +108,12 @@ public class Inventory101 extends Module {
         .defaultValue(2).min(1).visible(showSortButton::get)
         .build()
     );
+    private final Setting<Boolean> shiftClickAll = sgOrganizer.add(new BoolSetting.Builder()
+        .name("shift-click-all")
+        .description("When shift-clicking an item, moves all items of the same type from that inventory.")
+        .defaultValue(true)
+        .build()
+    );
 
     // ── State ──
     private boolean isRegearing = false;
@@ -125,6 +129,7 @@ public class Inventory101 extends Module {
     private boolean saveMode = false;
     private double lastMouseX = -1, lastMouseY = -1;
     private final Set<Integer> processedInDrag = new HashSet<>();
+    private boolean moveAllActionTaken = false;
 
     public Inventory101() {
         super(HuntingUtilities.CATEGORY, "inventory-101", "Manages inventory layouts with shulker boxes.");
@@ -140,6 +145,7 @@ public class Inventory101 extends Module {
         lastMouseX = -1;
         lastMouseY = -1;
         processedInDrag.clear();
+        moveAllActionTaken = false;
     }
 
     // ─────────────────────── Public API for HandledScreenMixin ───────────────────────
@@ -230,54 +236,86 @@ public class Inventory101 extends Module {
             return;
         }
 
-        // Mouse Drag Item Move (user interaction, high priority)
+        // Mouse Drag / Click-All Item Move (user interaction, high priority)
         if (mc.currentScreen instanceof HandledScreen) {
             HandledScreen<?> screen = (HandledScreen<?>) mc.currentScreen;
             boolean isClicking = Input.isButtonPressed(GLFW.GLFW_MOUSE_BUTTON_LEFT);
             boolean isShift = Input.isKeyPressed(GLFW.GLFW_KEY_LEFT_SHIFT) || Input.isKeyPressed(GLFW.GLFW_KEY_RIGHT_SHIFT);
-    
+
             if (isClicking && isShift) {
-                double mouseX = mc.mouse.getX();
-                double mouseY = mc.mouse.getY();
-    
-                if (!wasClicking) { // Drag start
-                    processedInDrag.clear();
-                } else if (lastMouseX != -1) { // Drag continue - interpolate
-                    double deltaX = mouseX - lastMouseX;
-                    double deltaY = mouseY - lastMouseY;
-                    double dist = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
-    
-                    if (dist > 1) {
-                        int steps = (int) Math.ceil(dist / 2.0); // Check every 2 pixels
-                        for (int i = 0; i <= steps; i++) {
-                            double currentX = lastMouseX + (deltaX * i / steps);
-                            double currentY = lastMouseY + (deltaY * i / steps);
-    
-                            Slot slot = getSlotAt(screen, currentX, currentY);
-    
-                            if (slot != null && slot.hasStack() && !processedInDrag.contains(slot.id)) {
-                                mc.interactionManager.clickSlot(screen.getScreenHandler().syncId, slot.id, 0, SlotActionType.QUICK_MOVE, mc.player);
-                                processedInDrag.add(slot.id);
+                if (!wasClicking) { // First tick of the click
+                    // This is a new click. Decide if it's a "move all" or the start of a drag.
+                    if (shiftClickAll.get()) {
+                        Slot focused = getFocusedSlot(screen);
+                        if (focused != null && focused.hasStack()) {
+                            moveAllActionTaken = true; // Mark that we are doing a move-all
+                            Item targetItem = focused.getStack().getItem();
+                            boolean clickedInPlayerInventory = focused.inventory == mc.player.getInventory();
+
+                            for (Slot slot : screen.getScreenHandler().slots) {
+                                boolean slotInPlayerInventory = slot.inventory == mc.player.getInventory();
+                                if (slot.hasStack() && slot.getStack().getItem() == targetItem) {
+                                    if (clickedInPlayerInventory == slotInPlayerInventory) {
+                                        mc.interactionManager.clickSlot(screen.getScreenHandler().syncId, slot.id, 0, SlotActionType.QUICK_MOVE, mc.player);
+                                    }
+                                }
                             }
                         }
                     }
+                    // If not a move-all action, it's the start of a drag.
+                    if (!moveAllActionTaken) {
+                        processedInDrag.clear();
+                        lastMouseX = mc.mouse.getX();
+                        lastMouseY = mc.mouse.getY();
+                        // Also process the first slot immediately
+                        Slot focused = getFocusedSlot(screen);
+                        if (focused != null && focused.hasStack() && !processedInDrag.contains(focused.id)) {
+                            mc.interactionManager.clickSlot(screen.getScreenHandler().syncId, focused.id, 0, SlotActionType.QUICK_MOVE, mc.player);
+                            processedInDrag.add(focused.id);
+                        }
+                    }
+                } else if (!moveAllActionTaken) { // Continued click, and not a move-all action -> it's a drag
+                    double mouseX = mc.mouse.getX();
+                    double mouseY = mc.mouse.getY();
+
+                    if (lastMouseX != -1) { // Drag continue - interpolate
+                        double deltaX = mouseX - lastMouseX;
+                        double deltaY = mouseY - lastMouseY;
+                        double dist = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
+
+                        if (dist > 1) {
+                            int steps = (int) Math.ceil(dist / 2.0); // Check every 2 pixels
+                            for (int i = 0; i <= steps; i++) {
+                                double currentX = lastMouseX + (deltaX * i / steps);
+                                double currentY = lastMouseY + (deltaY * i / steps);
+
+                                Slot slot = getSlotAt(screen, currentX, currentY);
+
+                                if (slot != null && slot.hasStack() && !processedInDrag.contains(slot.id)) {
+                                    mc.interactionManager.clickSlot(screen.getScreenHandler().syncId, slot.id, 0, SlotActionType.QUICK_MOVE, mc.player);
+                                    processedInDrag.add(slot.id);
+                                }
+                            }
+                        }
+                    }
+
+                    // Always process current slot in case interpolation missed it
+                    Slot focused = getFocusedSlot(screen);
+                    if (focused != null && focused.hasStack() && !processedInDrag.contains(focused.id)) {
+                        mc.interactionManager.clickSlot(screen.getScreenHandler().syncId, focused.id, 0, SlotActionType.QUICK_MOVE, mc.player);
+                        processedInDrag.add(focused.id);
+                    }
+
+                    lastMouseX = mouseX;
+                    lastMouseY = mouseY;
                 }
-    
-                // Always process current slot in case interpolation missed it or it's the first click
-                Slot focused = getFocusedSlot(screen);
-                if (focused != null && focused.hasStack() && !processedInDrag.contains(focused.id)) {
-                    mc.interactionManager.clickSlot(screen.getScreenHandler().syncId, focused.id, 0, SlotActionType.QUICK_MOVE, mc.player);
-                    processedInDrag.add(focused.id);
-                }
-    
-                lastMouseX = mouseX;
-                lastMouseY = mouseY;
                 wasClicking = true;
                 return; // Done for this tick
             } else {
                 if (wasClicking) { // Drag ended
                     processedInDrag.clear();
                     lastMouseX = -1;
+                    moveAllActionTaken = false; // Reset the flag
                 }
                 wasClicking = false;
             }
@@ -285,6 +323,7 @@ public class Inventory101 extends Module {
             if (wasClicking) { // Screen closed during drag
                 processedInDrag.clear();
                 lastMouseX = -1;
+                moveAllActionTaken = false; // Reset the flag
             }
             wasClicking = false;
         }
