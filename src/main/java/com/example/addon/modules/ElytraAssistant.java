@@ -35,7 +35,6 @@ public class ElytraAssistant extends Module {
     }
 
     private final SettingGroup sgDurability = settings.createGroup("Durability");
-    private final SettingGroup sgChestplate = settings.createGroup("Chestplate Swap");
     private final SettingGroup sgUtilities  = settings.createGroup("Utilities");
     private final SettingGroup sgMending    = settings.createGroup("Auto Mending");
 
@@ -66,26 +65,6 @@ public class ElytraAssistant extends Module {
             boolean newVal = !autoSwap.get();
             autoSwap.set(newVal);
             info("Auto Swap " + (newVal ? "enabled" : "disabled") + ".");
-        })
-        .build()
-    );
-
-    // ─── Chestplate Swap ───────────────────────────────────
-    private final Setting<Boolean> chestplateOnGround = sgChestplate.add(new BoolSetting.Builder()
-        .name("chestplate-on-ground")
-        .description("Silently wears chestplate on ground, elytra while flying.")
-        .defaultValue(false)
-        .build()
-    );
-
-    private final Setting<Keybind> chestplateToggleKey = sgChestplate.add(new KeybindSetting.Builder()
-        .name("toggle-key")
-        .description("Key to toggle chestplate swapping.")
-        .defaultValue(Keybind.none())
-        .action(() -> {
-            boolean newVal = !chestplateOnGround.get();
-            chestplateOnGround.set(newVal);
-            info("Chestplate swap " + (newVal ? "enabled" : "disabled") + ".");
         })
         .build()
     );
@@ -250,48 +229,13 @@ public class ElytraAssistant extends Module {
             return;
         }
 
-        // Chestplate ↔ Elytra swap based on ground state
-        if (chestplateOnGround.get()) {
-            handleChestplateElytraSwitch();
-        }
-
         // Normal durability-based auto-swap
         if (autoSwap.get()) {
-            handleDurabilityAutoSwap();
+            handleChestplateElytraSwitch();
         }
     }
 
     private void handleChestplateElytraSwitch() {
-        // Prevent swapping to chestplate if RocketPilot is active (it needs Elytra)
-        if (Modules.get().get(RocketPilot.class).isActive()) return;
-
-        ItemStack chest = mc.player.getEquippedStack(EquipmentSlot.CHEST);
-
-        if (mc.player.isOnGround()) {
-            noUsableElytraWarned = false;
-            if (chest.isOf(Items.ELYTRA)) {
-                FindItemResult cp = InvUtils.find(stack ->
-                    stack.isOf(Items.NETHERITE_CHESTPLATE) || stack.isOf(Items.DIAMOND_CHESTPLATE));
-                if (cp.found()) {
-                    silentEquip(cp.slot());
-                }
-            }
-        } else {
-            // In air → want elytra with enough durability
-            if (!chest.isOf(Items.ELYTRA) || (autoSwap.get() && chest.getMaxDamage() - chest.getDamage() <= durabilityThreshold.get())) {
-                FindItemResult elytra = findUsableElytra();
-                if (elytra.found()) {
-                    silentEquip(elytra.slot());
-                    info("Equipped usable elytra.");
-                } else if (!noUsableElytraWarned) {
-                    warning("No usable elytra found in inventory!");
-                    noUsableElytraWarned = true;
-                }
-            }
-        }
-    }
-
-    private void handleDurabilityAutoSwap() {
         ItemStack chest = mc.player.getEquippedStack(EquipmentSlot.CHEST);
         if (!chest.isOf(Items.ELYTRA)) return;
 

@@ -1,22 +1,26 @@
 {
   "required": true,
-  "minVersion": "0.8",
   "package": "com.example.addon.mixin",
-  "compatibilityLevel": "JAVA_21",
-  "refmap": "hunting-utilities.refmap.json",
-  "mixins": [],
-  "client": [
-    "LootLensMixin",
-    "PortalTrackerMixin",
-    "RocketPilotMixin",
+  "compatibilityLevel": "JAVA_17",
+  "mixins": [
+    "LavaMarkerMixin",
+    "MixinSignBlockEntityRenderer",
     "PortalMakerMixin",
+    "PortalTrackerMixin"
+  ],
+  "client": [
+    "DungeonAssistantMixin",
     "ElytraAssistantMixin",
     "ElytraAssistantSwingMixin",
+    "GraveyardMixin",
+    "HandledScreenAccessor",
     "HandledScreenMixin",
+    "LootLensMixin",
     "ObsidianFistMixin",
-    "MixinSignBlockEntityRenderer"
+    "RocketPilotMixin",
+    "ServerHealthCareMixin",
+    "ServerHealthcareSystemMixin"
   ],
-  "server": [],
   "injectors": {
     "defaultRequire": 1
   }

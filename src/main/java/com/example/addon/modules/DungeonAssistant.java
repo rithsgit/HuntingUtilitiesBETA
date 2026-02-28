@@ -444,25 +444,6 @@ public class DungeonAssistant extends Module {
         .build()
     );
 
-    // Safety Settings
-    private final Setting<Boolean> autoEat = sgSafety.add(new BoolSetting.Builder()
-        .name("auto-eat")
-        .description("Automatically eat Golden Apples when low on health.")
-        .defaultValue(false)
-        .build()
-    );
-
-    private final Setting<Integer> healthThreshold = sgSafety.add(new IntSetting.Builder()
-        .name("health-threshold")
-        .description("Health threshold to trigger auto-eat.")
-        .defaultValue(10)
-        .min(1)
-        .max(20)
-        .sliderMax(20)
-        .visible(autoEat::get)
-        .build()
-    );
-
     private final Setting<Boolean> autoDisableOnLowHealth = sgSafety.add(new BoolSetting.Builder()
         .name("auto-disable-on-low-health")
         .description("Automatically disables the module if health is critically low with a totem equipped.")
@@ -482,7 +463,6 @@ public class DungeonAssistant extends Module {
     );
 
     // ─────────────────────────── Other State ───────────────────────────
-    private boolean isEating = false;
     private boolean hasPlayedSoundForCurrentScreen = false;
     private BlockPos lastOpenedContainer = null;
     private int breakDelayTimer = 0;
@@ -534,7 +514,6 @@ public class DungeonAssistant extends Module {
         spawnerTorches.clear();
         brokenChestsCount = 0;
         isBreakingChest = false;
-        isEating = false;
         hasPlayedSoundForCurrentScreen = false;
         
         if (mc.player != null && mc.world != null) {
@@ -555,10 +534,6 @@ public class DungeonAssistant extends Module {
         notifiedEndermites.clear();
         checkedEntityIds.clear();
         spawnerTorches.clear();
-        if (isEating) {
-            mc.options.useKey.setPressed(false);
-            isEating = false;
-        }
         hasPlayedSoundForCurrentScreen = false;
         lastOpenedContainer = null;
         lastOpenedEntity = null;
@@ -626,7 +601,6 @@ public class DungeonAssistant extends Module {
 
         if (performSafetyChecks()) return;
 
-        updateAutoEat();
         updateBreakingLogic();
         updateContainerLogic();
         updateScanningLogic();
@@ -645,22 +619,6 @@ public class DungeonAssistant extends Module {
         }
 
         return false;
-    }
-
-    private void updateAutoEat() {
-        if (autoEat.get()) {
-            if (mc.player.getHealth() <= healthThreshold.get()) {
-                int slot = findGoldenApple();
-                if (slot != -1) {
-                    mc.player.getInventory().selectedSlot = slot;
-                    mc.options.useKey.setPressed(true);
-                    isEating = true;
-                }
-            } else if (isEating) {
-                mc.options.useKey.setPressed(false);
-                isEating = false;
-            }
-        }
     }
 
     private void updateBreakingLogic() {
@@ -1497,15 +1455,6 @@ public class DungeonAssistant extends Module {
             counts.put(type, counts.get(type) + 1);
         }
         return counts;
-    }
-
-    /** Scans hotbar slots 0-8 for a golden apple. */
-    private int findGoldenApple() {
-        for (int i = 0; i < 9; i++) {
-            Item it = mc.player.getInventory().getStack(i).getItem();
-            if (it == Items.GOLDEN_APPLE || it == Items.ENCHANTED_GOLDEN_APPLE) return i;
-        }
-        return -1;
     }
 
     /** Scans hotbar slots 0-8 for an axe. */

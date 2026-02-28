@@ -3,6 +3,7 @@ package com.example.addon.modules;
 import com.example.addon.HuntingUtilities;
 import meteordevelopment.meteorclient.events.render.Render3DEvent;
 import meteordevelopment.meteorclient.events.world.TickEvent;
+import meteordevelopment.meteorclient.systems.modules.Modules;
 import meteordevelopment.meteorclient.settings.*;
 import meteordevelopment.meteorclient.systems.modules.Module;
 import meteordevelopment.meteorclient.utils.misc.Keybind;
@@ -226,6 +227,12 @@ public class GridLock extends Module {
     @Override
     public void onActivate() {
         if (mc.player == null) { toggle(); return; }
+
+        RocketPilot rocketPilot = Modules.get().get(RocketPilot.class);
+        if (rocketPilot != null && rocketPilot.isActive()) {
+            warning("RocketPilot is active. Disabling it to use GridLock.");
+            rocketPilot.toggle();
+        }
 
         origin = mc.player.getPos();
         paused = false;
