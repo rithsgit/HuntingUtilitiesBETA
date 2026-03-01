@@ -31,6 +31,7 @@ import net.minecraft.client.gui.screen.ingame.ShulkerBoxScreen;
 import net.minecraft.item.BlockItem;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
+import net.minecraft.item.Items;
 import net.minecraft.nbt.NbtCompound;
 import net.minecraft.nbt.NbtElement;
 import net.minecraft.nbt.NbtList;
@@ -85,10 +86,20 @@ public class Inventory101 extends Module {
         .build()
     );
 
+    private final Setting<Integer> elytraThreshold = sgRefill.add(new IntSetting.Builder()
+        .name("elytra-threshold")
+        .description("Durability threshold to consider an elytra as needing replacement.")
+        .defaultValue(15)
+        .min(1)
+        .sliderMax(100)
+        .visible(enableRefill::get)
+        .build()
+    );
+
     // ── Cleaner ──
     private final Setting<Boolean> autoDrop = sgCleaner.add(new BoolSetting.Builder()
         .name("inventory-cleaner")
-        .description("Automatically drops whitelisted items from your inventory.")
+        .description("Automatically drops whitelisted items from your inventory when no GUI is open.")
         .defaultValue(false).build()
     );
     private final Setting<List<Item>> itemsToDrop = sgCleaner.add(new ItemListSetting.Builder()
@@ -299,7 +310,8 @@ public class Inventory101 extends Module {
             boolean isClicking = Input.isButtonPressed(GLFW.GLFW_MOUSE_BUTTON_LEFT);
             boolean isShift = Input.isKeyPressed(GLFW.GLFW_KEY_LEFT_SHIFT) || Input.isKeyPressed(GLFW.GLFW_KEY_RIGHT_SHIFT);
 
-            if (isClicking && isShift) {
+            if (isClicking) {
+                if (isShift) {
                 if (!wasClicking) { // First tick of the click
                     // This is a new click. Decide if it's a "move all" or the start of a drag.
                     if (shiftClickAll.get()) {
@@ -366,6 +378,8 @@ public class Inventory101 extends Module {
                     lastMouseX = mouseX;
                     lastMouseY = mouseY;
                 }
+                }
+                
                 wasClicking = true;
                 return; // Done for this tick
             } else {
@@ -406,7 +420,7 @@ public class Inventory101 extends Module {
         }
 
         // Auto-drop
-        if (autoDrop.get()) {
+        if (autoDrop.get() && mc.currentScreen == null) {
             if (cleanerTimer > 0) { cleanerTimer--; }
             else {
                 for (int i = 0; i < 36; i++) {
@@ -543,6 +557,7 @@ public class Inventory101 extends Module {
         for (int i = 0; i < 36; i++) {
             ItemStack stack = mc.player.getInventory().getStack(i);
             if (!stack.isEmpty()) {
+                if (isLowDurability(stack)) continue;
                 currentCounts.put(stack.getItem(), currentCounts.getOrDefault(stack.getItem(), 0) + stack.getCount());
             }
         }
@@ -564,6 +579,22 @@ public class Inventory101 extends Module {
         for (int i = 0; i < 27; i++) { // Shulker slots are 0-26
             ItemStack shulkerStack = handler.getSlot(i).getStack();
             if (!shulkerStack.isEmpty() && neededCounts.containsKey(shulkerStack.getItem())) {
+                if (shulkerStack.isOf(Items.ELYTRA)) {
+                    int brokenIdx = -1;
+                    for (int j = 0; j < 36; j++) {
+                        if (isLowDurability(mc.player.getInventory().getStack(j))) {
+                            brokenIdx = j;
+                            break;
+                        }
+                    }
+                    if (brokenIdx != -1 && findEmptyShulkerSlot(handler) != -1) {
+                        int slotId = mapInventoryToSlotId(brokenIdx);
+                        if (slotId != -1) {
+                            mc.interactionManager.clickSlot(handler.syncId, slotId, 0, SlotActionType.QUICK_MOVE, mc.player);
+                            return true;
+                        }
+                    }
+                }
                 mc.interactionManager.clickSlot(handler.syncId, i, 0, SlotActionType.QUICK_MOVE, mc.player);
                 return true; // One move per tick.
             }
@@ -619,6 +650,19 @@ public class Inventory101 extends Module {
         double scaledMouseX = mouseX * mc.getWindow().getScaledWidth() / (double)mc.getWindow().getWidth();
         double scaledMouseY = mouseY * mc.getWindow().getScaledHeight() / (double)mc.getWindow().getHeight();
 
+        int[] pos = getGuiPos(screen);
+        if (pos == null) return null;
+        int guiLeft = pos[0];
+        int guiTop = pos[1];
+
+        for (Slot slot : screen.getScreenHandler().slots) {
+            int x = guiLeft + slot.x; int y = guiTop + slot.y;
+            if (scaledMouseX >= x && scaledMouseX < x + 16 && scaledMouseY >= y && scaledMouseY < y + 16) return slot;
+        }
+        return null;
+    }
+
+    private int[] getGuiPos(HandledScreen<?> screen) {
         int guiLeft = 0, guiTop = 0;
         try {
             Field fX = HandledScreen.class.getDeclaredField("x"); fX.setAccessible(true);
@@ -630,16 +674,12 @@ public class Inventory101 extends Module {
                 Field fY = HandledScreen.class.getDeclaredField("field_2777"); fY.setAccessible(true);
                 guiLeft = fX.getInt(screen); guiTop = fY.getInt(screen);
             } catch (Exception e2) {
-                // Fallback for screens that don't have x/y fields
+                // Fallback
                 guiLeft = (screen.width - 176) / 2;
                 guiTop = (screen.height - 166) / 2;
             }
         }
-        for (Slot slot : screen.getScreenHandler().slots) {
-            int x = guiLeft + slot.x; int y = guiTop + slot.y;
-            if (scaledMouseX >= x && scaledMouseX < x + 16 && scaledMouseY >= y && scaledMouseY < y + 16) return slot;
-        }
-        return null;
+        return new int[]{guiLeft, guiTop};
     }
 
     private Slot getFocusedSlot(HandledScreen<?> screen) {
@@ -691,6 +731,10 @@ public class Inventory101 extends Module {
         if (a.isEmpty() && b.isEmpty()) return true;
         if (a.isEmpty() || b.isEmpty()) return false;
         return a.getItem() == b.getItem();
+    }
+
+    private boolean isLowDurability(ItemStack stack) {
+        return stack.isOf(Items.ELYTRA) && (stack.getMaxDamage() - stack.getDamage() < elytraThreshold.get());
     }
 
     private boolean isBusy() {

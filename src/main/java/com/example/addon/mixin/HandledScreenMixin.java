@@ -64,6 +64,18 @@ public abstract class HandledScreenMixin extends Screen {
                     btn -> inv101.clearPresets(), bx, by + 75, 20, 20,
                     net.minecraft.client.gui.tooltip.Tooltip.of(Text.literal("Clear presets"))));
 
+                if (inv101.isRefillEnabled()) {
+                    this.addDrawableChild(mouseOnly(Text.literal("R1"),
+                        btn -> inv101.startRefilling(1), bx, by + 100, 20, 20,
+                        net.minecraft.client.gui.tooltip.Tooltip.of(Text.literal("Refill from Preset 1")),
+                        () -> !inv101.isPresetEmpty(1)));
+
+                    this.addDrawableChild(mouseOnly(Text.literal("R2"),
+                        btn -> inv101.startRefilling(2), bx, by + 125, 20, 20,
+                        net.minecraft.client.gui.tooltip.Tooltip.of(Text.literal("Refill from Preset 2")),
+                        () -> !inv101.isPresetEmpty(2)));
+                }
+
                 // Inventory101 owns ShulkerBoxScreen — skip adding S/D steal buttons
                 return;
             }
