@@ -1,18 +1,28 @@
 package com.example.addon.modules;
 
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+import java.util.UUID;
+
 import com.example.addon.HuntingUtilities;
 
+import meteordevelopment.meteorclient.events.packets.PacketEvent;
 import meteordevelopment.meteorclient.events.world.TickEvent;
 import meteordevelopment.meteorclient.settings.BoolSetting;
 import meteordevelopment.meteorclient.settings.EnumSetting;
 import meteordevelopment.meteorclient.settings.IntSetting;
 import meteordevelopment.meteorclient.settings.Setting;
 import meteordevelopment.meteorclient.settings.SettingGroup;
+import meteordevelopment.meteorclient.settings.StringListSetting;
+import meteordevelopment.meteorclient.systems.friends.Friends;
 import meteordevelopment.meteorclient.systems.modules.Module;
 import meteordevelopment.meteorclient.systems.modules.Modules;
 import meteordevelopment.meteorclient.utils.player.FindItemResult;
 import meteordevelopment.meteorclient.utils.player.InvUtils;
 import meteordevelopment.orbit.EventHandler;
+import net.minecraft.client.network.PlayerListEntry;
 import net.minecraft.component.DataComponentTypes;
 import net.minecraft.component.type.AttributeModifiersComponent;
 import net.minecraft.entity.EquipmentSlot;
@@ -20,6 +30,7 @@ import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
 import net.minecraft.item.Items;
+import net.minecraft.network.packet.s2c.play.ChatMessageS2CPacket;
 import net.minecraft.stat.Stats;
 import net.minecraft.text.Text;
 
@@ -27,6 +38,7 @@ public class ServerHealthcareSystem extends Module {
 
     private final SettingGroup sgGeneral = settings.getDefaultGroup();
     private final SettingGroup sgSafety = settings.createGroup("Safety");
+    private final SettingGroup sgChat = settings.createGroup("Chat");
 
     // Auto Totem
     private final Setting<Boolean> autoTotem = sgGeneral.add(new BoolSetting.Builder()
@@ -115,9 +127,26 @@ public class ServerHealthcareSystem extends Module {
         .build()
     );
 
+    // Auto Ignore
+    private final Setting<Boolean> autoIgnore = sgChat.add(new BoolSetting.Builder()
+        .name("auto-ignore")
+        .description("Automatically runs /ignorehard on players who speak in chat.")
+        .defaultValue(false)
+        .build()
+    );
+
+    private final Setting<List<String>> ignoredKeywords = sgChat.add(new StringListSetting.Builder()
+        .name("ignored-keywords")
+        .description("List of words that trigger auto-ignore. If empty, all players are ignored.")
+        .defaultValue(new ArrayList<>())
+        .visible(autoIgnore::get)
+        .build()
+    );
+
     private int totemPops = 0;
     private boolean isEating = false;
     private int swapTimer = 0;
+    private final Set<UUID> ignoredPlayers = new HashSet<>();
 
     public ServerHealthcareSystem() {
         super(HuntingUtilities.CATEGORY, "server-healthcare-system", "SHS - Manages health and safety features like auto-totem and auto-eat.");
@@ -130,6 +159,7 @@ public class ServerHealthcareSystem extends Module {
         }
         isEating = false;
         swapTimer = 0;
+        ignoredPlayers.clear();
     }
 
     @Override
@@ -137,6 +167,36 @@ public class ServerHealthcareSystem extends Module {
         if (isEating) {
             mc.options.useKey.setPressed(false);
             isEating = false;
+        }
+    }
+
+    @EventHandler
+    private void onPacket(PacketEvent.Receive event) {
+        if (!autoIgnore.get()) return;
+        if (event.packet instanceof ChatMessageS2CPacket packet) {
+            UUID sender = packet.sender();
+            if (sender.equals(mc.player.getUuid())) return;
+            if (ignoredPlayers.contains(sender)) return;
+
+            if (!ignoredKeywords.get().isEmpty()) {
+                String content = packet.body().content();
+                boolean found = false;
+                for (String word : ignoredKeywords.get()) {
+                    if (content.toLowerCase().contains(word.toLowerCase())) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) return;
+            }
+
+            PlayerListEntry entry = mc.getNetworkHandler().getPlayerListEntry(sender);
+            if (entry != null) {
+                if (Friends.get().isFriend(entry)) return;
+                String name = entry.getProfile().getName();
+                mc.player.networkHandler.sendChatCommand("ignorehard " + name);
+                ignoredPlayers.add(sender);
+            }
         }
     }
 

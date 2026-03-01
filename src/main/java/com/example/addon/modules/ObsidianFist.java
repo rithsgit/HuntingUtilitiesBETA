@@ -382,7 +382,7 @@ public class ObsidianFist extends Module {
             }
             mc.player.swingHand(Hand.MAIN_HAND);
 
-            if (breakMode.get() == BreakMode.Instant && burstCyclesDone > 0) {
+            if (breakMode.get() == BreakMode.Instant) {
                 doFinishMiningCycle();
             }
         };
