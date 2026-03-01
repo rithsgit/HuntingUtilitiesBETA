@@ -19,6 +19,8 @@ Current modules;
 - Sign Scanner
 - Lava Marker
 - Inventory 101
+- Time Throttle
+- Mobanom
 
 More modules coming soon — 
 
