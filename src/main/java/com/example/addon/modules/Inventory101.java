@@ -2,8 +2,10 @@ package com.example.addon.modules;
 
 import java.lang.reflect.Field;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.Comparator;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.List;
 import java.util.Set;
 
@@ -46,6 +48,7 @@ import net.minecraft.util.DyeColor;
 public class Inventory101 extends Module {
     private final SettingGroup sgRegearing = settings.createGroup("Regearing 101");
     private final SettingGroup sgCleaner   = settings.createGroup("Inventory Cleaner");
+    private final SettingGroup sgRefill    = settings.createGroup("Refill");
     private final SettingGroup sgOrganizer = settings.createGroup("Shulker Organizer");
 
     // ── Regearing ──
@@ -63,6 +66,22 @@ public class Inventory101 extends Module {
     private final Setting<String> preset2Data = sgRegearing.add(new StringSetting.Builder()
         .name("preset-2-data").description("Saved data for inventory preset 2.")
         .defaultValue("").visible(() -> false)
+        .build()
+    );
+
+    // -- Refill --
+    private final Setting<Boolean> enableRefill = sgRefill.add(new BoolSetting.Builder()
+        .name("enable-refill")
+        .description("Adds a button to refill your inventory from a shulker based on a saved preset.")
+        .defaultValue(true)
+        .build()
+    );
+
+    private final Setting<Integer> refillDelay = sgRefill.add(new IntSetting.Builder()
+        .name("refill-delay")
+        .description("Delay in ticks between moving items from shulker to inventory during a refill.")
+        .defaultValue(4).min(1).sliderMax(20)
+        .visible(enableRefill::get)
         .build()
     );
 
@@ -118,6 +137,8 @@ public class Inventory101 extends Module {
     // ── State ──
     private boolean isRegearing = false;
     private int     regearTimer = 0;
+    private boolean isRefilling = false;
+    private int     refillTimer = 0;
     private boolean isSorting   = false;
     private int     sortTimer   = 0;
     private int     cleanerTimer = 0;
@@ -139,6 +160,8 @@ public class Inventory101 extends Module {
     public void onDeactivate() {
         isRegearing = false;
         saveMode    = false;
+        isRefilling = false;
+        refillTimer = 0;
         isSorting   = false;
         isTrashing  = false;
         wasClicking = false;
@@ -160,6 +183,25 @@ public class Inventory101 extends Module {
         if (isBusy()) return;
         isSorting = true;
         sortTimer = 0;
+    }
+
+    /** @return true when the Refill button should be shown. */
+    public boolean isRefillEnabled() {
+        return enableRefill.get();
+    }
+
+    /** Called by the Refill button click handler. */
+    public void startRefilling(int presetIndex) {
+        if (isBusy()) return;
+        List<ItemStack> target = getPreset(presetIndex);
+        if (target.stream().allMatch(ItemStack::isEmpty)) {
+            warning("Preset " + presetIndex + " is empty. Cannot refill.");
+            return;
+        }
+        targetPresetIndex = presetIndex;
+        isRefilling = true;
+        refillTimer = 0;
+        info("Refilling from preset " + presetIndex + "...");
     }
 
     /** Called by the S (save-mode toggle) button. */
@@ -213,6 +255,21 @@ public class Inventory101 extends Module {
     @EventHandler
     private void onTick(TickEvent.Pre event) {
         if (mc.player == null || mc.world == null) return;
+
+        // High-priority blocking tasks
+        if (isRefilling) {
+            if (!(mc.currentScreen instanceof ShulkerBoxScreen)) { isRefilling = false; return; }
+            if (refillTimer > 0) { refillTimer--; return; }
+            if (performRefillStep()) {
+                refillTimer = refillDelay.get();
+            } else {
+                mc.player.closeHandledScreen();
+                info("Refill complete.");
+                mc.player.playSound(SoundEvents.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
+                isRefilling = false;
+            }
+            return;
+        }
 
         // High-priority blocking tasks
         if (isRegearing) {
@@ -468,6 +525,53 @@ public class Inventory101 extends Module {
         return false; // nothing left to move → regearing complete
     }
 
+    private boolean performRefillStep() {
+        List<ItemStack> preset = getPreset(targetPresetIndex);
+        if (preset.stream().allMatch(ItemStack::isEmpty)) return false;
+        if (!(mc.player.currentScreenHandler instanceof ShulkerBoxScreenHandler handler)) return false;
+
+        // 1. Aggregate desired item counts from preset
+        Map<Item, Integer> desiredCounts = new HashMap<>();
+        for (ItemStack stack : preset) {
+            if (!stack.isEmpty()) {
+                desiredCounts.put(stack.getItem(), desiredCounts.getOrDefault(stack.getItem(), 0) + stack.getCount());
+            }
+        }
+
+        // 2. Aggregate current item counts from player inventory
+        Map<Item, Integer> currentCounts = new HashMap<>();
+        for (int i = 0; i < 36; i++) {
+            ItemStack stack = mc.player.getInventory().getStack(i);
+            if (!stack.isEmpty()) {
+                currentCounts.put(stack.getItem(), currentCounts.getOrDefault(stack.getItem(), 0) + stack.getCount());
+            }
+        }
+
+        // 3. Determine what is needed
+        Map<Item, Integer> neededCounts = new HashMap<>();
+        for (Item item : desiredCounts.keySet()) {
+            int needed = desiredCounts.get(item) - currentCounts.getOrDefault(item, 0);
+            if (needed > 0) {
+                neededCounts.put(item, needed);
+            }
+        }
+
+        if (neededCounts.isEmpty()) {
+            return false; // Nothing to refill
+        }
+
+        // 4. Find a needed item in the shulker and quick-move it
+        for (int i = 0; i < 27; i++) { // Shulker slots are 0-26
+            ItemStack shulkerStack = handler.getSlot(i).getStack();
+            if (!shulkerStack.isEmpty() && neededCounts.containsKey(shulkerStack.getItem())) {
+                mc.interactionManager.clickSlot(handler.syncId, i, 0, SlotActionType.QUICK_MOVE, mc.player);
+                return true; // One move per tick.
+            }
+        }
+
+        return false; // No more needed items found in shulker.
+    }
+
     private boolean performSortStep() {
         if (!(mc.player.currentScreenHandler instanceof GenericContainerScreenHandler handler)) return false;
         int invSize = handler.getRows() * 9;
@@ -590,7 +694,7 @@ public class Inventory101 extends Module {
     }
 
     private boolean isBusy() {
-        return isRegearing || isSorting || isTrashing;
+        return isRegearing || isSorting || isTrashing || isRefilling;
     }
 
     private static class ShulkerColorComparator implements Comparator<ItemStack> {
