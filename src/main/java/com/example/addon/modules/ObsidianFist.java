@@ -27,6 +27,7 @@ import net.minecraft.enchantment.Enchantments;
 import net.minecraft.item.ItemStack;
 import net.minecraft.item.Items;
 import net.minecraft.network.packet.c2s.play.ClientCommandC2SPacket;
+import net.minecraft.network.packet.c2s.play.PlayerActionC2SPacket;
 import net.minecraft.network.packet.s2c.play.BlockUpdateS2CPacket;
 import net.minecraft.network.packet.s2c.play.ChunkDeltaUpdateS2CPacket;
 import net.minecraft.util.Hand;
@@ -88,7 +89,7 @@ public class ObsidianFist extends Module {
 
     private final Setting<BreakMode> breakMode = sgGeneral.add(new EnumSetting.Builder<BreakMode>()
         .name("break-mode")
-        .description("Safe waits for server confirmation, Instant is faster but may be less reliable.")
+        .description("Safe waits for server confirmation, Instant is faster, Custom allows specific delay.")
         .defaultValue(BreakMode.Instant)
         .build()
     );
@@ -97,6 +98,25 @@ public class ObsidianFist extends Module {
         .name("swap-back")
         .description("Swaps back to the previous slot after mining.")
         .defaultValue(true)
+        .build()
+    );
+
+    private final Setting<Integer> customBreakDelay = sgGeneral.add(new IntSetting.Builder()
+        .name("custom-break-delay")
+        .description("Ticks to wait before sending the stop break packet in Custom mode.")
+        .defaultValue(1)
+        .min(0)
+        .sliderMax(20)
+        .visible(() -> breakMode.get() == BreakMode.Custom)
+        .build()
+    );
+
+    private final Setting<Integer> placeActionDelay = sgGeneral.add(new IntSetting.Builder()
+        .name("place-action-delay")
+        .description("Ticks to wait after placing before mining again.")
+        .defaultValue(1)
+        .min(0)
+        .sliderMax(5)
         .build()
     );
 
@@ -156,11 +176,11 @@ public class ObsidianFist extends Module {
     );
 
     private enum BreakMode {
-        Safe, Instant
+        Safe, Instant, Custom
     }
 
     private enum State {
-        Idle, Placing, MiningStart, MiningHold, WaitingBreak
+        Idle, Placing, MiningStart, MiningHold, WaitingBreak, SpeedMining
     }
 
     private State mode = State.Idle;
@@ -192,6 +212,9 @@ public class ObsidianFist extends Module {
     }
 
     private void reset() {
+        if (swapBack.get() && prevSlot != -1) {
+            InvUtils.swap(prevSlot, false);
+        }
         mode = State.Idle;
         currentPos = null;
         currentDir = null;
@@ -262,6 +285,7 @@ public class ObsidianFist extends Module {
             case MiningStart -> handleMiningStart();
             case MiningHold -> handleMiningHold(); // This calls finishMining()
             case WaitingBreak -> { /* Handled in onPacket */ }
+            case SpeedMining -> handleSpeedMining();
         }
     }
 
@@ -330,7 +354,9 @@ public class ObsidianFist extends Module {
         }
 
         Runnable placeLogic = () -> {
-            int prevSlot = mc.player.getInventory().selectedSlot;
+            if (placeTarget == null || placeSide == null) return;
+
+            if (prevSlot == -1) prevSlot = mc.player.getInventory().selectedSlot;
             if (!InvUtils.swap(echest.slot(), false)) return;
 
             boolean sneaking = !mc.player.isSneaking() && isClickable(mc.world.getBlockState(placeTarget).getBlock());
@@ -348,12 +374,10 @@ public class ObsidianFist extends Module {
 
             if (sneaking) mc.player.networkHandler.sendPacket(new ClientCommandC2SPacket(mc.player, ClientCommandC2SPacket.Mode.RELEASE_SHIFT_KEY));
 
-            if (swapBack.get()) InvUtils.swap(prevSlot, false);
-
             mode = State.MiningStart;
             // Always wait 1 tick after placing before attempting to mine.
             // This gives the server time to process the placement and prevents desync.
-            timer = 1;
+            timer = placeActionDelay.get();
         };
 
         if (rotate.get()) {
@@ -371,6 +395,8 @@ public class ObsidianFist extends Module {
         }
 
         Runnable mineLogic = () -> {
+            if (currentPos == null || currentDir == null) return;
+
             if (prevSlot == -1) prevSlot = mc.player.getInventory().selectedSlot;
             InvUtils.swap(pickaxe.slot(), false);
 
@@ -383,7 +409,11 @@ public class ObsidianFist extends Module {
             mc.player.swingHand(Hand.MAIN_HAND);
 
             if (breakMode.get() == BreakMode.Instant) {
+                mc.player.networkHandler.sendPacket(new PlayerActionC2SPacket(PlayerActionC2SPacket.Action.STOP_DESTROY_BLOCK, currentPos, currentDir));
                 doFinishMiningCycle();
+            } else if (breakMode.get() == BreakMode.Custom) {
+                mode = State.SpeedMining;
+                timer = customBreakDelay.get();
             }
         };
 
@@ -399,6 +429,12 @@ public class ObsidianFist extends Module {
         finishMining();
     }
 
+    private void handleSpeedMining() {
+        // Timer handled in onTick. When timer expires, we finish.
+        mc.player.networkHandler.sendPacket(new PlayerActionC2SPacket(PlayerActionC2SPacket.Action.STOP_DESTROY_BLOCK, currentPos, currentDir));
+        doFinishMiningCycle();
+    }
+
     /** Called when break is confirmed (from packet) or after MiningHold (instant mode). */
     private void doFinishMiningCycle() {
         if (swapBack.get() && prevSlot != -1) {
@@ -406,8 +442,9 @@ public class ObsidianFist extends Module {
             prevSlot = -1;
         }
         mc.player.swingHand(Hand.MAIN_HAND);
+        mc.interactionManager.cancelBlockBreaking();
 
-        if (breakMode.get() == BreakMode.Instant) {
+        if (breakMode.get() == BreakMode.Instant || breakMode.get() == BreakMode.Custom) {
             if (placeTarget != null) {
                 if (burstCyclesDone == 0) {
                     // First break done, cycle to replace -> auto break
@@ -517,7 +554,7 @@ public class ObsidianFist extends Module {
                 // Block restored (Desync or failure)
                 handleRestoration();
             }
-        } else if (breakMode.get() == BreakMode.Instant && !isAir && mode == State.Placing) {
+        } else if ((breakMode.get() == BreakMode.Instant || breakMode.get() == BreakMode.Custom) && !isAir && mode == State.Placing) {
             // Block still there while we want to place: our previous break failed, retry break
             handleRestoration();
         }
@@ -576,30 +613,9 @@ public class ObsidianFist extends Module {
     // ── Pickaxe selection ─────────────────────────────────────────────────────
 
     private FindItemResult findPickaxe() {
-        // Prioritize non-silk touch for obsidian drops
-        FindItemResult r = InvUtils.find(s -> s.getItem() == Items.NETHERITE_PICKAXE && !hasSilkTouch(s));
-        if (r.found()) {
-            return r;
-        }
-
-        r = InvUtils.find(s -> s.getItem() == Items.DIAMOND_PICKAXE && !hasSilkTouch(s));
-        if (r.found()) {
-            return r;
-        }
-
-        // Fallback to any pickaxe if no non-silk touch is available
-        r = InvUtils.find(Items.NETHERITE_PICKAXE);
-        if (r.found()) {
-            return r;
-        }
-
-        r = InvUtils.find(Items.DIAMOND_PICKAXE);
-        return r;
-    }
-
-    private boolean hasSilkTouch(ItemStack stack) {
-        ItemEnchantmentsComponent enchants = stack.getOrDefault(DataComponentTypes.ENCHANTMENTS, ItemEnchantmentsComponent.DEFAULT);
-        return enchants.getEnchantments().stream().anyMatch(e -> e.matchesKey(Enchantments.SILK_TOUCH));
+        FindItemResult r = InvUtils.find(Items.NETHERITE_PICKAXE);
+        if (r.found()) return r;
+        return InvUtils.find(Items.DIAMOND_PICKAXE);
     }
 
     @EventHandler
