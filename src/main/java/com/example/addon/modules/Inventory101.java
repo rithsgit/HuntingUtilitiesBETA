@@ -554,12 +554,26 @@ public class Inventory101 extends Module {
 
         // 2. Aggregate current item counts from player inventory
         Map<Item, Integer> currentCounts = new HashMap<>();
-        for (int i = 0; i < 36; i++) {
+        boolean hasLowDuraElytra = false;
+        for (int i = 0; i < mc.player.getInventory().size(); i++) {
             ItemStack stack = mc.player.getInventory().getStack(i);
             if (!stack.isEmpty()) {
-                if (isLowDurability(stack)) continue;
+                if (isLowDurability(stack)) {
+                    if (i < 36) {
+                        hasLowDuraElytra = true;
+                    }
+                    continue;
+                }
                 currentCounts.put(stack.getItem(), currentCounts.getOrDefault(stack.getItem(), 0) + stack.getCount());
             }
+        }
+        
+        int goodElytraCount = currentCounts.getOrDefault(Items.ELYTRA, 0);
+        int desiredElytraCount = desiredCounts.getOrDefault(Items.ELYTRA, 0);
+
+        // If we have a low durability elytra, pretend we have a full one for calculation purposes to prevent pulling an extra.
+        if (hasLowDuraElytra && desiredCounts.containsKey(Items.ELYTRA)) {
+            currentCounts.put(Items.ELYTRA, currentCounts.getOrDefault(Items.ELYTRA, 0) + 1);
         }
 
         // 3. Determine what is needed
@@ -571,30 +585,64 @@ public class Inventory101 extends Module {
             }
         }
 
+        // 4. Prioritize swapping a low-durability elytra if one exists and a replacement is available.
+        if (hasLowDuraElytra) {
+            int brokenIdx = -1;
+            for (int j = 0; j < 36; j++) {
+                if (isLowDurability(mc.player.getInventory().getStack(j))) {
+                    brokenIdx = j;
+                    break;
+                }
+            }
+
+            if (brokenIdx != -1) {
+                // If we already have enough good elytras, just deposit the broken one (if space allows).
+                if (goodElytraCount >= desiredElytraCount) {
+                    if (findEmptyShulkerSlot(handler) != -1) {
+                        int playerSlotId = mapInventoryToSlotId(brokenIdx);
+                        if (playerSlotId != -1) {
+                            mc.interactionManager.clickSlot(handler.syncId, playerSlotId, 0, SlotActionType.QUICK_MOVE, mc.player);
+                            return true;
+                        }
+                    }
+                } else {
+                // Find a GOOD replacement in the shulker before swapping.
+                int replacementSlot = -1;
+                for (int i = 0; i < 27; i++) {
+                    ItemStack s = handler.getSlot(i).getStack();
+                    if (s.isOf(Items.ELYTRA) && !isLowDurability(s)) {
+                        replacementSlot = i;
+                        break;
+                    }
+                }
+
+                if (replacementSlot != -1) {
+                    int playerSlotId = mapInventoryToSlotId(brokenIdx);
+                    if (playerSlotId != -1) {
+                        // If shulker has space, quick move. If full, manual swap.
+                        if (findEmptyShulkerSlot(handler) != -1) {
+                            mc.interactionManager.clickSlot(handler.syncId, playerSlotId, 0, SlotActionType.QUICK_MOVE, mc.player);
+                        } else {
+                            mc.interactionManager.clickSlot(handler.syncId, playerSlotId, 0, SlotActionType.PICKUP, mc.player);
+                            mc.interactionManager.clickSlot(handler.syncId, replacementSlot, 0, SlotActionType.PICKUP, mc.player);
+                            mc.interactionManager.clickSlot(handler.syncId, playerSlotId, 0, SlotActionType.PICKUP, mc.player);
+                        }
+                        return true;
+                    }
+                }
+                }
+            }
+        }
+
         if (neededCounts.isEmpty()) {
             return false; // Nothing to refill
         }
 
-        // 4. Find a needed item in the shulker and quick-move it
+        // 5. Find a needed item in the shulker and quick-move it
         for (int i = 0; i < 27; i++) { // Shulker slots are 0-26
             ItemStack shulkerStack = handler.getSlot(i).getStack();
             if (!shulkerStack.isEmpty() && neededCounts.containsKey(shulkerStack.getItem())) {
-                if (shulkerStack.isOf(Items.ELYTRA)) {
-                    int brokenIdx = -1;
-                    for (int j = 0; j < 36; j++) {
-                        if (isLowDurability(mc.player.getInventory().getStack(j))) {
-                            brokenIdx = j;
-                            break;
-                        }
-                    }
-                    if (brokenIdx != -1 && findEmptyShulkerSlot(handler) != -1) {
-                        int slotId = mapInventoryToSlotId(brokenIdx);
-                        if (slotId != -1) {
-                            mc.interactionManager.clickSlot(handler.syncId, slotId, 0, SlotActionType.QUICK_MOVE, mc.player);
-                            return true;
-                        }
-                    }
-                }
+                if (isLowDurability(shulkerStack)) continue;
                 mc.interactionManager.clickSlot(handler.syncId, i, 0, SlotActionType.QUICK_MOVE, mc.player);
                 return true; // One move per tick.
             }
