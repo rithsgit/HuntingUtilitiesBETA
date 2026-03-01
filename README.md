@@ -9,7 +9,6 @@ Current modules;
 - Dungeon Assistant
 - Elytra Assistant
 - Graveyard
-- Grid Lock
 - Loot Lens
 - Portal Maker
 - Portal Tracker
