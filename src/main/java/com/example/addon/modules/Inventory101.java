@@ -2,11 +2,11 @@ package com.example.addon.modules;
 
 import java.lang.reflect.Field;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HashSet;
-import java.util.Map;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import org.lwjgl.glfw.GLFW;
@@ -500,7 +500,10 @@ public class Inventory101 extends Module {
             if (slotId < 0) continue;
 
             ItemStack current = handler.getSlot(slotId).getStack();
-            if (!isItemEqual(current, desired)) {
+            boolean typeMismatch = !isItemEqual(current, desired);
+            boolean countMismatch = !desired.isEmpty() && isItemEqual(current, desired) && current.getCount() < desired.getCount();
+
+            if (typeMismatch || countMismatch) {
                 // 1. If desired is empty (Air), dump current item to Shulker
                 if (desired.isEmpty()) {
                     if (!current.isEmpty()) {
@@ -527,7 +530,7 @@ public class Inventory101 extends Module {
                 }
 
                 // 4. If we can't find the desired item, but the slot is occupied by something else, dump it to shulker
-                if (!current.isEmpty()) {
+                if (typeMismatch && !current.isEmpty()) {
                     int dumpSlot = findEmptyShulkerSlot(handler);
                     if (dumpSlot != -1) {
                         move(slotId, dumpSlot);
@@ -543,6 +546,20 @@ public class Inventory101 extends Module {
         List<ItemStack> preset = getPreset(targetPresetIndex);
         if (preset.stream().allMatch(ItemStack::isEmpty)) return false;
         if (!(mc.player.currentScreenHandler instanceof ShulkerBoxScreenHandler handler)) return false;
+
+        // 0. Consolidate player inventory (Merge partial stacks)
+        for (int i = 27; i < 63; i++) {
+            ItemStack s1 = handler.getSlot(i).getStack();
+            if (s1.isEmpty() || s1.getCount() >= s1.getMaxCount()) continue;
+
+            for (int j = i + 1; j < 63; j++) {
+                ItemStack s2 = handler.getSlot(j).getStack();
+                if (!s2.isEmpty() && isItemEqual(s1, s2)) {
+                    move(j, i);
+                    return true;
+                }
+            }
+        }
 
         // 1. Aggregate desired item counts from preset
         Map<Item, Integer> desiredCounts = new HashMap<>();
@@ -578,10 +595,27 @@ public class Inventory101 extends Module {
 
         // 3. Determine what is needed
         Map<Item, Integer> neededCounts = new HashMap<>();
+        Map<Item, Integer> excessCounts = new HashMap<>();
         for (Item item : desiredCounts.keySet()) {
             int needed = desiredCounts.get(item) - currentCounts.getOrDefault(item, 0);
             if (needed > 0) {
                 neededCounts.put(item, needed);
+            }
+        }
+
+        // Calculate excess for items that are in the preset but we have too many of
+        for (Item item : currentCounts.keySet()) {
+            if (desiredCounts.containsKey(item)) {
+                int diff = currentCounts.get(item) - desiredCounts.get(item);
+                if (diff > 0) excessCounts.put(item, diff);
+            }
+        }
+
+        // Calculate excess for items that are in the preset but we have too many of
+        for (Item item : currentCounts.keySet()) {
+            if (desiredCounts.containsKey(item)) {
+                int diff = currentCounts.get(item) - desiredCounts.get(item);
+                if (diff > 0) excessCounts.put(item, diff);
             }
         }
 
@@ -634,17 +668,76 @@ public class Inventory101 extends Module {
             }
         }
 
-        if (neededCounts.isEmpty()) {
-            return false; // Nothing to refill
+        // 5. Find a needed item in the shulker and quick-move it
+        if (!neededCounts.isEmpty()) {
+            for (int i = 0; i < 27; i++) { // Shulker slots are 0-26
+                ItemStack shulkerStack = handler.getSlot(i).getStack();
+                if (!shulkerStack.isEmpty() && neededCounts.containsKey(shulkerStack.getItem())) {
+                    if (isLowDurability(shulkerStack)) continue;
+                    mc.interactionManager.clickSlot(handler.syncId, i, 0, SlotActionType.QUICK_MOVE, mc.player);
+                    return true; // One move per tick.
+                }
+            }
         }
 
-        // 5. Find a needed item in the shulker and quick-move it
-        for (int i = 0; i < 27; i++) { // Shulker slots are 0-26
-            ItemStack shulkerStack = handler.getSlot(i).getStack();
-            if (!shulkerStack.isEmpty() && neededCounts.containsKey(shulkerStack.getItem())) {
-                if (isLowDurability(shulkerStack)) continue;
-                mc.interactionManager.clickSlot(handler.syncId, i, 0, SlotActionType.QUICK_MOVE, mc.player);
-                return true; // One move per tick.
+        // 6. Handle Excess Items (Dump leftovers)
+        if (!excessCounts.isEmpty()) {
+            for (Map.Entry<Item, Integer> entry : excessCounts.entrySet()) {
+                Item item = entry.getKey();
+                int excess = entry.getValue();
+
+                // Find all slots with this item
+                List<Integer> slots = new ArrayList<>();
+                for (int i = 27; i < 63; i++) {
+                    if (handler.getSlot(i).getStack().getItem() == item) {
+                        slots.add(i);
+                    }
+                }
+
+                // Sort slots by stack size ascending (prefer removing small stacks first)
+                slots.sort(Comparator.comparingInt(s -> handler.getSlot(s).getStack().getCount()));
+
+                for (int i : slots) {
+                    ItemStack stack = handler.getSlot(i).getStack();
+                    int count = stack.getCount();
+
+                    if (count <= excess) {
+                        // Move whole stack
+                        mc.interactionManager.clickSlot(handler.syncId, i, 0, SlotActionType.QUICK_MOVE, mc.player);
+                        return true;
+                    } else {
+                        // Split stack: we have more than we want to dump
+                        int keep = count - excess;
+                        int shulkerTarget = findSlotForDeposit(handler, item);
+
+                        if (shulkerTarget != -1) {
+                            // Pickup stack
+                            mc.interactionManager.clickSlot(handler.syncId, i, 0, SlotActionType.PICKUP, mc.player);
+
+                            if (keep < excess) {
+                                // Place `keep` back (Right click places 1)
+                                for (int k = 0; k < keep; k++) {
+                                    mc.interactionManager.clickSlot(handler.syncId, i, 1, SlotActionType.PICKUP, mc.player);
+                                }
+                                // Deposit rest (`excess`) to shulker
+                                mc.interactionManager.clickSlot(handler.syncId, shulkerTarget, 0, SlotActionType.PICKUP, mc.player);
+                            } else {
+                                // Deposit `excess` to shulker (Right click places 1)
+                                for (int k = 0; k < excess; k++) {
+                                    mc.interactionManager.clickSlot(handler.syncId, shulkerTarget, 1, SlotActionType.PICKUP, mc.player);
+                                }
+                                // Place rest (`keep`) back
+                                mc.interactionManager.clickSlot(handler.syncId, i, 0, SlotActionType.PICKUP, mc.player);
+                            }
+
+                            // If cursor still has items (e.g. shulker slot was full), put back in inventory
+                            if (!handler.getCursorStack().isEmpty()) {
+                                mc.interactionManager.clickSlot(handler.syncId, i, 0, SlotActionType.PICKUP, mc.player);
+                            }
+                            return true;
+                        }
+                    }
+                }
             }
         }
 
@@ -765,6 +858,14 @@ public class Inventory101 extends Module {
         return -1;
     }
 
+    private int findSlotForDeposit(ShulkerBoxScreenHandler handler, Item item) {
+        for (int i = 0; i < 27; i++) {
+            ItemStack stack = handler.getSlot(i).getStack();
+            if (stack.getItem() == item && stack.getCount() < stack.getMaxCount()) return i;
+        }
+        return findEmptyShulkerSlot(handler);
+    }
+
     private int findEmptyShulkerSlot(ShulkerBoxScreenHandler handler) {
         for (int i = 0; i < 27; i++) if (handler.getSlot(i).getStack().isEmpty()) return i;
         return -1;
@@ -776,9 +877,7 @@ public class Inventory101 extends Module {
     }
 
     private boolean isItemEqual(ItemStack a, ItemStack b) {
-        if (a.isEmpty() && b.isEmpty()) return true;
-        if (a.isEmpty() || b.isEmpty()) return false;
-        return a.getItem() == b.getItem();
+        return ItemStack.areItemsAndComponentsEqual(a, b);
     }
 
     private boolean isLowDurability(ItemStack stack) {
