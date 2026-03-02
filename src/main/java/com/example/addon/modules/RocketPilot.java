@@ -3,11 +3,18 @@ package com.example.addon.modules;
 import com.example.addon.HuntingUtilities;
 
 import meteordevelopment.meteorclient.events.world.TickEvent;
-import meteordevelopment.meteorclient.settings.*;
+import meteordevelopment.meteorclient.settings.BoolSetting;
+import meteordevelopment.meteorclient.settings.DoubleSetting;
+import meteordevelopment.meteorclient.settings.EnumSetting;
+import meteordevelopment.meteorclient.settings.IntSetting;
+import meteordevelopment.meteorclient.settings.KeybindSetting;
+import meteordevelopment.meteorclient.settings.Setting;
+import meteordevelopment.meteorclient.settings.SettingGroup;
 import meteordevelopment.meteorclient.systems.modules.Module;
 import meteordevelopment.meteorclient.systems.modules.Modules;
 import meteordevelopment.meteorclient.utils.misc.Keybind;
 import meteordevelopment.meteorclient.utils.player.InvUtils;
+import meteordevelopment.orbit.EventHandler;
 import net.minecraft.entity.EquipmentSlot;
 import net.minecraft.item.ItemStack;
 import net.minecraft.item.Items;
@@ -21,13 +28,12 @@ import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.Vec3d;
 import net.minecraft.world.RaycastContext;
-import meteordevelopment.orbit.EventHandler;
 
 public class RocketPilot extends Module {
 
     // ─── Enum ────────────────────────────────────────────────────────────────────
-    public enum FlightMode { Circle, Grid, Normal, Oscillation, Pitch40, ZigZag }
-
+    public enum FlightMode { Normal, Oscillation, Pitch40 }
+    public enum FlightPattern { None, Grid, Circle, ZigZag }
     // ─── Constants ───────────────────────────────────────────────────────────────
     private static final int   TAKEOFF_GRACE_TICKS        = 40;
     private static final float ELYTRA_LOW_PERCENT         = 5.0f;
@@ -102,7 +108,7 @@ public class RocketPilot extends Module {
 
     public final Setting<FlightMode> flightMode = sgFlight.add(new EnumSetting.Builder<FlightMode>()
         .name("flight-mode")
-        .description("Normal = height-hold, Pitch40 = altitude-cycling, Oscillation = sine-wave pitch, Grid/ZigZag/Circle = pattern flight.")
+        .description("The primary flight mode for pitch control.")
         .defaultValue(FlightMode.Normal)
         .onChanged(v -> {
             if (!isActive() || mc.world == null) return;
@@ -111,9 +117,6 @@ public class RocketPilot extends Module {
             switch (v) {
                 case Oscillation -> info("Oscillation mode enabled.");
                 case Pitch40     -> info("Pitch40 mode enabled.");
-                case Grid        -> info("Grid pattern enabled.");
-                case ZigZag      -> info("ZigZag pattern enabled.");
-                case Circle      -> info("Circle pattern enabled.");
                 default          -> info("Normal flight mode enabled.");
             }
         })
@@ -126,10 +129,7 @@ public class RocketPilot extends Module {
         .defaultValue(0.15)
         .min(0.01).max(1.0)
         .sliderRange(0.05, 0.5)
-        .visible(() -> flightMode.get() == FlightMode.Normal
-                    || flightMode.get() == FlightMode.Grid
-                    || flightMode.get() == FlightMode.ZigZag
-                    || flightMode.get() == FlightMode.Circle)
+        .visible(() -> flightMode.get() == FlightMode.Normal)
         .build()
     );
 
@@ -202,6 +202,14 @@ public class RocketPilot extends Module {
     );
 
     // ─── Pattern Settings ────────────────────────────────────────────────────────
+    public final Setting<FlightPattern> flightPattern = sgPatterns.add(new EnumSetting.Builder<FlightPattern>()
+        .name("flight-pattern")
+        .description("The pattern to fly in. Overrides yaw control.")
+        .defaultValue(FlightPattern.None)
+        .visible(() -> true)
+        .build()
+    );
+
     private final Setting<Keybind> pauseKey = sgPatterns.add(new KeybindSetting.Builder()
         .name("pause-key")
         .description("Pauses/resumes the current flight pattern.")
@@ -237,7 +245,7 @@ public class RocketPilot extends Module {
         .defaultValue(8)
         .min(1)
         .sliderRange(1, 32)
-        .visible(() -> flightMode.get() == FlightMode.Grid)
+        .visible(() -> flightPattern.get() == FlightPattern.Grid)
         .build()
     );
 
@@ -247,7 +255,7 @@ public class RocketPilot extends Module {
         .defaultValue(32)
         .min(4)
         .sliderRange(8, 128)
-        .visible(() -> flightMode.get() == FlightMode.Circle)
+        .visible(() -> flightPattern.get() == FlightPattern.Circle)
         .build()
     );
 
@@ -257,7 +265,7 @@ public class RocketPilot extends Module {
         .defaultValue(4)
         .min(1)
         .sliderRange(1, 16)
-        .visible(() -> flightMode.get() == FlightMode.Circle)
+        .visible(() -> flightPattern.get() == FlightPattern.Circle)
         .build()
     );
 
@@ -267,7 +275,7 @@ public class RocketPilot extends Module {
         .defaultValue(5)
         .min(1)
         .sliderRange(1, 50)
-        .visible(() -> flightMode.get() == FlightMode.ZigZag)
+        .visible(() -> flightPattern.get() == FlightPattern.ZigZag)
         .build()
     );
 
@@ -277,7 +285,7 @@ public class RocketPilot extends Module {
         .defaultValue(45.0)
         .min(10.0).max(80.0)
         .sliderRange(10.0, 80.0)
-        .visible(() -> flightMode.get() == FlightMode.ZigZag)
+        .visible(() -> flightPattern.get() == FlightPattern.ZigZag)
         .build()
     );
 
@@ -480,8 +488,7 @@ public class RocketPilot extends Module {
 
     // ─── Utilities ───────────────────────────────────────────────────────────────
     private boolean isPatternMode() {
-        FlightMode m = flightMode.get();
-        return m == FlightMode.Grid || m == FlightMode.ZigZag || m == FlightMode.Circle;
+        return flightPattern.get() != FlightPattern.None;
     }
 
     private void togglePause() {
@@ -666,15 +673,18 @@ public class RocketPilot extends Module {
 
         // Priority 5: normal flight modes
         if (desiredPitch == null) {
+            if (isPatternMode()) {
+                handlePatternYaw();
+            }
+
             desiredPitch = switch (flightMode.get()) {
                 case Pitch40             -> handlePitch40Mode();
                 case Oscillation         -> handleOscillationMode();
-                case Grid, ZigZag, Circle -> handlePatternFlight();
                 default                  -> handleNormalMode();
             };
 
             // Drunk mode adjusts yaw independently; runs alongside any pitch mode
-            if (drunkMode.get()) {
+            if (drunkMode.get() && !isPatternMode()) {
                 double yDiff = Math.abs(mc.player.getY() - targetY.get());
                 if (yDiff <= flightTolerance.get()) handleDrunkMode();
                 else { targetDrunkYaw = mc.player.getYaw(); drunkTimer = 0; }
@@ -889,81 +899,45 @@ public class RocketPilot extends Module {
      * and applyPitch() are respected consistently.
      * Height maintenance uses the same tanh/target-Y logic as Normal mode.
      */
-    private Float handlePatternFlight() {
-        if (paused) return null;
+    private void handlePatternYaw() {
+        if (paused) return;
 
-        // Anchor origin on first run
-        if (origin == null) origin = mc.player.getPos();
+        if (flightPattern.get() != FlightPattern.None) {
+            // Anchor origin on first run
+            if (origin == null) origin = mc.player.getPos();
 
-        // Initialise or advance waypoint
-        if (currentTarget == null) {
-            calculateNextTarget();
-        } else {
-            double dx = currentTarget.x - mc.player.getX();
-            double dz = currentTarget.z - mc.player.getZ();
-            int radius = waypointReachRadius.get();
-            if (dx * dx + dz * dz < (double)(radius * radius)) {
+            // Initialise or advance waypoint
+            if (currentTarget == null) {
                 calculateNextTarget();
+            } else {
+                double dx = currentTarget.x - mc.player.getX();
+                double dz = currentTarget.z - mc.player.getZ();
+                int radius = waypointReachRadius.get();
+                if (dx * dx + dz * dz < (double)(radius * radius)) {
+                    calculateNextTarget();
+                }
             }
-        }
 
-        if (currentTarget == null) return null;
+            // ── Yaw toward waypoint ──
+            if (currentTarget != null) {
+                double dx = currentTarget.x - mc.player.getX();
+                double dz = currentTarget.z - mc.player.getZ();
 
-        // ── Yaw toward waypoint ──
-        double dx = currentTarget.x - mc.player.getX();
-        double dz = currentTarget.z - mc.player.getZ();
+                float targetYaw  = (float) Math.toDegrees(Math.atan2(-dx, dz));
+                float currentYaw = mc.player.getYaw();
+                float diffYaw    = MathHelper.wrapDegrees(targetYaw - currentYaw);
+                float yawChange  = diffYaw * patternTurnSpeed.get().floatValue();
 
-        float targetYaw  = (float) Math.toDegrees(Math.atan2(-dx, dz));
-        float currentYaw = mc.player.getYaw();
-        float diffYaw    = MathHelper.wrapDegrees(targetYaw - currentYaw);
-        float yawChange  = diffYaw * patternTurnSpeed.get().floatValue();
-
-        if (limitRotationSpeed.get()) {
-            yawChange = MathHelper.clamp(yawChange,
-                -maxRotationPerTick.get().floatValue(),
-                 maxRotationPerTick.get().floatValue());
-        }
-        mc.player.setYaw(currentYaw + yawChange);
-
-        // ── Pitch: height-hold using target-Y (same logic as Normal mode) ──
-        if (!useTargetY.get()) {
-            // No target Y: fire rockets to stay airborne, let pitch float
-            long now = System.currentTimeMillis();
-            boolean needsRocket = mc.player.getVelocity().y < -0.05
-                                || mc.player.getVelocity().horizontalLength() < 1.5;
-            if (needsRocket && now - lastRocketTime >= rocketDelay.get()
-                    && shouldFireRocket() && countFireworks() > 0) {
-                fireRocket();
-                lastRocketTime = now;
+                if (limitRotationSpeed.get()) {
+                    yawChange = MathHelper.clamp(yawChange,
+                        -maxRotationPerTick.get().floatValue(),
+                         maxRotationPerTick.get().floatValue());
+                }
+                mc.player.setYaw(currentYaw + yawChange);
             }
-            return null;
-        }
-
-        double diff      = targetY.get() - mc.player.getY();
-        double tolerance = flightTolerance.get();
-
-        if      (diff > tolerance) ascentMode = true;
-        else if (diff <= 0)        ascentMode = false;
-
-        if (ascentMode) {
-            long now = System.currentTimeMillis();
-            if (now - lastRocketTime >= rocketDelay.get()
-                    && mc.player.getVelocity().y < 0.5
-                    && shouldFireRocket() && countFireworks() > 0) {
-                fireRocket();
-                lastRocketTime = now;
-            }
-        }
-
-        float calculatedPitch;
-        if (Math.abs(diff) < 0.5) {
-            calculatedPitch = 0.0f;
         } else {
-            calculatedPitch = (float) (-Math.tanh(diff / 10.0) * 45.0);
-            calculatedPitch = MathHelper.clamp(calculatedPitch, -45.0f, 40.0f);
+            currentTarget = null;
         }
-        float smooth = pitchSmoothing.get().floatValue();
-        return mc.player.getPitch() + (calculatedPitch - mc.player.getPitch()) * smooth;
     }
 
     /**
@@ -985,9 +959,14 @@ public class RocketPilot extends Module {
 
         double targetYValue = useTargetY.get() ? targetY.get() : mc.player.getY();
         double nextX, nextZ;
-        FlightMode mode = flightMode.get();
+        FlightPattern pattern = flightPattern.get();
 
-        if (mode == FlightMode.Grid) {
+        if (pattern == FlightPattern.None) {
+            currentTarget = null;
+            return;
+        }
+
+        if (pattern == FlightPattern.Grid) {
             int spacing = gridSpacing.get() * 16;
 
             if (currentTarget == null) {
@@ -1013,7 +992,7 @@ public class RocketPilot extends Module {
                 gridStepsInLeg++;
             }
 
-        } else if (mode == FlightMode.ZigZag) {
+        } else if (pattern == FlightPattern.ZigZag) {
             double legLength = zigzagLegLength.get() * 16.0;
 
             if (currentTarget == null) {
@@ -1040,7 +1019,7 @@ public class RocketPilot extends Module {
             nextX = startPoint.x + (-Math.sin(radYaw) * legLength);
             nextZ = startPoint.z + ( Math.cos(radYaw) * legLength);
 
-        } else if (mode == FlightMode.Circle) {
+        } else if (pattern == FlightPattern.Circle) {
             double angleStep       = 2.0 * Math.PI / circleSegments.get();
             double expansionBlocks = circleExpansion.get() * 16.0;
             double b               = expansionBlocks / (2.0 * Math.PI);

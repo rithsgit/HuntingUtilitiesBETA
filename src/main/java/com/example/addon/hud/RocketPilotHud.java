@@ -2,6 +2,7 @@ package com.example.addon.hud;
 
 import com.example.addon.HuntingUtilities;
 import com.example.addon.modules.RocketPilot;
+
 import meteordevelopment.meteorclient.systems.hud.HudElement;
 import meteordevelopment.meteorclient.systems.hud.HudElementInfo;
 import meteordevelopment.meteorclient.systems.hud.HudRenderer;
@@ -26,12 +27,16 @@ public class RocketPilotHud extends HudElement {
         if (!rp.isActive()) return;
 
         String status = "Normal";
-        if (rp.flightMode.get() == RocketPilot.FlightMode.Circle) status = "Circle";
-        else if (rp.flightMode.get() == RocketPilot.FlightMode.Grid) status = "Grid";
-        else if (rp.flightMode.get() == RocketPilot.FlightMode.Oscillation) status = "Oscillation";
-        else if (rp.flightMode.get() == RocketPilot.FlightMode.Pitch40) status = "Pitch40";
-        else if (rp.flightMode.get() == RocketPilot.FlightMode.ZigZag) status = "ZigZag";
-        else if (rp.drunkMode.get()) status = "Drunk";
+        if (rp.drunkMode.get()) {
+            status = "Drunk";
+        } else {
+            RocketPilot.FlightPattern pattern = rp.flightPattern.get();
+            if (pattern != RocketPilot.FlightPattern.None) {
+                status = pattern.toString();
+            } else {
+                status = rp.flightMode.get().toString();
+            }
+        }
 
         renderer.text("RocketPilot: " + status, x, y, Color.WHITE, true);
     }

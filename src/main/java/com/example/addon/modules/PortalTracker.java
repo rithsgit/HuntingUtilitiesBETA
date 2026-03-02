@@ -115,6 +115,13 @@ public class PortalTracker extends Module {
         .build()
     );
 
+    public final Setting<Boolean> portalGui = sgGeneral.add(new BoolSetting.Builder()
+        .name("portal-gui")
+        .description("Allows opening screens while in a portal.")
+        .defaultValue(true)
+        .build()
+    );
+
     private Setting<Boolean> resetButton;
 
     {
