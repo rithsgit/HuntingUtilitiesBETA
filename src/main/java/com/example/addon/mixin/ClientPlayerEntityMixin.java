@@ -14,7 +14,7 @@ public class ClientPlayerEntityMixin {
     @Redirect(method = "tick", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/MinecraftClient;setScreen(Lnet/minecraft/client/gui/screen/Screen;)V"))
     private void onSetScreen(MinecraftClient client, Screen screen) {
         PortalTracker portalTracker = Modules.get().get(PortalTracker.class);
-        if (portalTracker != null && portalTracker.isActive() && portalTracker.portalGui.get() && screen == null) {
+        if (portalTracker != null && portalTracker.portalGui.get() && screen == null) {
             return;
         }
         client.setScreen(screen);
