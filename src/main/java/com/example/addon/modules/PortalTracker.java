@@ -42,86 +42,58 @@ import net.minecraft.world.chunk.WorldChunk;
 
 public class PortalTracker extends Module {
 
-    // ─────────────────────────── State ───────────────────────────
+    // ───────────────────────────────────────────────────────────────
+    // Constants
+    // ───────────────────────────────────────────────────────────────
 
-    private final Map<BlockPos, PortalType> portals         = new ConcurrentHashMap<>();
-    private final Set<BlockPos>             createdPortals  = ConcurrentHashMap.newKeySet();
-    private final List<PortalStructure>     portalStructures = new CopyOnWriteArrayList<>();
+    private static final int    DIMENSION_SETTLE_TICKS           = 40;
+    private static final int    ENTRY_EXCLUSION_COOLDOWN_TICKS   = 200;
+    private static final int    ENTRY_EXCLUSION_RADIUS           = 5;
+    private static final double ENTRY_EXCLUSION_RADIUS_SQ        = ENTRY_EXCLUSION_RADIUS * ENTRY_EXCLUSION_RADIUS;
+    private static final int    CHUNK_SCAN_LIMIT_PER_TICK        = 10;
+    private static final int    STRUCTURE_REBUILD_INTERVAL_TICKS = 5;
+    private static final int    CLEANUP_INTERVAL_TICKS           = 60;
+    private static final long   MESSAGE_COOLDOWN_MS              = 2000;
 
-    private final Set<String>          notifiedStructures = ConcurrentHashMap.newKeySet();
-    private final Map<String, Long>    messageCooldowns   = new ConcurrentHashMap<>();
-    private static final long MESSAGE_COOLDOWN_MS = 2000;
+    // ───────────────────────────────────────────────────────────────
+    // Settings
+    // ───────────────────────────────────────────────────────────────
 
-    private final Set<ChunkPos>  scannedChunks = new HashSet<>();
-    // FIX: dirtyChunks is only ever touched from the game thread; plain HashSet is fine.
-    private final Set<ChunkPos>  dirtyChunks   = new HashSet<>();
-
-    /**
-     * FIX: Dirty flag — set whenever portals changes. groupPortals() only
-     * rebuilds when this is true, eliminating the per-tick full BFS.
-     */
-    private volatile boolean portalsDirty = false;
-
-    private int  totalCreated             = 0;
-    private String lastDimension          = "";
-    private int  dimensionChangeCooldown  = 0;
-    private int  exclusionTimer           = 0;
-    private static final int COOLDOWN_TICKS = 200;
-    private BlockPos entryPortalPos       = null;
-    private static final int    ENTRY_PORTAL_EXCLUSION_RADIUS    = 5;
-    private static final double ENTRY_PORTAL_EXCLUSION_RADIUS_SQ =
-        ENTRY_PORTAL_EXCLUSION_RADIUS * ENTRY_PORTAL_EXCLUSION_RADIUS;
-
-    private boolean manuallyActivated  = false;
-    private long    sessionStartTime   = 0;
-    private int     minSessionDuration = 0;
-
-    /** FIX: Throttle timers — cleanup and structure grouping run every N ticks. */
-    private static final int CLEANUP_INTERVAL    = 60;
-    private static final int STRUCTURE_INTERVAL  = 5;
-    private int cleanupTimer   = 0;
-    private int structureTimer = 0;
-
-    // ─────────────────────────── Setting Groups ───────────────────────────
-
-    private final SettingGroup sgGeneral      = settings.getDefaultGroup();
+    private final SettingGroup sgGeneral       = settings.getDefaultGroup();
     private final SettingGroup sgNetherPortals = settings.createGroup("Nether Portals");
     private final SettingGroup sgEndDimension  = settings.createGroup("End Dimension");
     private final SettingGroup sgRender        = settings.createGroup("Render");
 
-    // ── General ──
+    // -- General --
+
     private final Setting<Integer> range = sgGeneral.add(new IntSetting.Builder()
         .name("range")
         .description("Portal detection range in chunks.")
         .defaultValue(32)
-        .min(16)
-        .max(64)
-        .sliderMin(16)
-        .sliderMax(64)
-        .build()
-    );
-
-    private final Setting<Boolean> dynamicColors = sgGeneral.add(new BoolSetting.Builder()
-        .name("dynamic-colors")
-        .description("Animated per-type hue-shifted colors for portals.")
-        .defaultValue(false)
+        .min(16).max(64)
+        .sliderMin(16).sliderMax(64)
         .build()
     );
 
     private final Setting<Integer> autoMarkRange = sgGeneral.add(new IntSetting.Builder()
         .name("auto-mark-range")
-        .description("Auto-mark portals within this range (blocks) as created by you.")
+        .description("Auto-mark Nether portals within this many blocks of the player as created by you.")
         .defaultValue(10)
-        .min(0)
-        .max(50)
-        .sliderMin(0)
-        .sliderMax(50)
+        .min(0).max(50)
+        .sliderMin(0).sliderMax(50)
+        .build()
+    );
+
+    private final Setting<Boolean> trackOverworld = sgGeneral.add(new BoolSetting.Builder()
+        .name("track-overworld")
+        .description("Also auto-mark portals found in the Overworld as created by you.")
+        .defaultValue(false)
         .build()
     );
 
     private final Setting<Boolean> showCreatedCount = sgGeneral.add(new BoolSetting.Builder()
         .name("show-created-count")
-        .description("Show how many portals you've created in chat.")
+        .description("Show a chat message each time a new portal you created is discovered.")
         .defaultValue(true)
         .build()
     );
@@ -133,21 +105,10 @@ public class PortalTracker extends Module {
         .build()
     );
 
-    // FIX: portalGui now triggers the actual mixin via a public getter rather
-    // than being dead code. The mixin reads isPortalGuiEnabled().
     public final Setting<Boolean> portalGui = sgGeneral.add(new BoolSetting.Builder()
         .name("portal-gui")
-        .description("Allows opening screens while inside a portal.")
+        .description("Allow opening screens while inside a portal. Read by the PortalGuiMixin.")
         .defaultValue(true)
-        .build()
-    );
-
-    // FIX: trackOverworld — previously processNewDiscovery silently ignored the
-    // Overworld entirely with no setting to override it.
-    private final Setting<Boolean> trackOverworld = sgGeneral.add(new BoolSetting.Builder()
-        .name("track-overworld")
-        .description("Also auto-mark portals found in the Overworld.")
-        .defaultValue(false)
         .build()
     );
 
@@ -162,39 +123,29 @@ public class PortalTracker extends Module {
         .name("beam-width")
         .description("Beam width in hundredths of a block.")
         .defaultValue(15)
-        .min(5)
-        .max(50)
-        .sliderMin(5)
-        .sliderMax(50)
+        .min(5).max(50)
+        .sliderMin(5).sliderMax(50)
         .visible(showBeam::get)
         .build()
     );
 
-    private Setting<Boolean> resetButton;
+    private final Setting<Boolean> dynamicColors = sgGeneral.add(new BoolSetting.Builder()
+        .name("dynamic-colors")
+        .description("Animate portal colors. Each type uses a distinct hue offset so types stay visually distinguishable.")
+        .defaultValue(false)
+        .build()
+    );
 
-    {
-        resetButton = sgGeneral.add(new BoolSetting.Builder()
-            .name("reset")
-            .description("Resets the current session and clears created portals.")
-            .defaultValue(false)
-            .onChanged(v -> {
-                if (v) {
-                    int oldCount = totalCreated;
-                    totalCreated = 0;
-                    createdPortals.clear();
-                    notifiedStructures.clear();
-                    sessionStartTime = System.currentTimeMillis();
-                    portalsDirty = true;
-                    info("Session cleared. Reset " + oldCount + " created portal"
-                        + (oldCount == 1 ? "" : "s") + ".");
-                    resetButton.set(false);
-                }
-            })
-            .build()
-        );
-    }
+    private final Setting<Boolean> resetButton = sgGeneral.add(new BoolSetting.Builder()
+        .name("reset")
+        .description("Reset the current session and clear all created-portal records.")
+        .defaultValue(false)
+        .onChanged(this::handleReset)
+        .build()
+    );
 
-    // ── Nether Portals ──
+    // -- Nether Portals --
+
     private final Setting<Boolean> scanNetherPortals = sgNetherPortals.add(new BoolSetting.Builder()
         .name("scan-nether")
         .description("Scan lit Nether portals.")
@@ -209,7 +160,8 @@ public class PortalTracker extends Module {
         .build()
     );
 
-    // ── End Dimension ──
+    // -- End Dimension --
+
     private final Setting<Boolean> scanEndPortals = sgEndDimension.add(new BoolSetting.Builder()
         .name("end-portals")
         .description("Scan End portal blocks.")
@@ -238,7 +190,8 @@ public class PortalTracker extends Module {
         .build()
     );
 
-    // ── Render ──
+    // -- Render --
+
     private final Setting<ShapeMode> shapeMode = sgRender.add(new EnumSetting.Builder<ShapeMode>()
         .name("shape-mode")
         .description("Render style for portal highlights.")
@@ -246,49 +199,71 @@ public class PortalTracker extends Module {
         .build()
     );
 
-    // ─────────────────────────── Constructor ───────────────────────────
+    // ───────────────────────────────────────────────────────────────
+    // State
+    // ───────────────────────────────────────────────────────────────
+
+    // Portal data
+    private final Map<BlockPos, PortalType> portals          = new ConcurrentHashMap<>();
+    private final Set<BlockPos>             createdPortals   = ConcurrentHashMap.newKeySet();
+    private final List<PortalStructure>     portalStructures = new CopyOnWriteArrayList<>();
+    private volatile boolean                portalsDirty     = false;
+
+    // Chunk scanning
+    private final Set<ChunkPos> scannedChunks = new HashSet<>();
+    private final Set<ChunkPos> dirtyChunks   = new HashSet<>();
+
+    // Notification dedup
+    private final Set<String>       notifiedStructures = ConcurrentHashMap.newKeySet();
+    private final Map<String, Long> messageCooldowns   = new ConcurrentHashMap<>();
+
+    // Dimension tracking
+    private String lastDimension           = "";
+    private int    dimensionChangeCooldown = 0;
+
+    // Entry-portal exclusion (avoids auto-marking the portal you arrived through)
+    private BlockPos entryPortalPos = null;
+    private int      exclusionTimer = 0;
+
+    // Session
+    private boolean manuallyActivated = false;
+    private long    sessionStartTime  = 0;
+    private int     totalCreated      = 0;
+
+    // Throttle timers
+    private int structureTimer = 0;
+    private int cleanupTimer   = 0;
+
+    // ───────────────────────────────────────────────────────────────
+    // Constructor
+    // ───────────────────────────────────────────────────────────────
 
     public PortalTracker() {
         super(HuntingUtilities.CATEGORY, "portal-tracker", "Automatically tracks and highlights portals.");
     }
 
-    // ─────────────────────────── Helpers ───────────────────────────
-
-    private void sendMessage(String message) {
-        long now = System.currentTimeMillis();
-        Long last = messageCooldowns.get(message);
-        if (last == null || now - last > MESSAGE_COOLDOWN_MS) {
-            super.info(message);
-            messageCooldowns.put(message, now);
-        }
-    }
-
-    /** Public accessor for the PortalGuiMixin. */
-    public boolean isPortalGuiEnabled() {
-        return portalGui.get();
-    }
-
-    // ─────────────────────────── Lifecycle ───────────────────────────
+    // ───────────────────────────────────────────────────────────────
+    // Lifecycle
+    // ───────────────────────────────────────────────────────────────
 
     @Override
     public void onActivate() {
         clearAllState();
-        manuallyActivated = false;
-        sessionStartTime  = System.currentTimeMillis();
+        sessionStartTime = System.currentTimeMillis();
 
         if (mc.player != null && mc.world != null && mc.world.getRegistryKey() != null) {
-            sendMessage("§bPortal Tracker activated");
             lastDimension = mc.world.getRegistryKey().getValue().toString();
+            sendMessage("§bPortal Tracker activated");
         }
     }
 
     @Override
     public void onDeactivate() {
-        if (manuallyActivated && mc.player != null && mc.world != null) {
-            long duration = System.currentTimeMillis() - sessionStartTime;
-            if (duration >= minSessionDuration) {
-                sendMessage("§7Session: §f" + portalStructures.size()
-                    + " §7Portals discovered §8| §a" + totalCreated + " §7Created");
+        if (manuallyActivated && mc.player != null) {
+            long elapsed = System.currentTimeMillis() - sessionStartTime;
+            if (elapsed > 0) {
+                sendMessage("§7Session ended — §f" + portalStructures.size()
+                    + " §7portals discovered §8| §a" + totalCreated + " §7created");
             }
         }
         clearAllState();
@@ -302,12 +277,16 @@ public class PortalTracker extends Module {
         messageCooldowns.clear();
         scannedChunks.clear();
         dirtyChunks.clear();
-        portalsDirty   = false;
+        portalsDirty      = false;
         manuallyActivated = false;
         sessionStartTime  = 0;
+        structureTimer    = 0;
+        cleanupTimer      = 0;
     }
 
-    // ─────────────────────────── Tick ───────────────────────────
+    // ───────────────────────────────────────────────────────────────
+    // Tick
+    // ───────────────────────────────────────────────────────────────
 
     @EventHandler
     private void onTick(TickEvent.Post event) {
@@ -324,53 +303,28 @@ public class PortalTracker extends Module {
 
         if (exclusionTimer > 0) exclusionTimer--;
 
-        try {
-            String currDim = mc.world.getRegistryKey().getValue().toString();
-            if (!currDim.equals(lastDimension)) {
-                dimensionChangeCooldown = 40; // brief settle period
-                exclusionTimer          = COOLDOWN_TICKS;
-                lastDimension           = currDim;
-                entryPortalPos          = mc.player.getBlockPos();
+        if (handleDimensionChange()) return;
 
-                portals.clear();
-                createdPortals.clear();
-                portalStructures.clear();
-                notifiedStructures.clear();
-                scannedChunks.clear();
-                dirtyChunks.clear();
-                portalsDirty = false;
-
-                boolean notify =
-                    (currDim.equals("minecraft:the_nether")  && scanNetherPortals.get()) ||
-                    (currDim.equals("minecraft:overworld")    && scanNetherPortals.get()) ||
-                    (currDim.equals("minecraft:the_end")      && (scanEndPortals.get() || scanEndGateways.get()));
-                if (notify) sendMessage("§7Entered " + getDimensionName(currDim) + " — scanning started");
-                return;
-            }
-        } catch (Exception ignored) { return; }
-
-        // FIX: Flush dirty chunks first so re-scans happen this tick.
+        // Flush dirty chunks before scanning so re-scans happen this tick.
         if (!dirtyChunks.isEmpty()) {
             scannedChunks.removeAll(dirtyChunks);
             dirtyChunks.clear();
         }
 
-        BlockPos playerPos   = mc.player.getBlockPos();
-        int centerChunkX = playerPos.getX() >> 4;
-        int centerChunkZ = playerPos.getZ() >> 4;
+        BlockPos playerPos    = mc.player.getBlockPos();
+        int      centerChunkX = playerPos.getX() >> 4;
+        int      centerChunkZ = playerPos.getZ() >> 4;
 
         scanBlockEntities(centerChunkX, centerChunkZ);
         scanNewChunks(centerChunkX, centerChunkZ);
 
-        // FIX: groupPortals only rebuilds when portal data actually changed.
-        if (portalsDirty && ++structureTimer >= STRUCTURE_INTERVAL) {
+        if (portalsDirty && ++structureTimer >= STRUCTURE_REBUILD_INTERVAL_TICKS) {
             structureTimer = 0;
             portalsDirty   = false;
             groupPortals();
         }
 
-        // FIX: Cleanup on its own throttled timer, not tied to groupPortals.
-        if (++cleanupTimer >= CLEANUP_INTERVAL) {
+        if (++cleanupTimer >= CLEANUP_INTERVAL_TICKS) {
             cleanupTimer = 0;
             cleanupDistantPortals();
             cleanupTrackedData();
@@ -380,21 +334,52 @@ public class PortalTracker extends Module {
         if (!manuallyActivated) manuallyActivated = true;
     }
 
-    // ─────────────────────────── Scanning ───────────────────────────
+    /**
+     * Detects a dimension change and resets all portal state for the new dimension.
+     * Returns true if a change was detected so the caller can return early.
+     */
+    private boolean handleDimensionChange() {
+        try {
+            String currDim = mc.world.getRegistryKey().getValue().toString();
+            if (currDim.equals(lastDimension)) return false;
+
+            dimensionChangeCooldown = DIMENSION_SETTLE_TICKS;
+            exclusionTimer          = ENTRY_EXCLUSION_COOLDOWN_TICKS;
+            lastDimension           = currDim;
+            entryPortalPos          = mc.player.getBlockPos();
+
+            portals.clear();
+            createdPortals.clear();
+            portalStructures.clear();
+            notifiedStructures.clear();
+            scannedChunks.clear();
+            dirtyChunks.clear();
+            portalsDirty = false;
+
+            boolean notify =
+                (currDim.equals("minecraft:the_nether") && scanNetherPortals.get()) ||
+                (currDim.equals("minecraft:overworld")   && scanNetherPortals.get()) ||
+                (currDim.equals("minecraft:the_end")     && (scanEndPortals.get() || scanEndGateways.get()));
+            if (notify) sendMessage("§7Entered " + getDimensionName(currDim) + " — scanning started");
+            return true;
+        } catch (Exception ignored) {
+            return true;
+        }
+    }
+
+    // ───────────────────────────────────────────────────────────────
+    // Scanning
+    // ───────────────────────────────────────────────────────────────
 
     /**
-     * FIX: scanBlockEntities previously used range (chunks) as a raw block
-     * distance, scanning up to range² chunks every tick with no guard.
-     * Now uses a proper block-distance maxDistSq derived from range * 16.
-     * Block entities are only checked once per chunk load via the scannedChunks
-     * guard — same pattern as scanNewChunks.
+     * Scans block entities (EndPortal, EndGateway) in chunks within range.
+     * Skips chunks already in scannedChunks.
      */
     private void scanBlockEntities(int centerChunkX, int centerChunkZ) {
-        int chunkRange = range.get();
+        int chunkRange   = range.get();
         int chunkRangeSq = chunkRange * chunkRange;
-        int maxBlockDist = chunkRange * 16;
-        int maxDistSq    = maxBlockDist * maxBlockDist;
-        String dimId = mc.world.getRegistryKey().getValue().toString();
+        int maxDistSq    = (chunkRange * 16) * (chunkRange * 16);
+        String   dimId     = mc.world.getRegistryKey().getValue().toString();
         BlockPos playerPos = mc.player.getBlockPos();
 
         for (int cx = centerChunkX - chunkRange; cx <= centerChunkX + chunkRange; cx++) {
@@ -403,7 +388,6 @@ public class PortalTracker extends Module {
                 int dz = cz - centerChunkZ;
                 if (dx * dx + dz * dz > chunkRangeSq) continue;
 
-                // Only scan block entities for chunks not already fully scanned.
                 ChunkPos cp = new ChunkPos(cx, cz);
                 if (scannedChunks.contains(cp)) continue;
 
@@ -414,13 +398,7 @@ public class PortalTracker extends Module {
                     BlockPos pos = be.getPos();
                     if (pos.getSquaredDistance(playerPos) > maxDistSq) continue;
 
-                    PortalType type = null;
-                    if (scanEndGateways.get() && be instanceof EndGatewayBlockEntity) {
-                        type = PortalType.END_GATEWAY;
-                    } else if (scanEndPortals.get() && be instanceof EndPortalBlockEntity) {
-                        type = PortalType.END_PORTAL;
-                    }
-
+                    PortalType type = classifyBlockEntity(be);
                     if (type != null && !portals.containsKey(pos)) {
                         portals.put(pos, type);
                         portalsDirty = true;
@@ -431,29 +409,30 @@ public class PortalTracker extends Module {
         }
     }
 
+    /**
+     * Scans unvisited chunks concentrically outward from the player,
+     * capped at CHUNK_SCAN_LIMIT_PER_TICK per tick.
+     * Only NETHER_PORTAL blocks are detected here; End types are block entities.
+     */
     private void scanNewChunks(int centerChunkX, int centerChunkZ) {
-        int r    = range.get();
-        int rSq  = r * r;
-        int limit = 10; // chunks per tick cap
-
-        int chunksScanned = 0;
+        int r       = range.get();
+        int rSq     = r * r;
+        int scanned = 0;
 
         outer:
         for (int d = 0; d <= r; d++) {
             for (int x = -d; x <= d; x++) {
                 for (int side = 0; side < 2; side++) {
                     int z = (side == 0) ? -d : d;
-                    if (processChunk(centerChunkX + x, centerChunkZ + z, rSq, centerChunkX, centerChunkZ)) {
-                        if (++chunksScanned >= limit) break outer;
-                    }
+                    if (processChunk(centerChunkX + x, centerChunkZ + z, rSq, centerChunkX, centerChunkZ))
+                        if (++scanned >= CHUNK_SCAN_LIMIT_PER_TICK) break outer;
                 }
             }
             for (int z = -d + 1; z < d; z++) {
                 for (int side = 0; side < 2; side++) {
                     int x = (side == 0) ? -d : d;
-                    if (processChunk(centerChunkX + x, centerChunkZ + z, rSq, centerChunkX, centerChunkZ)) {
-                        if (++chunksScanned >= limit) break outer;
-                    }
+                    if (processChunk(centerChunkX + x, centerChunkZ + z, rSq, centerChunkX, centerChunkZ))
+                        if (++scanned >= CHUNK_SCAN_LIMIT_PER_TICK) break outer;
                 }
             }
         }
@@ -466,22 +445,15 @@ public class PortalTracker extends Module {
 
         ChunkPos cp = new ChunkPos(cx, cz);
         if (scannedChunks.contains(cp)) return false;
+        if (!mc.world.getChunkManager().isChunkLoaded(cx, cz)) return false;
 
-        if (mc.world.getChunkManager().isChunkLoaded(cx, cz)) {
-            scanChunk(mc.world.getChunk(cx, cz));
-            scannedChunks.add(cp);
-            return true;
-        }
-        return false;
+        scanChunk(mc.world.getChunk(cx, cz));
+        scannedChunks.add(cp);
+        return true;
     }
 
-    /**
-     * FIX: scanChunk now only tracks NETHER_PORTAL via the block-state scanner.
-     * END_PORTAL and END_GATEWAY are block entities and are handled exclusively
-     * in scanBlockEntities — removing the duplicate-entry source.
-     */
     private void scanChunk(WorldChunk chunk) {
-        String dimId = mc.world.getRegistryKey().getValue().toString();
+        String         dimId    = mc.world.getRegistryKey().getValue().toString();
         ChunkSection[] sections = chunk.getSectionArray();
 
         for (int i = 0; i < sections.length; i++) {
@@ -493,9 +465,8 @@ public class PortalTracker extends Module {
             for (int x = 0; x < 16; x++) {
                 for (int y = 0; y < 16; y++) {
                     for (int z = 0; z < 16; z++) {
-                        BlockState state = section.getBlockState(x, y, z);
-                        PortalType found = getPortalTypeBlockOnly(state.getBlock());
-                        if (found == null) continue;
+                        PortalType type = classifyBlock(section.getBlockState(x, y, z).getBlock());
+                        if (type == null) continue;
 
                         BlockPos pos = new BlockPos(
                             (chunk.getPos().x << 4) + x,
@@ -503,9 +474,9 @@ public class PortalTracker extends Module {
                             (chunk.getPos().z << 4) + z
                         );
                         if (!portals.containsKey(pos)) {
-                            portals.put(pos, found);
+                            portals.put(pos, type);
                             portalsDirty = true;
-                            processNewDiscovery(pos, found, dimId);
+                            processNewDiscovery(pos, type, dimId);
                         }
                     }
                 }
@@ -513,40 +484,51 @@ public class PortalTracker extends Module {
         }
     }
 
-    /**
-     * FIX: Only returns NETHER for block-state scanning.
-     * END_PORTAL / END_GATEWAY are exclusively handled as block entities.
-     */
-    private PortalType getPortalTypeBlockOnly(Block block) {
+    // ───────────────────────────────────────────────────────────────
+    // Classification
+    // ───────────────────────────────────────────────────────────────
+
+    /** Block-state scan — Nether portals only. End types are block entities. */
+    private PortalType classifyBlock(Block block) {
         if (scanNetherPortals.get() && block == Blocks.NETHER_PORTAL) return PortalType.NETHER;
         return null;
     }
 
+    /** Block-entity scan — End portal and gateway only. */
+    private PortalType classifyBlockEntity(BlockEntity be) {
+        if (scanEndGateways.get() && be instanceof EndGatewayBlockEntity) return PortalType.END_GATEWAY;
+        if (scanEndPortals.get()  && be instanceof EndPortalBlockEntity)  return PortalType.END_PORTAL;
+        return null;
+    }
+
+    private boolean isTrackedPortalBlock(Block block) {
+        return block == Blocks.NETHER_PORTAL
+            || block == Blocks.END_PORTAL
+            || block == Blocks.END_GATEWAY;
+    }
+
+    // ───────────────────────────────────────────────────────────────
+    // Discovery
+    // ───────────────────────────────────────────────────────────────
+
     private void processNewDiscovery(BlockPos pos, PortalType type, String dimensionId) {
         if (autoMarkRange.get() <= 0 || mc.player == null) return;
         if (type != PortalType.NETHER) return;
-
-        // FIX: trackOverworld setting now controls whether Overworld portals are auto-marked.
-        boolean isOverworld = dimensionId.equals("minecraft:overworld");
-        if (isOverworld && !trackOverworld.get()) return;
-
-        int autoRange = autoMarkRange.get();
-        if (pos.getSquaredDistance(mc.player.getPos()) > (double) autoRange * autoRange) return;
-
+        if (dimensionId.equals("minecraft:overworld") && !trackOverworld.get()) return;
+        if (pos.getSquaredDistance(mc.player.getPos()) > (double) autoMarkRange.get() * autoMarkRange.get()) return;
         if (exclusionTimer > 0 && entryPortalPos != null
-                && pos.getSquaredDistance(entryPortalPos) <= ENTRY_PORTAL_EXCLUSION_RADIUS_SQ) return;
+                && pos.getSquaredDistance(entryPortalPos) <= ENTRY_EXCLUSION_RADIUS_SQ) return;
 
-        if (createdPortals.add(pos)) {
-            portalsDirty = true;
-        }
+        if (createdPortals.add(pos)) portalsDirty = true;
     }
 
-    // ─────────────────────────── Grouping ───────────────────────────
+    // ───────────────────────────────────────────────────────────────
+    // Grouping
+    // ───────────────────────────────────────────────────────────────
 
     /**
-     * FIX: Only called when portalsDirty is true (gated in onTick).
-     * Full BFS over all portal blocks — same logic as before but no longer
-     * runs unconditionally every tick.
+     * BFS over all tracked portal blocks to group adjacent same-type blocks
+     * into PortalStructure bounding boxes. Only runs when portalsDirty is true.
      */
     private void groupPortals() {
         List<PortalStructure> newStructures = new ArrayList<>();
@@ -558,10 +540,10 @@ public class PortalTracker extends Module {
             PortalType type = portals.get(startPos);
             if (type == null) continue;
 
-            Set<BlockPos> component   = new HashSet<>();
-            Queue<BlockPos> queue     = new LinkedList<>();
-            Box structureBox          = new Box(startPos);
-            boolean isCreated         = false;
+            Set<BlockPos>   component    = new HashSet<>();
+            Queue<BlockPos> queue        = new LinkedList<>();
+            Box             structureBox = new Box(startPos);
+            boolean         isCreated    = false;
 
             queue.add(startPos);
             visited.add(startPos);
@@ -580,18 +562,16 @@ public class PortalTracker extends Module {
                 }
             }
 
-            if (!component.isEmpty()) {
-                Box renderBox = structureBox.expand(0.02);
-                newStructures.add(new PortalStructure(renderBox, isCreated, type));
+            if (component.isEmpty()) continue;
 
-                if (isCreated && showCreatedCount.get()) {
-                    String structureId = String.format("%s_%.1f_%.1f_%.1f",
-                        type.name(), structureBox.minX, structureBox.minY, structureBox.minZ);
-                    if (notifiedStructures.add(structureId)) {
-                        totalCreated++;
-                        sendMessage("§aCreated Portal #" + totalCreated
-                            + " §7(" + type.getDisplayName() + ")");
-                    }
+            newStructures.add(new PortalStructure(structureBox.expand(0.02), isCreated, type));
+
+            if (isCreated && showCreatedCount.get()) {
+                String id = String.format("%s_%.1f_%.1f_%.1f",
+                    type.name(), structureBox.minX, structureBox.minY, structureBox.minZ);
+                if (notifiedStructures.add(id)) {
+                    totalCreated++;
+                    sendMessage("§aCreated Portal #" + totalCreated + " §7(" + type.getDisplayName() + ")");
                 }
             }
         }
@@ -600,29 +580,28 @@ public class PortalTracker extends Module {
         portalStructures.addAll(newStructures);
     }
 
-    // ─────────────────────────── Cleanup ───────────────────────────
-
-    private void cleanupTrackedData() {
-        if (mc.player == null) return;
-        BlockPos playerPos    = mc.player.getBlockPos();
-        int cleanupDist       = range.get() * 16 + 32;
-        double cleanupDistSq  = (double) cleanupDist * cleanupDist;
-        createdPortals.removeIf(pos -> pos.getSquaredDistance(playerPos) > cleanupDistSq);
-    }
+    // ───────────────────────────────────────────────────────────────
+    // Cleanup
+    // ───────────────────────────────────────────────────────────────
 
     private void cleanupDistantPortals() {
         if (mc.player == null) return;
-        BlockPos playerPos   = mc.player.getBlockPos();
-        int renderDist       = range.get() * 16;
-        double renderDistSq  = (double) (renderDist + 64) * (renderDist + 64);
+        BlockPos playerPos  = mc.player.getBlockPos();
+        int      renderDist = range.get() * 16;
+        double   distSq     = (double) (renderDist + 64) * (renderDist + 64);
 
-        boolean removed = portals.entrySet().removeIf(
-            entry -> playerPos.getSquaredDistance(entry.getKey()) > renderDistSq
-        );
+        boolean removed = portals.entrySet().removeIf(e -> playerPos.getSquaredDistance(e.getKey()) > distSq);
         if (removed) portalsDirty = true;
     }
 
-    /** FIX: Separate method to prune chunks that have drifted out of range. */
+    private void cleanupTrackedData() {
+        if (mc.player == null) return;
+        BlockPos playerPos = mc.player.getBlockPos();
+        int      dist      = range.get() * 16 + 32;
+        double   distSq    = (double) dist * dist;
+        createdPortals.removeIf(pos -> pos.getSquaredDistance(playerPos) > distSq);
+    }
+
     private void cleanupDistantChunks(int centerChunkX, int centerChunkZ) {
         int r   = range.get();
         int rSq = r * r;
@@ -633,37 +612,34 @@ public class PortalTracker extends Module {
         });
     }
 
-    // ─────────────────────────── Block Updates ───────────────────────────
+    // ───────────────────────────────────────────────────────────────
+    // Block Update Event
+    // ───────────────────────────────────────────────────────────────
 
     @EventHandler
     private void onBlockUpdate(BlockUpdateEvent event) {
         if (mc.player == null || mc.world == null) return;
 
-        BlockPos pos = event.pos;
         double threshold = range.get() * 16.0 + 32;
-        if (pos.getSquaredDistance(mc.player.getPos()) > threshold * threshold) return;
+        if (event.pos.getSquaredDistance(mc.player.getPos()) > threshold * threshold) return;
 
         boolean wasPortal = isTrackedPortalBlock(event.oldState.getBlock());
         boolean isPortal  = isTrackedPortalBlock(event.newState.getBlock());
+        if (!wasPortal && !isPortal) return;
 
-        if (wasPortal || isPortal) {
-            ChunkPos cp = new ChunkPos(pos);
-            dirtyChunks.add(cp);
-            scannedChunks.remove(cp);
-            if (!isPortal) {
-                portals.remove(pos);
-                portalsDirty = true;
-            }
+        ChunkPos cp = new ChunkPos(event.pos);
+        dirtyChunks.add(cp);
+        scannedChunks.remove(cp);
+
+        if (!isPortal) {
+            portals.remove(event.pos);
+            portalsDirty = true;
         }
     }
 
-    private boolean isTrackedPortalBlock(Block block) {
-        return block == Blocks.NETHER_PORTAL
-            || block == Blocks.END_PORTAL
-            || block == Blocks.END_GATEWAY;
-    }
-
-    // ─────────────────────────── Rendering ───────────────────────────
+    // ───────────────────────────────────────────────────────────────
+    // Rendering
+    // ───────────────────────────────────────────────────────────────
 
     @EventHandler
     private void onRender(Render3DEvent event) {
@@ -676,43 +652,40 @@ public class PortalTracker extends Module {
             if (color == null) continue;
 
             event.renderer.box(structure.boundingBox, color, color, shapeMode.get(), 0);
-
-            if (showBeam.get()) {
-                renderBeam(event, structure.boundingBox, color);
-            }
+            if (showBeam.get()) renderBeam(event, structure.boundingBox, color);
         }
     }
 
-    /**
-     * FIX: Beam uses world height bounds, not a hardcoded offset.
-     */
     private void renderBeam(Render3DEvent event, Box anchorBox, Color color) {
-        double beamSize  = beamWidth.get() / 100.0;
-        double centerX   = (anchorBox.minX + anchorBox.maxX) / 2.0;
-        double centerZ   = (anchorBox.minZ + anchorBox.maxZ) / 2.0;
-        int    worldBot  = mc.world.getBottomY();
-        int    worldTop  = worldBot + mc.world.getHeight();
+        double beamSize = beamWidth.get() / 100.0;
+        double centerX  = (anchorBox.minX + anchorBox.maxX) / 2.0;
+        double centerZ  = (anchorBox.minZ + anchorBox.maxZ) / 2.0;
+        int    worldBot = mc.world.getBottomY();
+        int    worldTop = worldBot + mc.world.getHeight();
 
-        Box beamBox = new Box(
-            centerX - beamSize, worldBot, centerZ - beamSize,
-            centerX + beamSize, worldTop, centerZ + beamSize
+        event.renderer.box(
+            new Box(centerX - beamSize, worldBot, centerZ - beamSize,
+                    centerX + beamSize, worldTop, centerZ + beamSize),
+            color, color, ShapeMode.Both, 0
         );
-        event.renderer.box(beamBox, color, color, ShapeMode.Both, 0);
     }
 
-    // ─────────────────────────── Color ───────────────────────────
+    // ───────────────────────────────────────────────────────────────
+    // Color
+    // ───────────────────────────────────────────────────────────────
 
     /**
-     * FIX: dynamicColors now uses per-type hue offsets so portal types remain
-     * visually distinct even while animating (Nether 0°, End 120°, Gateway 240°).
+     * When dynamic colors are on, each type uses a distinct hue offset
+     * (Nether 0°, End 120°, Gateway 240°) so types stay visually distinguishable.
      */
     private Color getColor(PortalType type) {
         if (dynamicColors.get()) {
-            long  time    = System.currentTimeMillis();
-            float baseHue = type == PortalType.NETHER      ? 0f
-                          : type == PortalType.END_PORTAL   ? 0.333f
-                          : /* END_GATEWAY */                 0.667f;
-            float hue = (baseHue + (time % 3000) / 3000f) % 1f;
+            float baseHue = switch (type) {
+                case NETHER      -> 0f;
+                case END_PORTAL  -> 0.333f;
+                case END_GATEWAY -> 0.667f;
+            };
+            float hue = (baseHue + (System.currentTimeMillis() % 3000) / 3000f) % 1f;
             int   rgb = java.awt.Color.HSBtoRGB(hue, 0.8f, 1.0f);
             return new Color((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF, 100);
         }
@@ -723,38 +696,73 @@ public class PortalTracker extends Module {
         };
     }
 
-    // ─────────────────────────── Public API ───────────────────────────
+    // ───────────────────────────────────────────────────────────────
+    // Setting Handlers
+    // ───────────────────────────────────────────────────────────────
 
-    public int getTotalPortals()  { return portalStructures.size(); }
-    public int getTotalCreated()  { return totalCreated; }
+    private void handleReset(boolean value) {
+        if (!value) return;
+        int old = totalCreated;
+        totalCreated = 0;
+        createdPortals.clear();
+        notifiedStructures.clear();
+        sessionStartTime = System.currentTimeMillis();
+        portalsDirty     = true;
+        info("Session cleared. Reset " + old + " created portal" + (old == 1 ? "" : "s") + ".");
+        resetButton.set(false);
+    }
 
+    // ───────────────────────────────────────────────────────────────
+    // Public API
+    // ───────────────────────────────────────────────────────────────
+
+    /** Used by PortalGuiMixin to check whether screen-opening in portals is allowed. */
+    public boolean isPortalGuiEnabled() { return portalGui.get(); }
+
+    public int getTotalPortals()         { return portalStructures.size(); }
+    public int getTotalCreated()         { return totalCreated; }
+
+    /** Called by chunk-load mixins to force a re-scan of a specific chunk. */
     public void markChunkDirty(ChunkPos chunkPos) {
         if (chunkPos == null) return;
         dirtyChunks.add(chunkPos);
         scannedChunks.remove(chunkPos);
     }
 
-    // ─────────────────────────── Utilities ───────────────────────────
+    // ───────────────────────────────────────────────────────────────
+    // Utilities
+    // ───────────────────────────────────────────────────────────────
 
-    private String getDimensionName(String dimensionId) {
-        return switch (dimensionId) {
+    private void sendMessage(String message) {
+        long now  = System.currentTimeMillis();
+        Long last = messageCooldowns.get(message);
+        if (last == null || now - last > MESSAGE_COOLDOWN_MS) {
+            super.info(message);
+            messageCooldowns.put(message, now);
+        }
+    }
+
+    private String getDimensionName(String id) {
+        return switch (id) {
             case "minecraft:the_nether" -> "Nether";
             case "minecraft:overworld"  -> "Overworld";
             case "minecraft:the_end"    -> "End";
-            default -> dimensionId;
+            default -> id;
         };
     }
 
-    // ─────────────────────────── Types ───────────────────────────
+    // ───────────────────────────────────────────────────────────────
+    // Inner Types
+    // ───────────────────────────────────────────────────────────────
 
     private enum PortalType {
         NETHER("Nether Portal"),
         END_PORTAL("End Portal"),
         END_GATEWAY("End Gateway");
 
-        private final String name;
-        PortalType(String name) { this.name = name; }
-        public String getDisplayName() { return name; }
+        private final String displayName;
+        PortalType(String displayName) { this.displayName = displayName; }
+        public String getDisplayName()  { return displayName; }
     }
 
     private static class PortalStructure {
