@@ -61,7 +61,8 @@ import net.minecraft.world.chunk.ChunkStatus;
 import net.minecraft.world.chunk.WorldChunk;
 
 public class DungeonAssistant extends Module {
-    // ─────────────────────────── State (declared first to avoid forward-reference errors) ───────────────────────────
+
+    // ─────────────────────────── State ───────────────────────────
     private final Map<BlockPos, TargetType> targets = new HashMap<>();
     private final Map<BlockPos, Integer> stackedMinecartCounts = new HashMap<>();
     private final Map<BlockPos, Long> brokenSpawners = new HashMap<>();
@@ -72,23 +73,25 @@ public class DungeonAssistant extends Module {
     private final Set<Integer> checkedEntityIds = new HashSet<>();
     private final Set<BlockPos> spawnerTorches = new HashSet<>();
 
-    private final SettingGroup sgGeneral      = settings.getDefaultGroup();
-    private final SettingGroup sgAutoOpen     = settings.createGroup("Auto Open");
-    private final SettingGroup sgSpawners     = settings.createGroup("Spawners");
-    private final SettingGroup sgChests       = settings.createGroup("Chests");
+    // ─────────────────────────── Setting Groups ───────────────────────────
+    private final SettingGroup sgGeneral       = settings.getDefaultGroup();
+    private final SettingGroup sgAutoOpen      = settings.createGroup("Auto Open");
+    private final SettingGroup sgSpawners      = settings.createGroup("Spawners");
+    private final SettingGroup sgChests        = settings.createGroup("Chests");
     private final SettingGroup sgClutterBlocks = settings.createGroup("Clutter Blocks");
-    private final SettingGroup sgEndermites = settings.createGroup("Endermites");
-    private final SettingGroup sgSafety = settings.createGroup("Safety");
+    private final SettingGroup sgEndermites    = settings.createGroup("Endermites");
+    private final SettingGroup sgContainerUI   = settings.createGroup("Container UI");
+    private final SettingGroup sgSafety        = settings.createGroup("Safety");
 
-    // General Settings
+    // ── General ──
     private final Setting<Integer> range = sgGeneral.add(new IntSetting.Builder()
         .name("range")
         .description("Detection range in chunks (1 chunk = 16 blocks). High values impact performance.")
         .defaultValue(16)
-        .min(16)
+        .min(1)
         .max(128)
-        .sliderMin(16)
-        .sliderMax(128)
+        .sliderMin(1)
+        .sliderMax(64)
         .build()
     );
 
@@ -114,7 +117,6 @@ public class DungeonAssistant extends Module {
         .build()
     );
 
-
     private final Setting<ShapeMode> shapeMode = sgGeneral.add(new EnumSetting.Builder<ShapeMode>()
         .name("shape-mode")
         .description("Render style.")
@@ -122,7 +124,7 @@ public class DungeonAssistant extends Module {
         .build()
     );
 
-    // ── Auto Open Settings ──
+    // ── Auto Open ──
     private final Setting<Boolean> autoOpen = sgAutoOpen.add(new BoolSetting.Builder()
         .name("auto-open")
         .description("Automatically open, check, and close containers.")
@@ -186,7 +188,7 @@ public class DungeonAssistant extends Module {
         .build()
     );
 
-    // ── Spawner Settings ──
+    // ── Spawners ──
     private final Setting<Boolean> trackSpawners = sgSpawners.add(new BoolSetting.Builder()
         .name("track-spawners")
         .description("Highlight monster spawners.")
@@ -212,7 +214,7 @@ public class DungeonAssistant extends Module {
 
     private final Setting<Boolean> showBrokenSpawnerBeam = sgSpawners.add(new BoolSetting.Builder()
         .name("broken-spawner-beam")
-        .description("Renders a beam where a spawner was broken.")
+        .description("Renders a beam at the Y-level where a spawner was broken, extending both up and down.")
         .defaultValue(true)
         .visible(trackSpawners::get)
         .build()
@@ -264,15 +266,18 @@ public class DungeonAssistant extends Module {
         .build()
     );
 
-    private final Setting<Boolean> prioritizeSpawners = sgSpawners.add(new BoolSetting.Builder()
+    // FIX #3/#9: Moved prioritizeSpawners into sgAutoOpen so it's discoverable
+    // alongside the other ordering/priority settings; kept visible only when
+    // both autoBreakSpawners and autoOpen are enabled.
+    private final Setting<Boolean> prioritizeSpawners = sgAutoOpen.add(new BoolSetting.Builder()
         .name("prioritize-spawners")
-        .description("Prioritize breaking spawners over opening chests.")
+        .description("Break spawners before opening chests when both auto-break and auto-open are active.")
         .defaultValue(true)
-        .visible(autoBreakSpawners::get)
+        .visible(() -> autoOpen.get() && autoBreakSpawners.get())
         .build()
     );
 
-    // Chest Settings
+    // ── Chests ──
     private final Setting<Boolean> trackChests = sgChests.add(new BoolSetting.Builder()
         .name("track-chests")
         .description("Highlight chests.")
@@ -326,7 +331,7 @@ public class DungeonAssistant extends Module {
         .build()
     );
 
-    // Block Filter Settings
+    // ── Clutter Blocks ──
     private final Setting<Boolean> scanCustomBlocks = sgClutterBlocks.add(new BoolSetting.Builder()
         .name("scan-blocks")
         .description("Highlight selected blocks in the surrounding area.")
@@ -335,10 +340,9 @@ public class DungeonAssistant extends Module {
         .build()
     );
 
-
     private final Setting<List<Block>> filterBlocks = sgClutterBlocks.add(new BlockListSetting.Builder()
         .name("blocks")
-        .description("Blocks to search for and highlight in the world. Add any block to track it.")
+        .description("Blocks to search for and highlight in the world.")
         .defaultValue(List.of(Blocks.COBBLESTONE, Blocks.MOSSY_COBBLESTONE, Blocks.COBBLED_DEEPSLATE, Blocks.NETHERRACK))
         .onChanged(v -> { targets.entrySet().removeIf(e -> e.getValue() == TargetType.CUSTOM_BLOCK); scannedChunks.clear(); })
         .visible(scanCustomBlocks::get)
@@ -355,7 +359,7 @@ public class DungeonAssistant extends Module {
 
     private final Setting<Boolean> trackMisrotatedDeepslate = sgClutterBlocks.add(new BoolSetting.Builder()
         .name("misrotated-deepslate")
-        .description("Highlights Deepslate blocks that are facing the wrong direction (axis ≠ Y). Indicates player-placed or tampered blocks.")
+        .description("Highlights Deepslate blocks facing the wrong direction (axis ≠ Y). Indicates player-placed or tampered blocks.")
         .defaultValue(false)
         .onChanged(v -> { targets.entrySet().removeIf(e -> e.getValue() == TargetType.MISROTATED_DEEPSLATE); scannedChunks.clear(); })
         .build()
@@ -385,14 +389,6 @@ public class DungeonAssistant extends Module {
         .build()
     );
 
-    private final Setting<Boolean> trackEndermites = sgEndermites.add(new BoolSetting.Builder()
-        .name("track-endermites")
-        .description("Highlights Endermites in the Overworld.")
-        .defaultValue(false)
-        .build()
-    );
-
-
     private final Setting<Keybind> toggleBlocksKey = sgClutterBlocks.add(new KeybindSetting.Builder()
         .name("toggle-key")
         .description("Key to toggle custom block scanning on/off.")
@@ -405,18 +401,13 @@ public class DungeonAssistant extends Module {
         .build()
     );
 
-    // Container Buttons
-    public final Setting<Boolean> showContainerButtons = new BoolSetting.Builder()
-        .name("show-container-buttons")
-        .description("Shows 'Steal' and 'Dump' buttons on the right side of container GUIs.")
-        .defaultValue(true)
-        .build();
-
-    public final Setting<Boolean> dumpHotbar = new BoolSetting.Builder()
-        .name("dump-hotbar")
-        .description("Whether the 'Dump' button also dumps your hotbar.")
+    // ── Endermites ──
+    private final Setting<Boolean> trackEndermites = sgEndermites.add(new BoolSetting.Builder()
+        .name("track-endermites")
+        .description("Highlights Endermites in the Overworld.")
         .defaultValue(false)
-        .build();
+        .build()
+    );
 
     private final Setting<SettingColor> endermiteColor = sgEndermites.add(new ColorSetting.Builder()
         .name("endermite-color")
@@ -444,6 +435,22 @@ public class DungeonAssistant extends Module {
         .build()
     );
 
+    // FIX #7: showContainerButtons and dumpHotbar now properly added to sgContainerUI
+    public final Setting<Boolean> showContainerButtons = sgContainerUI.add(new BoolSetting.Builder()
+        .name("show-container-buttons")
+        .description("Shows 'Steal' and 'Dump' buttons on the right side of container GUIs.")
+        .defaultValue(true)
+        .build()
+    );
+
+    public final Setting<Boolean> dumpHotbar = sgContainerUI.add(new BoolSetting.Builder()
+        .name("dump-hotbar")
+        .description("Whether the 'Dump' button also dumps your hotbar.")
+        .defaultValue(false)
+        .build()
+    );
+
+    // ── Safety ──
     private final Setting<Boolean> autoDisableOnLowHealth = sgSafety.add(new BoolSetting.Builder()
         .name("auto-disable-on-low-health")
         .description("Automatically disables the module if health is critically low with a totem equipped.")
@@ -462,7 +469,7 @@ public class DungeonAssistant extends Module {
         .build()
     );
 
-    // ─────────────────────────── Other State ───────────────────────────
+    // ─────────────────────────── Runtime State ───────────────────────────
     private boolean hasPlayedSoundForCurrentScreen = false;
     private BlockPos lastOpenedContainer = null;
     private int breakDelayTimer = 0;
@@ -474,38 +481,37 @@ public class DungeonAssistant extends Module {
     private int brokenChestsCount = 0;
     private Entity entityToBreak = null;
     private String lastDimension = "";
+    // FIX #(misc): dimensionChangeCooldown now starts at a meaningful value on
+    // dimension change so we don't immediately re-scan in an inconsistent state.
     private int dimensionChangeCooldown = 0;
+    private static final int DIMENSION_CHANGE_COOLDOWN_TICKS = 40;
+
     /** True only when the container was opened by the auto-open logic, not by the player manually. */
     private boolean wasAutoOpened = false;
 
     // ── Silent open/close state ──
-    /** Set to true after we send the interact packet so onOpenScreen knows to close silently. */
     private boolean silentOpenPending = false;
-    /** Result of the silent inventory check: true = whitelisted item found. */
     private boolean silentFoundWhitelisted = false;
-    /** After a silent close, this triggers the break/sound decision on the next clear tick. */
     private boolean pendingBreakCheck = false;
-    /** Saved hotbar slot before a silent-switch tool swap — restored after breaking completes. */
+    // FIX #10: retry counter for late InventoryS2CPacket arrival on laggy servers
+    private int silentSlotReadRetryTimer = 0;
+    private static final int SILENT_SLOT_READ_MAX_RETRIES = 5;
     private int previousSlot = -1;
-    /**
-     * Counts down after we send an interact packet.
-     * While > 0 the auto-open logic won't re-fire (preventing wasAutoOpened from
-     * being reset before the server sends back the OpenScreen packet).
-     * If it reaches 0 before the screen opens we abort and try again next cycle.
-     */
+
     private int interactTimeoutTimer = 0;
-    private static final int INTERACT_TIMEOUT_TICKS = 20; // 1 second max wait
+    private static final int INTERACT_TIMEOUT_TICKS = 20;
 
     public DungeonAssistant() {
         super(HuntingUtilities.CATEGORY, "dungeon-assistant", "Highlights dungeon elements: spawners, chests, and dungeon blocks.");
     }
+
+    // ─────────────────────────── Lifecycle ───────────────────────────
 
     @Override
     public void onActivate() {
         targets.clear();
         stackedMinecartCounts.clear();
         brokenSpawners.clear();
-
         scannedChunks.clear();
         checkedContainers.clear();
         endermiteTargets.clear();
@@ -515,7 +521,7 @@ public class DungeonAssistant extends Module {
         brokenChestsCount = 0;
         isBreakingChest = false;
         hasPlayedSoundForCurrentScreen = false;
-        
+
         if (mc.player != null && mc.world != null) {
             info("§6Dungeon Assistant activated");
             if (mc.world.getRegistryKey() != null) {
@@ -534,52 +540,33 @@ public class DungeonAssistant extends Module {
         notifiedEndermites.clear();
         checkedEntityIds.clear();
         spawnerTorches.clear();
-        hasPlayedSoundForCurrentScreen = false;
-        lastOpenedContainer = null;
-        lastOpenedEntity = null;
-        isBreaking = false;
-        isBreakingEntity = false;
-        blockToBreak = null;
-        isBreakingChest = false;
-        entityToBreak = null;
-        // Silent state cleanup
-        silentOpenPending = false;
-        silentFoundWhitelisted = false;
-        pendingBreakCheck = false;
-        interactTimeoutTimer = 0;
-        // Restore slot if silent-switch was interrupted
+        // Restore slot if silent-switch was interrupted mid-break
         if (previousSlot >= 0 && mc.player != null) {
             mc.player.getInventory().selectedSlot = previousSlot;
         }
-        previousSlot = -1;
+        resetAutoOpenState();
     }
+
+    // ─────────────────────────── Event Handlers ───────────────────────────
 
     @EventHandler
     private void onOpenScreen(OpenScreenEvent event) {
         if (mc.player == null || mc.world == null) return;
 
-        // ── Auto-open intercept ──
-        // When wasAutoOpened is true we already know which container was opened
-        // (set in runChestCheck / runMinecartCheck). We must NOT overwrite
-        // lastOpenedContainer / lastOpenedEntity from the crosshair — that would
-        // point breaking at whatever the player happens to be looking at instead.
         if (wasAutoOpened) {
-            interactTimeoutTimer = 0; // server responded — cancel the timeout
+            interactTimeoutTimer = 0;
 
             if (autoOpen.get() && silentMode.get()
                     && event.screen instanceof HandledScreen<?>
                     && !(event.screen instanceof InventoryScreen)) {
-                // Silent mode: flag for close-on-next-tick (slot reading deferred
-                // so the InventoryS2CPacket has time to populate the handler).
+                // FIX #10: Reset retry counter; we'll poll for non-empty slots in updateContainerLogic
                 silentOpenPending = true;
+                silentSlotReadRetryTimer = 0;
             }
-            // In non-silent mode we simply let the screen open; updateContainerLogic
-            // will read and close it on the next tick using lastOpenedContainer /
-            // lastOpenedEntity that were already set by the run* method.
             return;
         }
 
-        // ── Manual open — track what the player opened for Steal/Dump buttons ──
+        // Manual open — track the target for Steal/Dump buttons
         HitResult hit = mc.crosshairTarget;
         if (hit != null) {
             if (hit.getType() == HitResult.Type.BLOCK) {
@@ -601,6 +588,8 @@ public class DungeonAssistant extends Module {
 
         if (performSafetyChecks()) return;
 
+        // FIX #4: Run breaking logic FIRST so isBreaking is armed before
+        // updateContainerLogic reads it in the same tick.
         updateBreakingLogic();
         updateContainerLogic();
         updateScanningLogic();
@@ -610,19 +599,19 @@ public class DungeonAssistant extends Module {
 
     private boolean performSafetyChecks() {
         if (autoDisableOnLowHealth.get()) {
-            boolean hasTotem = mc.player.getOffHandStack().isOf(Items.TOTEM_OF_UNDYING) || mc.player.getMainHandStack().isOf(Items.TOTEM_OF_UNDYING);
+            boolean hasTotem = mc.player.getOffHandStack().isOf(Items.TOTEM_OF_UNDYING)
+                || mc.player.getMainHandStack().isOf(Items.TOTEM_OF_UNDYING);
             if (hasTotem && mc.player.getHealth() <= lowHealthThreshold.get() * 2) {
                 error("Health is critical (%.1f), disabling to prevent totem pop.", mc.player.getHealth());
                 toggle();
                 return true;
             }
         }
-
         return false;
     }
 
     private void updateBreakingLogic() {
-        // Break-delay countdown: start breaking once the timer expires
+        // Break-delay countdown
         if (breakDelayTimer > 0) {
             breakDelayTimer--;
             if (breakDelayTimer == 0) {
@@ -631,22 +620,20 @@ public class DungeonAssistant extends Module {
                     if (targetBlock == Blocks.CHEST || targetBlock == Blocks.TRAPPED_CHEST || targetBlock == Blocks.SPAWNER) {
                         isBreaking = true;
                         isBreakingChest = (targetBlock == Blocks.CHEST || targetBlock == Blocks.TRAPPED_CHEST);
-                        // Silent switch: save current slot before we change tools
                         if (silentSwitch.get() && previousSlot < 0) {
                             previousSlot = mc.player.getInventory().selectedSlot;
                         }
                     } else {
-                        blockToBreak = null; // Not a valid target — abort
+                        blockToBreak = null;
                     }
                 } else if (entityToBreak != null) {
                     if (entityToBreak instanceof ChestMinecartEntity) {
                         isBreakingEntity = true;
-                        // Silent switch: save current slot before we change tools
                         if (silentSwitch.get() && previousSlot < 0) {
                             previousSlot = mc.player.getInventory().selectedSlot;
                         }
                     } else {
-                        entityToBreak = null; // Not a chest minecart — abort
+                        entityToBreak = null;
                     }
                 }
             }
@@ -670,13 +657,8 @@ public class DungeonAssistant extends Module {
                 blockToBreak = null;
                 isBreakingChest = false;
                 mc.interactionManager.cancelBlockBreaking();
-                // Restore slot after silent switch
-                if (silentSwitch.get() && previousSlot >= 0) {
-                    mc.player.getInventory().selectedSlot = previousSlot;
-                    previousSlot = -1;
-                }
+                restoreSlot();
             } else {
-                // Select correct tool: pickaxe for spawner, axe for chest
                 if (currentBreakTarget == Blocks.SPAWNER) {
                     int slot = findPickaxe();
                     if (slot != -1) mc.player.getInventory().selectedSlot = slot;
@@ -691,7 +673,7 @@ public class DungeonAssistant extends Module {
             }
         }
 
-        // ── Breaking a chest minecart (sword, min-swing) ──
+        // ── Breaking a chest minecart ──
         if (isBreakingEntity && entityToBreak != null && !mc.player.isTouchingWater()) {
             boolean gone = !(entityToBreak instanceof ChestMinecartEntity)
                 || !entityToBreak.isAlive()
@@ -700,16 +682,10 @@ public class DungeonAssistant extends Module {
             if (gone) {
                 isBreakingEntity = false;
                 entityToBreak = null;
-                // Restore slot after silent switch
-                if (silentSwitch.get() && previousSlot >= 0) {
-                    mc.player.getInventory().selectedSlot = previousSlot;
-                    previousSlot = -1;
-                }
+                restoreSlot();
             } else {
-                // Switch to sword
                 int swordSlot = findSword();
                 if (swordSlot != -1) mc.player.getInventory().selectedSlot = swordSlot;
-                // Min-swing: only attack once the attack cooldown is fully recharged
                 if (mc.player.getAttackCooldownProgress(0f) >= 1.0f) {
                     Rotations.rotate(Rotations.getYaw(entityToBreak), Rotations.getPitch(entityToBreak), () -> {
                         mc.interactionManager.attackEntity(mc.player, entityToBreak);
@@ -722,58 +698,70 @@ public class DungeonAssistant extends Module {
 
     private void updateContainerLogic() {
 
-        // ── Interact timeout: if the server hasn't responded within INTERACT_TIMEOUT_TICKS
-        // ticks, abort and allow the cycle to restart on the next pass. ──
+        // ── Interact timeout ──
         if (interactTimeoutTimer > 0) {
             interactTimeoutTimer--;
             if (interactTimeoutTimer == 0 && wasAutoOpened && mc.currentScreen == null) {
-                // Server never responded — reset everything so we can try again
-                wasAutoOpened = false;
-                silentOpenPending = false;
-                pendingBreakCheck = false;
-                // Remove this chest/minecart from checkedContainers/checkedEntityIds
-                // so it can be retried (it may have been temporarily inaccessible)
+                // Server never responded — remove from checked sets so it can be retried
                 if (lastOpenedContainer != null) checkedContainers.remove(lastOpenedContainer);
-                if (lastOpenedEntity != null) checkedEntityIds.remove(lastOpenedEntity.getId());
-                lastOpenedContainer = null;
-                lastOpenedEntity = null;
+                if (lastOpenedEntity != null)    checkedEntityIds.remove(lastOpenedEntity.getId());
+                resetAutoOpenState();
             }
         }
 
-        // ── SILENT MODE: screen is open and the server has populated the handler ──
-        // We read slots here (NOT in onOpenScreen) so the InventoryS2CPacket is guaranteed
-        // to have arrived and filled the container slots before we check them.
+        // ── SILENT MODE: wait for the container handler to be populated ──
+        // FIX #10: Retry up to SILENT_SLOT_READ_MAX_RETRIES ticks so that the
+        // InventoryS2CPacket has time to arrive on laggy servers. We only commit
+        // once at least one slot is non-empty (or we exhaust retries).
         if (silentOpenPending && mc.currentScreen instanceof HandledScreen
                 && !(mc.currentScreen instanceof InventoryScreen)) {
+
             HandledScreen<?> silentScreen = (HandledScreen<?>) mc.currentScreen;
-            int numSlots = silentScreen.getScreenHandler().slots.size();
+            int numSlots     = silentScreen.getScreenHandler().slots.size();
             int containerSlots = numSlots - 36;
 
             if (containerSlots > 0) {
-                silentFoundWhitelisted = false;
+                // Check whether the server has populated at least one slot
+                boolean anyNonEmpty = false;
                 for (int i = 0; i < containerSlots; i++) {
-                    Item item = silentScreen.getScreenHandler().slots.get(i).getStack().getItem();
-                    if (whitelistedItems.get().contains(item)) {
-                        silentFoundWhitelisted = true;
+                    if (!silentScreen.getScreenHandler().slots.get(i).getStack().isEmpty()) {
+                        anyNonEmpty = true;
                         break;
                     }
                 }
-                pendingBreakCheck = true;
-            }
 
-            mc.player.closeHandledScreen();
-            silentOpenPending = false;
-            return;
+                boolean retriesExhausted = silentSlotReadRetryTimer >= SILENT_SLOT_READ_MAX_RETRIES;
+
+                if (anyNonEmpty || retriesExhausted) {
+                    // Slots are ready (or we've waited long enough — commit what we have)
+                    silentFoundWhitelisted = false;
+                    for (int i = 0; i < containerSlots; i++) {
+                        Item item = silentScreen.getScreenHandler().slots.get(i).getStack().getItem();
+                        if (whitelistedItems.get().contains(item)) {
+                            silentFoundWhitelisted = true;
+                            break;
+                        }
+                    }
+                    pendingBreakCheck = true;
+                    mc.player.closeHandledScreen();
+                    silentOpenPending = false;
+                    silentSlotReadRetryTimer = 0;
+                    return;
+                } else {
+                    // Still waiting for the packet — try again next tick
+                    silentSlotReadRetryTimer++;
+                    return;
+                }
+            }
         }
 
-        // ── After a silent close: decide break or sound ──
+        // ── After a silent close: decide break or alert ──
         if (pendingBreakCheck && mc.currentScreen == null && !silentOpenPending) {
             pendingBreakCheck = false;
             wasAutoOpened = false;
             hasPlayedSoundForCurrentScreen = false;
 
             if (!silentFoundWhitelisted) {
-                // No whitelisted items — schedule break after delay
                 if (autoBreak.get()) {
                     if (lastOpenedContainer != null) {
                         blockToBreak = lastOpenedContainer;
@@ -785,23 +773,19 @@ public class DungeonAssistant extends Module {
                     }
                 }
             } else {
-                // Whitelisted item found — alert
                 mc.player.playSound(SoundEvents.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
             }
             return;
         }
 
-        // ── NON-SILENT MODE: screen is open, read and close it ──
+        // ── NON-SILENT MODE: screen is open ──
         if (mc.currentScreen instanceof HandledScreen && !(mc.currentScreen instanceof InventoryScreen)) {
-            // Only auto-manage containers opened by the auto-open logic.
-            // Containers opened manually by the player are left alone so the Steal/Dump buttons remain usable.
             if (!wasAutoOpened) return;
-
             if (lastOpenedContainer == null && lastOpenedEntity == null) return;
             if (lastOpenedEntity != null && !(lastOpenedEntity instanceof ChestMinecartEntity)) return;
 
             HandledScreen<?> screen = (HandledScreen<?>) mc.currentScreen;
-            int numSlots = screen.getScreenHandler().slots.size();
+            int numSlots      = screen.getScreenHandler().slots.size();
             int containerSlots = numSlots - 36;
 
             if (containerSlots > 0) {
@@ -814,7 +798,7 @@ public class DungeonAssistant extends Module {
                 }
                 if (!found) {
                     mc.player.closeHandledScreen();
-                    wasAutoOpened = false; // allow next auto-open cycle
+                    wasAutoOpened = false;
                     if (autoBreak.get()) {
                         if (lastOpenedContainer != null) {
                             blockToBreak = lastOpenedContainer;
@@ -826,14 +810,12 @@ public class DungeonAssistant extends Module {
                         }
                     }
                 } else {
-                    // Whitelisted items found — always release the lock so the next
-                    // cycle can start, regardless of whether the sound is enabled.
                     wasAutoOpened = false;
                     if (!hasPlayedSoundForCurrentScreen) {
-                        boolean isChestOrMinecart = lastOpenedEntity != null ||
-                            (lastOpenedContainer != null &&
-                                (mc.world.getBlockState(lastOpenedContainer).getBlock() == Blocks.CHEST ||
-                                mc.world.getBlockState(lastOpenedContainer).getBlock() == Blocks.TRAPPED_CHEST));
+                        boolean isChestOrMinecart = lastOpenedEntity != null
+                            || (lastOpenedContainer != null
+                                && (mc.world.getBlockState(lastOpenedContainer).getBlock() == Blocks.CHEST
+                                || mc.world.getBlockState(lastOpenedContainer).getBlock() == Blocks.TRAPPED_CHEST));
                         if (isChestOrMinecart) {
                             mc.player.playSound(SoundEvents.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
                             hasPlayedSoundForCurrentScreen = true;
@@ -842,21 +824,24 @@ public class DungeonAssistant extends Module {
                 }
             }
 
+        // ── No screen open: run auto-open cycle ──
         } else if (mc.currentScreen == null && !isBreaking && !isBreakingEntity
                 && breakDelayTimer == 0 && !pendingBreakCheck && !silentOpenPending
                 && !wasAutoOpened) {
-            // NOTE: !wasAutoOpened prevents re-entering this block on the ticks between
-            // sending the interact packet and the server sending back the open-screen packet.
-            // wasAutoOpened is reset by pendingBreakCheck, by the non-silent close path,
-            // or by interactTimeoutTimer reaching 0.
+
             hasPlayedSoundForCurrentScreen = false;
 
-            // Auto-open logic
             if (autoOpen.get()) {
-                if (prioritizeSpawners.get()) {
-                    if (runSpawnerCheck()) return;
+                // FIX #3: Only prioritize spawners when one is actually within break range,
+                // so distant spawners don't block chest-checking indefinitely.
+                if (prioritizeSpawners.get() && autoBreakSpawners.get()) {
+                    if (isSpawnerInBreakRange()) {
+                        if (runSpawnerCheck()) return;
+                    }
                     if (runMinecartCheck()) return;
                     if (runChestCheck()) return;
+                    // Fall through to spawner break if no containers found
+                    if (runSpawnerCheck()) return;
                 } else {
                     if (runMinecartCheck()) return;
                     if (runChestCheck()) return;
@@ -867,7 +852,6 @@ public class DungeonAssistant extends Module {
     }
 
     private void updateScanningLogic() {
-
         try {
             if (mc.world.getRegistryKey() == null) return;
         } catch (Exception e) { return; }
@@ -880,9 +864,10 @@ public class DungeonAssistant extends Module {
         try {
             String currDim = mc.world.getRegistryKey().getValue().toString();
             if (!currDim.equals(lastDimension)) {
-                dimensionChangeCooldown = 0;
+                // FIX #(misc): Use a real cooldown value so we don't immediately re-scan
+                // in an inconsistent state right after a dimension change.
+                dimensionChangeCooldown = DIMENSION_CHANGE_COOLDOWN_TICKS;
                 lastDimension = currDim;
-
                 resetScanningState();
                 return;
             }
@@ -898,49 +883,64 @@ public class DungeonAssistant extends Module {
         scanNewChunks(centerChunkX, centerChunkZ);
         scanEndermites();
         scanSpawnerTorches();
+
+        // FIX #8: Prune stale checkedEntityIds for entities that are no longer alive/loaded
+        pruneCheckedEntityIds();
+    }
+
+    // ─────────────────────────── Auto-Open Helpers ───────────────────────────
+
+    /** FIX #3: Returns true if at least one spawner is within spawnerBreakRange. */
+    private boolean isSpawnerInBreakRange() {
+        double rangeSq = Math.pow(spawnerBreakRange.get(), 2);
+        for (Map.Entry<BlockPos, TargetType> entry : targets.entrySet()) {
+            if (entry.getValue() == TargetType.SPAWNER) {
+                if (entry.getKey().getSquaredDistance(mc.player.getPos()) <= rangeSq) return true;
+            }
+        }
+        return false;
     }
 
     private boolean runSpawnerCheck() {
-        if (autoBreakSpawners.get()) {
-            if (prioritizeSpawners.get() && areMobsNearby()) {
-                return false;
-            }
+        if (!autoBreakSpawners.get()) return false;
 
-            BlockPos bestPos = null;
-            double minDistanceSq = Double.MAX_VALUE;
-            double rangeSq = Math.pow(spawnerBreakRange.get(), 2);
+        if (areMobsNearby()) return false;
 
-            for (Map.Entry<BlockPos, TargetType> entry : targets.entrySet()) {
-                if (entry.getValue() == TargetType.SPAWNER) {
-                    BlockPos pos = entry.getKey();
-                    double distSq = pos.getSquaredDistance(mc.player.getPos());
-                    if (distSq <= rangeSq && distSq < minDistanceSq) {
-                        minDistanceSq = distSq;
-                        bestPos = pos;
-                    }
+        BlockPos bestPos = null;
+        double minDistanceSq = Double.MAX_VALUE;
+        double rangeSq = Math.pow(spawnerBreakRange.get(), 2);
+
+        for (Map.Entry<BlockPos, TargetType> entry : targets.entrySet()) {
+            if (entry.getValue() == TargetType.SPAWNER) {
+                BlockPos pos = entry.getKey();
+                double distSq = pos.getSquaredDistance(mc.player.getPos());
+                if (distSq <= rangeSq && distSq < minDistanceSq) {
+                    minDistanceSq = distSq;
+                    bestPos = pos;
                 }
             }
+        }
 
-            if (bestPos != null) {
-                blockToBreak = bestPos;
-                breakDelayTimer = getRandomizedDelay(spawnerBreakDelay.get());
-                return true;
-            }
+        if (bestPos != null) {
+            blockToBreak = bestPos;
+            breakDelayTimer = getRandomizedDelay(spawnerBreakDelay.get());
+            return true;
         }
         return false;
     }
 
     private boolean areMobsNearby() {
         if (mc.player == null || mc.world == null) return false;
-        return !mc.world.getEntitiesByClass(HostileEntity.class, 
-            new Box(mc.player.getBlockPos()).expand(4), 
-            e -> e.isAlive()).isEmpty();
+        // FIX #11: Use spawnerBreakRange instead of a hardcoded 4-block radius
+        double radius = spawnerBreakRange.get();
+        return !mc.world.getEntitiesByClass(HostileEntity.class,
+            new Box(mc.player.getBlockPos()).expand(radius),
+            Entity::isAlive).isEmpty();
     }
 
     private boolean runMinecartCheck() {
         if (!trackChestMinecarts.get()) return false;
 
-        // Gather all unchecked chest minecarts in range, sort nearest first
         List<ChestMinecartEntity> minecarts = mc.world.getEntitiesByClass(
             ChestMinecartEntity.class,
             new Box(mc.player.getBlockPos()).expand(4.5),
@@ -948,7 +948,6 @@ public class DungeonAssistant extends Module {
         );
         if (minecarts.isEmpty()) return false;
 
-        // Sort nearest first
         minecarts.sort(Comparator.comparingDouble(e -> mc.player.squaredDistanceTo(e)));
         ChestMinecartEntity cart = minecarts.get(0);
         if (mc.player.distanceTo(cart) > 4.5) return false;
@@ -957,7 +956,7 @@ public class DungeonAssistant extends Module {
         lastOpenedContainer = null;
         checkedEntityIds.add(cart.getId());
         wasAutoOpened = true;
-        interactTimeoutTimer = INTERACT_TIMEOUT_TICKS; // start timeout window
+        interactTimeoutTimer = INTERACT_TIMEOUT_TICKS;
 
         Rotations.rotate(Rotations.getYaw(cart), Rotations.getPitch(cart), () -> {
             mc.interactionManager.interactEntity(mc.player, cart, Hand.MAIN_HAND);
@@ -969,7 +968,6 @@ public class DungeonAssistant extends Module {
     private boolean runChestCheck() {
         if (!trackChests.get()) return false;
 
-        // Collect all unchecked chests within range, sorted nearest first
         List<BlockPos> nearbyChests = targets.entrySet().stream()
             .filter(e -> e.getValue() == TargetType.CHEST)
             .map(Map.Entry::getKey)
@@ -983,10 +981,8 @@ public class DungeonAssistant extends Module {
         BlockPos pos = nearbyChests.get(0);
         Block block = mc.world.getBlockState(pos).getBlock();
 
-        // Mark this chest as checked
         checkedContainers.add(pos);
 
-        // If it's a double chest, mark the other half too so we don't visit it separately
         if (block == Blocks.CHEST || block == Blocks.TRAPPED_CHEST) {
             for (Direction dir : new Direction[]{Direction.NORTH, Direction.SOUTH, Direction.EAST, Direction.WEST}) {
                 BlockPos neighbor = pos.offset(dir);
@@ -1000,7 +996,7 @@ public class DungeonAssistant extends Module {
         lastOpenedContainer = pos;
         lastOpenedEntity = null;
         wasAutoOpened = true;
-        interactTimeoutTimer = INTERACT_TIMEOUT_TICKS; // start timeout window
+        interactTimeoutTimer = INTERACT_TIMEOUT_TICKS;
 
         Rotations.rotate(Rotations.getYaw(pos), Rotations.getPitch(pos), () -> {
             BlockHitResult hit = new BlockHitResult(Vec3d.ofCenter(pos), Direction.UP, pos, false);
@@ -1009,6 +1005,8 @@ public class DungeonAssistant extends Module {
         });
         return true;
     }
+
+    // ─────────────────────────── Scanning ───────────────────────────
 
     private void resetScanningState() {
         targets.clear();
@@ -1046,7 +1044,6 @@ public class DungeonAssistant extends Module {
             }
         }
 
-        // Clean up notified IDs of despawned endermites
         notifiedEndermites.retainAll(currentIds);
     }
 
@@ -1065,7 +1062,8 @@ public class DungeonAssistant extends Module {
                             BlockPos pos = spawnerPos.add(x, y, z);
                             BlockState state = mc.world.getBlockState(pos);
                             Block b = state.getBlock();
-                            if (b == Blocks.TORCH || b == Blocks.WALL_TORCH || b == Blocks.SOUL_TORCH || b == Blocks.SOUL_WALL_TORCH) {
+                            if (b == Blocks.TORCH || b == Blocks.WALL_TORCH
+                                    || b == Blocks.SOUL_TORCH || b == Blocks.SOUL_WALL_TORCH) {
                                 spawnerTorches.add(pos);
                             }
                         }
@@ -1079,7 +1077,6 @@ public class DungeonAssistant extends Module {
         int r = range.get();
         int rSq = r * r;
 
-        // Cleanup distant chunks
         scannedChunks.removeIf(cp -> {
             int dx = cp.x - centerChunkX;
             int dz = cp.z - centerChunkZ;
@@ -1087,35 +1084,28 @@ public class DungeonAssistant extends Module {
         });
 
         int chunksScanned = 0;
-        int limit = 10; // Limit chunks per tick to prevent lag
+        int limit = 10;
 
-        // Scan concentric squares to prioritize close chunks
+        outer:
         for (int d = 0; d <= r; d++) {
-            if (chunksScanned >= limit) break;
+            int minX = -d, maxX = d, minZ = -d, maxZ = d;
 
-            int minX = -d;
-            int maxX = d;
-            int minZ = -d;
-            int maxZ = d;
-
-            // Perimeter scan
             for (int x = minX; x <= maxX; x++) {
                 if (processChunk(centerChunkX + x, centerChunkZ + minZ, rSq, centerChunkX, centerChunkZ)) chunksScanned++;
-                if (chunksScanned >= limit) break;
+                if (chunksScanned >= limit) break outer;
                 if (minZ != maxZ) {
                     if (processChunk(centerChunkX + x, centerChunkZ + maxZ, rSq, centerChunkX, centerChunkZ)) chunksScanned++;
+                    if (chunksScanned >= limit) break outer;
                 }
-                if (chunksScanned >= limit) break;
             }
-            if (chunksScanned >= limit) break;
 
             for (int z = minZ + 1; z < maxZ; z++) {
                 if (processChunk(centerChunkX + minX, centerChunkZ + z, rSq, centerChunkX, centerChunkZ)) chunksScanned++;
-                if (chunksScanned >= limit) break;
+                if (chunksScanned >= limit) break outer;
                 if (minX != maxX) {
                     if (processChunk(centerChunkX + maxX, centerChunkZ + z, rSq, centerChunkX, centerChunkZ)) chunksScanned++;
+                    if (chunksScanned >= limit) break outer;
                 }
-                if (chunksScanned >= limit) break;
             }
         }
     }
@@ -1152,7 +1142,7 @@ public class DungeonAssistant extends Module {
             ChunkSection section = sections[i];
             if (section == null || section.isEmpty()) continue;
 
-            int sectionY = chunk.getBottomSectionCoord() + i;
+            int sectionY    = chunk.getBottomSectionCoord() + i;
             int sectionMinY = sectionY * 16;
             int sectionMaxY = sectionMinY + 16;
 
@@ -1183,14 +1173,20 @@ public class DungeonAssistant extends Module {
         }
     }
 
+    /**
+     * FIX #1: scanBlockEntities now uses a consistent chunk-radius loop that
+     * matches the circular scan shape used elsewhere. The isWithinRange check is
+     * kept for a final block-level clamp.
+     */
     private void scanBlockEntities(int centerChunkX, int centerChunkZ) {
-        int maxDistSq = range.get() * range.get();
+        int r = range.get();
+        int rSq = r * r;
 
-        for (int cx = centerChunkX - range.get(); cx <= centerChunkX + range.get(); cx++) {
-            for (int cz = centerChunkZ - range.get(); cz <= centerChunkZ + range.get(); cz++) {
+        for (int cx = centerChunkX - r; cx <= centerChunkX + r; cx++) {
+            for (int cz = centerChunkZ - r; cz <= centerChunkZ + r; cz++) {
                 int dx = cx - centerChunkX;
                 int dz = cz - centerChunkZ;
-                if (dx * dx + dz * dz > maxDistSq) continue;
+                if (dx * dx + dz * dz > rSq) continue;
 
                 WorldChunk chunk = mc.world.getChunkManager().getChunk(cx, cz, ChunkStatus.FULL, false);
                 if (chunk == null) continue;
@@ -1201,8 +1197,7 @@ public class DungeonAssistant extends Module {
 
                     if ((trackSpawners.get() || autoBreakSpawners.get()) && be instanceof MobSpawnerBlockEntity) {
                         targets.put(pos, TargetType.SPAWNER);
-                    }
-                    else if (trackChests.get()) {
+                    } else if (trackChests.get()) {
                         Block block = mc.world.getBlockState(pos).getBlock();
                         if (block == Blocks.CHEST || block == Blocks.TRAPPED_CHEST) {
                             targets.put(pos, TargetType.CHEST);
@@ -1223,8 +1218,7 @@ public class DungeonAssistant extends Module {
 
     private void removeNeighborFromChecked(BlockPos pos) {
         if (pos == null || mc.world == null) return;
-        BlockState state = mc.world.getBlockState(pos);
-        Block block = state.getBlock();
+        Block block = mc.world.getBlockState(pos).getBlock();
         if (block == Blocks.CHEST || block == Blocks.TRAPPED_CHEST) {
             for (Direction dir : new Direction[]{Direction.NORTH, Direction.SOUTH, Direction.EAST, Direction.WEST}) {
                 BlockPos neighbor = pos.offset(dir);
@@ -1238,7 +1232,7 @@ public class DungeonAssistant extends Module {
 
     private void scanChestMinecarts(int centerChunkX, int centerChunkZ) {
         if (!trackChestMinecarts.get()) return;
-        
+
         int blockRange = range.get() * 16;
         Box searchBox = new Box(
             (centerChunkX << 4) - blockRange, mc.player.getY() - 64, (centerChunkZ << 4) - blockRange,
@@ -1267,32 +1261,59 @@ public class DungeonAssistant extends Module {
         });
     }
 
+    /**
+     * FIX #8: Remove stale checkedEntityIds for minecarts that are no longer
+     * present in the loaded world, preventing ID-reuse skips.
+     */
+    private void pruneCheckedEntityIds() {
+        if (checkedEntityIds.isEmpty()) return;
+
+        int blockRange = range.get() * 16;
+        Box searchBox = new Box(mc.player.getBlockPos()).expand(blockRange);
+
+        Set<Integer> liveIds = new HashSet<>();
+        for (ChestMinecartEntity e : mc.world.getEntitiesByClass(ChestMinecartEntity.class, searchBox, Entity::isAlive)) {
+            liveIds.add(e.getId());
+        }
+        checkedEntityIds.retainAll(liveIds);
+    }
+
     private void cleanupDistantTargets(BlockPos playerPos) {
         if (mc.player == null) return;
-        
-        int blockRange = range.get() * 16;
-        int cleanupRange = blockRange + 32; 
+
+        int blockRange   = range.get() * 16;
+        int cleanupRange = blockRange + 32;
         int cleanupRangeSq = cleanupRange * cleanupRange;
-        
+
         targets.entrySet().removeIf(entry -> {
             BlockPos pos = entry.getKey();
             double dx = pos.getX() - playerPos.getX();
             double dz = pos.getZ() - playerPos.getZ();
-            double distSq = dx*dx + dz*dz;
-            
-            boolean tooFar = distSq > cleanupRangeSq;
-            
-            if (tooFar) {
-                // Keep spawners in memory so we can detect if they break when we return
-                if (entry.getValue() == TargetType.SPAWNER) return false;
+            boolean tooFar = (dx * dx + dz * dz) > cleanupRangeSq;
 
-                if (entry.getValue() == TargetType.CHEST_MINECART) {
-                    stackedMinecartCounts.remove(pos);
+            if (!tooFar) return false;
+
+            // FIX #2: Only keep spawners that are in an unloaded chunk.
+            // If the chunk is loaded and the block is gone, we should remove it.
+            if (entry.getValue() == TargetType.SPAWNER) {
+                boolean chunkLoaded = mc.world.getChunkManager()
+                    .isChunkLoaded(pos.getX() >> 4, pos.getZ() >> 4);
+                if (chunkLoaded) {
+                    // Chunk is loaded — if the spawner is gone, let it be removed
+                    return mc.world.getBlockState(pos).getBlock() != Blocks.SPAWNER;
                 }
+                // Chunk unloaded — keep the spawner entry so we can detect breaks on return
+                return false;
             }
-            return tooFar;
+
+            if (entry.getValue() == TargetType.CHEST_MINECART) {
+                stackedMinecartCounts.remove(pos);
+            }
+            return true;
         });
     }
+
+    // ─────────────────────────── Rendering ───────────────────────────
 
     @EventHandler
     private void onRender(Render3DEvent event) {
@@ -1300,31 +1321,28 @@ public class DungeonAssistant extends Module {
 
         ShapeMode mode = shapeMode.get();
         Set<BlockPos> toRemove = new HashSet<>();
-        
+
         for (Map.Entry<BlockPos, TargetType> entry : targets.entrySet()) {
-            BlockPos pos = entry.getKey();
+            BlockPos pos  = entry.getKey();
             TargetType type = entry.getValue();
-            
+
             Box renderBox;
-            SettingColor color = null;
-            
+            SettingColor color;
+
             if (type == TargetType.CHEST_MINECART) {
                 List<ChestMinecartEntity> minecarts = mc.world.getEntitiesByClass(
-                    ChestMinecartEntity.class, 
-                    new Box(pos), 
-                    entity -> true
-                );
-                
+                    ChestMinecartEntity.class, new Box(pos), entity -> true);
+
                 if (minecarts.isEmpty()) {
                     toRemove.add(pos);
                     continue;
                 }
-                
+
                 renderBox = minecarts.get(0).getBoundingBox();
                 boolean isStacked = highlightStacked.get() && stackedMinecartCounts.getOrDefault(pos, 0) >= 2;
-                color = isStacked ? stackedMinecartColor.get() : chestMinecartColor.get() ;
-            }
-            else {
+                color = isStacked ? stackedMinecartColor.get() : chestMinecartColor.get();
+
+            } else {
                 if (!mc.world.getChunkManager().isChunkLoaded(pos.getX() >> 4, pos.getZ() >> 4)) continue;
 
                 if (mc.world.getBlockState(pos).isAir()) {
@@ -1333,16 +1351,15 @@ public class DungeonAssistant extends Module {
                 }
 
                 Block currentBlock = mc.world.getBlockState(pos).getBlock();
-                
                 if (type == TargetType.SPAWNER || type == TargetType.CHEST || type == TargetType.MISROTATED_DEEPSLATE) {
                     if (!validateBlockType(currentBlock, type)) {
                         toRemove.add(pos);
                         continue;
                     }
                 }
-                
+
                 renderBox = createPaddedBox(pos);
-                color = getColor(type) ;
+                color = getColor(type);
             }
 
             if (color != null) {
@@ -1354,7 +1371,7 @@ public class DungeonAssistant extends Module {
             for (BlockPos pos : toRemove) {
                 if (targets.get(pos) == TargetType.SPAWNER) {
                     if (notifySpawnerBreak.get()) {
-                        info("Spawner broken at " + pos.getX() + ", " + pos.getY() + ", " + pos.getZ());
+                        info("Spawner broken at %d, %d, %d", pos.getX(), pos.getY(), pos.getZ());
                     }
                     if (showBrokenSpawnerBeam.get()) {
                         brokenSpawners.put(pos, System.currentTimeMillis() + (brokenSpawnerDuration.get() * 1000L));
@@ -1370,10 +1387,15 @@ public class DungeonAssistant extends Module {
             brokenSpawners.entrySet().removeIf(entry -> now > entry.getValue());
 
             SettingColor color = brokenSpawnerColor.get();
+            int worldBottom = mc.world.getBottomY();
+            int worldTop    = worldBottom + mc.world.getHeight();
+
             for (BlockPos pos : brokenSpawners.keySet()) {
+                // FIX #6: Beam extends both downward (to world bottom) and upward (to world top)
+                // so it remains visible regardless of whether the spawner was above or below the player.
                 Box beam = new Box(
-                    pos.getX() + 0.4, pos.getY(), pos.getZ() + 0.4,
-                    pos.getX() + 0.6, mc.world.getBottomY() + mc.world.getHeight(), pos.getZ() + 0.6
+                    pos.getX() + 0.4, worldBottom, pos.getZ() + 0.4,
+                    pos.getX() + 0.6, worldTop,    pos.getZ() + 0.6
                 );
                 event.renderer.box(beam, color, color, ShapeMode.Both, 0);
             }
@@ -1406,95 +1428,110 @@ public class DungeonAssistant extends Module {
                 event.renderer.box(pos, color, color, mode, 0);
             }
         }
+    }
 
+    // ─────────────────────────── Utilities ───────────────────────────
+
+    /** FIX: Centralised helper — reset all auto-open flags in one place. */
+    private void resetAutoOpenState() {
+        wasAutoOpened = false;
+        silentOpenPending = false;
+        silentFoundWhitelisted = false;
+        pendingBreakCheck = false;
+        silentSlotReadRetryTimer = 0;
+        interactTimeoutTimer = 0;
+        lastOpenedContainer = null;
+        lastOpenedEntity = null;
+        hasPlayedSoundForCurrentScreen = false;
+        isBreaking = false;
+        isBreakingEntity = false;
+        blockToBreak = null;
+        isBreakingChest = false;
+        entityToBreak = null;
+        breakDelayTimer = 0;
+        previousSlot = -1;
+    }
+
+    private void restoreSlot() {
+        if (silentSwitch.get() && previousSlot >= 0) {
+            mc.player.getInventory().selectedSlot = previousSlot;
+            previousSlot = -1;
+        }
     }
 
     private Box createPaddedBox(BlockPos pos) {
-        return new Box(
-            pos.getX(),
-            pos.getY(),
-            pos.getZ(),
-            pos.getX() + 1.0,
-            pos.getY() + 1.0,
-            pos.getZ() + 1.0
-        );
+        return new Box(pos.getX(), pos.getY(), pos.getZ(),
+            pos.getX() + 1.0, pos.getY() + 1.0, pos.getZ() + 1.0);
     }
-    
+
     private boolean validateBlockType(Block block, TargetType type) {
         return switch (type) {
-            case SPAWNER -> block == Blocks.SPAWNER;
-            case CHEST -> block == Blocks.CHEST || block == Blocks.TRAPPED_CHEST;
-            case CHEST_MINECART -> true;
-            case CUSTOM_BLOCK -> filterBlocks.get().contains(block);
-            case ENDERMITE -> true;
+            case SPAWNER             -> block == Blocks.SPAWNER;
+            case CHEST               -> block == Blocks.CHEST || block == Blocks.TRAPPED_CHEST;
+            case CHEST_MINECART      -> true;
+            case CUSTOM_BLOCK        -> filterBlocks.get().contains(block);
             case MISROTATED_DEEPSLATE -> block == Blocks.DEEPSLATE;
         };
     }
 
     private SettingColor getColor(TargetType type) {
         return switch (type) {
-            case SPAWNER -> trackSpawners.get() ? spawnerColor.get() : null;
-            case CHEST -> chestColor.get();
-            case CHEST_MINECART -> chestMinecartColor.get();
-            case CUSTOM_BLOCK -> customBlockColor.get();
-            case ENDERMITE -> endermiteColor.get();
+            case SPAWNER             -> trackSpawners.get() ? spawnerColor.get() : null;
+            case CHEST               -> chestColor.get();
+            case CHEST_MINECART      -> chestMinecartColor.get();
+            case CUSTOM_BLOCK        -> customBlockColor.get();
             case MISROTATED_DEEPSLATE -> misrotatedDeepslateColor.get();
         };
     }
-    
-    public int getTotalTargets() {
-        return targets.size();
-    }
+
+    public int getTotalTargets()                { return targets.size(); }
+    public int getBrokenChestsCount()           { return brokenChestsCount; }
 
     public Map<TargetType, Integer> getTargetCounts() {
         Map<TargetType, Integer> counts = new HashMap<>();
-        for (TargetType type : TargetType.values()) {
-            counts.put(type, 0);
-        }
-        for (TargetType type : targets.values()) {
-            counts.put(type, counts.get(type) + 1);
-        }
+        for (TargetType type : TargetType.values()) counts.put(type, 0);
+        for (TargetType type : targets.values())    counts.put(type, counts.get(type) + 1);
         return counts;
     }
 
-    /** Scans hotbar slots 0-8 for an axe. */
     private int findAxe() {
-        for (int i = 0; i < 9; i++) {
+        for (int i = 0; i < 9; i++)
             if (mc.player.getInventory().getStack(i).getItem() instanceof AxeItem) return i;
-        }
         return -1;
     }
 
-    /** Scans hotbar slots 0-8 for a pickaxe. */
     private int findPickaxe() {
-        for (int i = 0; i < 9; i++) {
+        for (int i = 0; i < 9; i++)
             if (mc.player.getInventory().getStack(i).getItem() instanceof PickaxeItem) return i;
-        }
         return -1;
     }
 
-    /** Scans hotbar slots 0-8 for a sword. */
     private int findSword() {
-        for (int i = 0; i < 9; i++) {
+        for (int i = 0; i < 9; i++)
             if (mc.player.getInventory().getStack(i).getItem() instanceof SwordItem) return i;
-        }
         return -1;
     }
 
+    /**
+     * FIX #5: Returns exactly 1 when baseDelay is 0 so the caller's break-delay
+     * path fires on the very next tick, giving effectively-instant behaviour while
+     * still going through the normal countdown code path.
+     * The ±40 % jitter only applies when baseDelay > 0.
+     */
     private int getRandomizedDelay(int baseDelay) {
-        // Always return at least 1 so the breakDelayTimer decrement path sets isBreaking = true.
-        // If baseDelay is 0 the break is effectively instant (fires next tick).
         if (baseDelay <= 0) return 1;
         return (int) Math.max(1, Math.round(baseDelay * (1.0 + (Math.random() - 0.5) * 0.8)));
     }
+
+    // ─────────────────────────── Target Types ───────────────────────────
 
     public enum TargetType {
         SPAWNER,
         CHEST,
         CHEST_MINECART,
         CUSTOM_BLOCK,
-        ENDERMITE,
+        // NOTE: ENDERMITE is intentionally absent — endermites are tracked as
+        // live entities in endermiteTargets, not as block positions in targets.
         MISROTATED_DEEPSLATE
     }
-
 }

@@ -33,7 +33,7 @@ public class RocketPilot extends Module {
 
     // ─── Enum ────────────────────────────────────────────────────────────────────
     public enum FlightMode { Normal, Oscillation, Pitch40 }
-    public enum FlightPattern { None, Grid, Circle, ZigZag }
+    public enum FlightPattern { None, Grid, Circle, ZigZag, }
     // ─── Constants ───────────────────────────────────────────────────────────────
     private static final int   TAKEOFF_GRACE_TICKS        = 40;
     private static final float ELYTRA_LOW_PERCENT         = 5.0f;
