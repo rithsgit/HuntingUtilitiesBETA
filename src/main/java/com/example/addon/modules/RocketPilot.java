@@ -3,14 +3,10 @@ package com.example.addon.modules;
 import com.example.addon.HuntingUtilities;
 
 import meteordevelopment.meteorclient.events.world.TickEvent;
-import meteordevelopment.meteorclient.settings.BoolSetting;
-import meteordevelopment.meteorclient.settings.DoubleSetting;
-import meteordevelopment.meteorclient.settings.EnumSetting;
-import meteordevelopment.meteorclient.settings.IntSetting;
-import meteordevelopment.meteorclient.settings.Setting;
-import meteordevelopment.meteorclient.settings.SettingGroup;
+import meteordevelopment.meteorclient.settings.*;
 import meteordevelopment.meteorclient.systems.modules.Module;
 import meteordevelopment.meteorclient.systems.modules.Modules;
+import meteordevelopment.meteorclient.utils.misc.Keybind;
 import meteordevelopment.meteorclient.utils.player.InvUtils;
 import net.minecraft.entity.EquipmentSlot;
 import net.minecraft.item.ItemStack;
@@ -27,23 +23,27 @@ import net.minecraft.util.math.Vec3d;
 import net.minecraft.world.RaycastContext;
 import meteordevelopment.orbit.EventHandler;
 
-
 public class RocketPilot extends Module {
 
-    private long lastOscillationMsg = 0;
-    private final SettingGroup sgFlight = settings.createGroup("Flight");
-    private final SettingGroup sgPitch40 = settings.createGroup("Pitch40");
-    private final SettingGroup sgOscillation = settings.createGroup("Oscillation");
+    // ─── Enum ────────────────────────────────────────────────────────────────────
+    public enum FlightMode { Circle, Grid, Normal, Oscillation, Pitch40, ZigZag }
 
-    public enum FlightMode {
-        Normal,
-        Pitch40,
-        Oscillation}
-    private final SettingGroup sgDrunk = settings.createGroup("DrunkPilot");
+    // ─── Constants ───────────────────────────────────────────────────────────────
+    private static final int   TAKEOFF_GRACE_TICKS        = 40;
+    private static final float ELYTRA_LOW_PERCENT         = 5.0f;
+    private static final int   ELYTRA_MIN_SWAP_DUR        = 50;
+    private static final long  COLLISION_ROCKET_COOLDOWN  = 200L;
+
+    // ─── Setting Groups ───────────────────────────────────────────────────────────
+    private final SettingGroup sgFlight       = settings.createGroup("Flight");
+    private final SettingGroup sgPitch40      = settings.createGroup("Pitch40");
+    private final SettingGroup sgOscillation  = settings.createGroup("Oscillation");
+    private final SettingGroup sgPatterns     = settings.createGroup("Patterns");
+    private final SettingGroup sgDrunk        = settings.createGroup("DrunkPilot");
     private final SettingGroup sgFlightSafety = settings.createGroup("Flight Safety");
     private final SettingGroup sgPlayerSafety = settings.createGroup("Player Safety");
 
-    // ─────────────────────────────────────── Flight ───────────────────────────────────────
+    // ─── Flight Settings ─────────────────────────────────────────────────────────
     public final Setting<Boolean> useTargetY = sgFlight.add(new BoolSetting.Builder()
         .name("use-target-y")
         .description("Whether to maintain a specific Y level.")
@@ -53,10 +53,9 @@ public class RocketPilot extends Module {
 
     public final Setting<Double> targetY = sgFlight.add(new DoubleSetting.Builder()
         .name("target-y")
-        .description("The upper Y level limit (ceiling).")
+        .description("The Y level to maintain.")
         .defaultValue(120.0)
-        .min(-64)
-        .max(320)
+        .min(-64).max(320)
         .sliderRange(0, 256)
         .visible(useTargetY::get)
         .build()
@@ -64,10 +63,9 @@ public class RocketPilot extends Module {
 
     public final Setting<Double> flightTolerance = sgFlight.add(new DoubleSetting.Builder()
         .name("flight-tolerance")
-        .description("The drop range allowed below target Y.")
+        .description("Allowable drop below target Y before climbing.")
         .defaultValue(2.0)
-        .min(0.5)
-        .max(10.0)
+        .min(0.5).max(10.0)
         .sliderRange(1.0, 5.0)
         .build()
     );
@@ -102,31 +100,45 @@ public class RocketPilot extends Module {
         .build()
     );
 
-     public final Setting<FlightMode> flightMode = sgFlight.add(new EnumSetting.Builder<FlightMode>()
+    public final Setting<FlightMode> flightMode = sgFlight.add(new EnumSetting.Builder<FlightMode>()
         .name("flight-mode")
-        .description("Normal = height-hold, Pitch40 = altitude-cycling, Oscillation = sine-wave pitch.")
+        .description("Normal = height-hold, Pitch40 = altitude-cycling, Oscillation = sine-wave pitch, Grid/ZigZag/Circle = pattern flight.")
         .defaultValue(FlightMode.Normal)
         .onChanged(v -> {
-            if (isActive() && mc.world != null) {
-                if (v == FlightMode.Oscillation) {
-                    info("Oscillation mode enabled.");
-                    lastOscillationMsg = System.currentTimeMillis();
-                } else if (v == FlightMode.Pitch40) {
-                    info("Pitch40 mode enabled.");
-                } else {
-                    info("Normal flight mode enabled.");
-                }
+            if (!isActive() || mc.world == null) return;
+            // Reset pattern state when switching modes so origin is re-anchored cleanly
+            resetPatternState();
+            switch (v) {
+                case Oscillation -> info("Oscillation mode enabled.");
+                case Pitch40     -> info("Pitch40 mode enabled.");
+                case Grid        -> info("Grid pattern enabled.");
+                case ZigZag      -> info("ZigZag pattern enabled.");
+                case Circle      -> info("Circle pattern enabled.");
+                default          -> info("Normal flight mode enabled.");
             }
         })
         .build()
     );
 
+    public final Setting<Double> pitchSmoothing = sgFlight.add(new DoubleSetting.Builder()
+        .name("pitch-smoothing")
+        .description("How smoothly pitch changes in Normal and Pattern modes (lower = smoother).")
+        .defaultValue(0.15)
+        .min(0.01).max(1.0)
+        .sliderRange(0.05, 0.5)
+        .visible(() -> flightMode.get() == FlightMode.Normal
+                    || flightMode.get() == FlightMode.Grid
+                    || flightMode.get() == FlightMode.ZigZag
+                    || flightMode.get() == FlightMode.Circle)
+        .build()
+    );
+
+    // ─── Pitch40 Settings ────────────────────────────────────────────────────────
     private final Setting<Double> pitch40UpperY = sgPitch40.add(new DoubleSetting.Builder()
         .name("upper-y")
-        .description("The upper Y-level to stay below.")
+        .description("Upper Y-level ceiling; stop climbing above this.")
         .defaultValue(120.0)
-        .min(-64)
-        .max(320)
+        .min(-64).max(320)
         .sliderRange(0, 256)
         .visible(() -> flightMode.get() == FlightMode.Pitch40)
         .build()
@@ -134,10 +146,9 @@ public class RocketPilot extends Module {
 
     private final Setting<Double> pitch40LowerY = sgPitch40.add(new DoubleSetting.Builder()
         .name("lower-y")
-        .description("The lower Y-level to stay above. Rockets will be used below this level.")
+        .description("Lower Y-level floor; start climbing below this.")
         .defaultValue(110.0)
-        .min(-64)
-        .max(320)
+        .min(-64).max(320)
         .sliderRange(0, 256)
         .visible(() -> flightMode.get() == FlightMode.Pitch40)
         .build()
@@ -147,15 +158,14 @@ public class RocketPilot extends Module {
         .name("smoothing")
         .description("How smoothly to adjust pitch in Pitch40 mode.")
         .defaultValue(0.05)
-        .min(0.01)
-        .max(1.0)
+        .min(0.01).max(1.0)
         .visible(() -> flightMode.get() == FlightMode.Pitch40)
         .build()
     );
 
     private final Setting<Integer> pitch40BelowMinDelay = sgPitch40.add(new IntSetting.Builder()
         .name("below-min-delay")
-        .description("Time in ms to wait below min Y before using rockets.")
+        .description("Time in ms to remain below lower-y before firing rockets.")
         .defaultValue(8000)
         .min(1000)
         .sliderRange(1000, 10000)
@@ -163,24 +173,12 @@ public class RocketPilot extends Module {
         .build()
     );
 
-    // ─────────────────────────────────────── Oscillation / Normal smoothing ───────────────────────────────────────
-    public final Setting<Double> pitchSmoothing = sgFlight.add(new DoubleSetting.Builder()
-        .name("pitch-smoothing")
-        .description("How smoothly the pitch changes in Normal mode (0.0 - 1.0).")
-        .defaultValue(0.15)
-        .min(0.01)
-        .max(1.0)
-        .sliderRange(0.05, 0.5)
-        .visible(() -> flightMode.get() == FlightMode.Normal)
-        .build()
-    );
-
+    // ─── Oscillation Settings ────────────────────────────────────────────────────
     public final Setting<Double> oscillationSpeed = sgOscillation.add(new DoubleSetting.Builder()
         .name("oscillation-speed")
-        .description("Speed of the pitch wave cycle (higher = faster transitions).")
+        .description("Speed of the pitch wave cycle (higher = faster).")
         .defaultValue(0.08)
-        .min(0.01)
-        .max(0.5)
+        .min(0.01).max(0.5)
         .sliderRange(0.02, 0.2)
         .visible(() -> flightMode.get() == FlightMode.Oscillation)
         .build()
@@ -188,7 +186,7 @@ public class RocketPilot extends Module {
 
     private final Setting<Integer> oscillationRocketDelay = sgOscillation.add(new IntSetting.Builder()
         .name("oscillation-rocket-delay")
-        .description("The minimum delay between firing rockets in oscillation mode.")
+        .description("Minimum delay between rockets in oscillation mode (ms).")
         .defaultValue(350)
         .min(0)
         .visible(() -> flightMode.get() == FlightMode.Oscillation)
@@ -197,15 +195,93 @@ public class RocketPilot extends Module {
 
     private final Setting<Boolean> oscillationRockets = sgOscillation.add(new BoolSetting.Builder()
         .name("oscillation-rockets")
-        .description("Automatically fire rockets at the peak of the upward pitch.")
+        .description("Fire rockets at the peak of the upward pitch cycle.")
         .defaultValue(true)
         .visible(() -> flightMode.get() == FlightMode.Oscillation)
         .build()
     );
 
-    // ─────────────────────────────────────── Pitch40 Mode ───────────────────────────────────────
+    // ─── Pattern Settings ────────────────────────────────────────────────────────
+    private final Setting<Keybind> pauseKey = sgPatterns.add(new KeybindSetting.Builder()
+        .name("pause-key")
+        .description("Pauses/resumes the current flight pattern.")
+        .defaultValue(Keybind.none())
+        .action(this::togglePause)
+        .visible(() -> isPatternMode())
+        .build()
+    );
 
-    // ─────────────────────────────────────── Drunk Pilot ───────────────────────────────────────
+    private final Setting<Double> patternTurnSpeed = sgPatterns.add(new DoubleSetting.Builder()
+        .name("turn-speed")
+        .description("How quickly to yaw toward pattern waypoints.")
+        .defaultValue(0.1)
+        .min(0.01).max(1.0)
+        .sliderRange(0.05, 0.5)
+        .visible(() -> isPatternMode())
+        .build()
+    );
+
+    private final Setting<Integer> waypointReachRadius = sgPatterns.add(new IntSetting.Builder()
+        .name("waypoint-reach-radius")
+        .description("Horizontal distance (blocks) to a waypoint before advancing.")
+        .defaultValue(30)
+        .min(5)
+        .sliderRange(10, 100)
+        .visible(() -> isPatternMode())
+        .build()
+    );
+
+    private final Setting<Integer> gridSpacing = sgPatterns.add(new IntSetting.Builder()
+        .name("grid-spacing")
+        .description("Distance between grid lines in chunks.")
+        .defaultValue(8)
+        .min(1)
+        .sliderRange(1, 32)
+        .visible(() -> flightMode.get() == FlightMode.Grid)
+        .build()
+    );
+
+    private final Setting<Integer> circleSegments = sgPatterns.add(new IntSetting.Builder()
+        .name("circle-segments")
+        .description("Number of waypoints per full spiral rotation.")
+        .defaultValue(32)
+        .min(4)
+        .sliderRange(8, 128)
+        .visible(() -> flightMode.get() == FlightMode.Circle)
+        .build()
+    );
+
+    private final Setting<Integer> circleExpansion = sgPatterns.add(new IntSetting.Builder()
+        .name("circle-expansion")
+        .description("How many chunks the radius increases per rotation.")
+        .defaultValue(4)
+        .min(1)
+        .sliderRange(1, 16)
+        .visible(() -> flightMode.get() == FlightMode.Circle)
+        .build()
+    );
+
+    private final Setting<Integer> zigzagLegLength = sgPatterns.add(new IntSetting.Builder()
+        .name("zigzag-leg-length")
+        .description("Length of each zigzag leg in chunks.")
+        .defaultValue(5)
+        .min(1)
+        .sliderRange(1, 50)
+        .visible(() -> flightMode.get() == FlightMode.ZigZag)
+        .build()
+    );
+
+    private final Setting<Double> zigzagAngle = sgPatterns.add(new DoubleSetting.Builder()
+        .name("zigzag-angle")
+        .description("Turn angle at each ZigZag corner (degrees from forward).")
+        .defaultValue(45.0)
+        .min(10.0).max(80.0)
+        .sliderRange(10.0, 80.0)
+        .visible(() -> flightMode.get() == FlightMode.ZigZag)
+        .build()
+    );
+
+    // ─── Drunk Pilot Settings ────────────────────────────────────────────────────
     public final Setting<Boolean> drunkMode = sgDrunk.add(new BoolSetting.Builder()
         .name("drunk-mode")
         .description("Randomly changes facing direction.")
@@ -225,18 +301,17 @@ public class RocketPilot extends Module {
 
     private final Setting<Double> drunkIntensity = sgDrunk.add(new DoubleSetting.Builder()
         .name("intensity")
-        .description("Maximum yaw change per update.")
+        .description("Maximum yaw change per update (degrees).")
         .defaultValue(120.0)
-        .min(1.0)
-        .max(180.0)
+        .min(1.0).max(180.0)
         .sliderRange(50.0, 180.0)
         .visible(drunkMode::get)
         .build()
     );
-    
+
     private final Setting<Boolean> positiveCoordsOnly = sgDrunk.add(new BoolSetting.Builder()
         .name("positive-coords-only")
-        .description("Biases drunk mode toward whichever directions increase X and Z based on the player's current quadrant.")
+        .description("Biases heading away from origin — deeper into the player's current world quadrant.")
         .defaultValue(false)
         .visible(drunkMode::get)
         .build()
@@ -244,15 +319,14 @@ public class RocketPilot extends Module {
 
     private final Setting<Double> drunkSmoothing = sgDrunk.add(new DoubleSetting.Builder()
         .name("smoothing")
-        .description("How smoothly to rotate to the new direction (lower = smoother).")
+        .description("How smoothly to rotate to the new heading (lower = smoother).")
         .defaultValue(0.05)
-        .min(0.01)
-        .max(1.0)
+        .min(0.01).max(1.0)
         .visible(drunkMode::get)
         .build()
     );
 
-    // ─────────────────────────────────────── Flight Safety ───────────────────────────────────────
+    // ─── Flight Safety Settings ───────────────────────────────────────────────────
     private final Setting<Boolean> collisionAvoidance = sgFlightSafety.add(new BoolSetting.Builder()
         .name("collision-avoidance")
         .description("Attempts to avoid flying straight into walls.")
@@ -262,7 +336,7 @@ public class RocketPilot extends Module {
 
     private final Setting<Integer> avoidanceDistance = sgFlightSafety.add(new IntSetting.Builder()
         .name("avoidance-distance")
-        .description("How far to look ahead for obstacles.")
+        .description("How far ahead to look for obstacles (blocks).")
         .defaultValue(10)
         .min(3)
         .sliderRange(5, 20)
@@ -279,7 +353,7 @@ public class RocketPilot extends Module {
 
     private final Setting<Integer> landingHeight = sgFlightSafety.add(new IntSetting.Builder()
         .name("landing-height")
-        .description("Height above ground to trigger safe landing.")
+        .description("Height above ground to trigger safe landing (blocks).")
         .defaultValue(20)
         .min(5)
         .sliderRange(10, 50)
@@ -289,7 +363,7 @@ public class RocketPilot extends Module {
 
     private final Setting<Boolean> limitRotationSpeed = sgFlightSafety.add(new BoolSetting.Builder()
         .name("limit-rotation-speed")
-        .description("Limits how fast the module can rotate the player to bypass anti-cheat.")
+        .description("Caps rotation speed per tick to reduce anti-cheat flags.")
         .defaultValue(true)
         .build()
     );
@@ -298,8 +372,7 @@ public class RocketPilot extends Module {
         .name("max-rotation-per-tick")
         .description("Maximum degrees to rotate per tick.")
         .defaultValue(20.0)
-        .min(1.0)
-        .max(90.0)
+        .min(1.0).max(90.0)
         .sliderRange(5.0, 45.0)
         .visible(limitRotationSpeed::get)
         .build()
@@ -307,7 +380,7 @@ public class RocketPilot extends Module {
 
     public final Setting<Integer> minRocketsWarning = sgFlightSafety.add(new IntSetting.Builder()
         .name("min-rockets-warning")
-        .description("Warn when you have this many or fewer rockets left.")
+        .description("Warn when rocket count drops to this level or below.")
         .defaultValue(16)
         .min(0)
         .sliderRange(5, 64)
@@ -316,14 +389,14 @@ public class RocketPilot extends Module {
 
     private final Setting<Boolean> autoLandOnLowRockets = sgFlightSafety.add(new BoolSetting.Builder()
         .name("auto-land-on-low-rockets")
-        .description("Initiates a safe landing when rockets are critically low.")
+        .description("Initiate a safe landing when rockets are critically low.")
         .defaultValue(false)
         .build()
     );
 
     private final Setting<Integer> autoLandThreshold = sgFlightSafety.add(new IntSetting.Builder()
         .name("auto-land-threshold")
-        .description("Rocket count to trigger auto-landing.")
+        .description("Rocket count that triggers auto-landing.")
         .defaultValue(5)
         .min(0)
         .sliderRange(0, 20)
@@ -331,27 +404,19 @@ public class RocketPilot extends Module {
         .build()
     );
 
-    private final Setting<Boolean> autoPark = sgFlightSafety.add(new BoolSetting.Builder()
-        .name("auto-park")
-        .description("Automatically lands and disables the module when a suitable location is reached.")
-        .defaultValue(false)
-        .build()
-    );
-
-    // ─────────────────────────────────────── Player Safety ───────────────────────────────────────
+    // ─── Player Safety Settings ───────────────────────────────────────────────────
     private final Setting<Boolean> autoDisableOnLowHealth = sgPlayerSafety.add(new BoolSetting.Builder()
         .name("auto-disable-on-low-health")
-        .description("Automatically disables the module if health is critically low with a totem equipped.")
+        .description("Disables the module if health is critically low while a totem is equipped.")
         .defaultValue(true)
         .build()
     );
 
     private final Setting<Integer> lowHealthThreshold = sgPlayerSafety.add(new IntSetting.Builder()
         .name("low-health-threshold")
-        .description("Health level (in hearts) to trigger auto-disable.")
+        .description("Health level (hearts) to trigger auto-disable.")
         .defaultValue(3)
-        .min(1)
-        .max(10)
+        .min(1).max(10)
         .sliderRange(1, 5)
         .visible(autoDisableOnLowHealth::get)
         .build()
@@ -359,79 +424,114 @@ public class RocketPilot extends Module {
 
     private final Setting<Boolean> disconnectOnTotemPop = sgPlayerSafety.add(new BoolSetting.Builder()
         .name("disconnect-on-totem-pop")
-        .description("Automatically disconnects from the server if a totem of undying is used while this module is active.")
+        .description("Disconnect from the server if a totem of undying is consumed.")
         .defaultValue(false)
         .build()
     );
 
     private final Setting<Boolean> disconnectAfterEmergencyLanding = sgPlayerSafety.add(new BoolSetting.Builder()
         .name("disconnect-after-emergency-landing")
-        .description("If elytra is critically low and no replacement is available, performs a safe landing then disconnects.")
+        .description("If elytra is critically low and no replacement is found, land then disconnect.")
         .defaultValue(true)
         .build()
     );
 
-    // ─────────────────────────────────────── Internal state ───────────────────────────────────────
-    public long lastRocketTime = 0;
-    private boolean needsTakeoffRocket = false;
-    private boolean ascentMode = false;
-    private boolean pitch40Climbing = false;
-    private boolean pitch40Rocketing = false;
-    private long pitch40BelowMinStartTime = 0;
+    // ─── Internal State ───────────────────────────────────────────────────────────
+    public  long    lastRocketTime           = 0;
+    private boolean needsTakeoffRocket       = false;
+    private boolean ascentMode               = false;
+    private boolean pitch40Climbing          = false;
+    private boolean pitch40Rocketing         = false;
+    private long    pitch40BelowMinStartTime = -1;   // -1 = not tracking
 
-    private float targetPitch = 0;
-    private int waveTicks = 0;
-    private int drunkTimer = 0;
-    private float targetDrunkYaw = 0;
-    private int currentDrunkDuration = 0;
-    private boolean rocketsWarningSent = false;
-    private int totemPops = 0;
-    private boolean emergencyLanding = false;
-    private int takeoffTimer = 0;
+    private float   targetPitch              = 0;
+    private int     waveTicks                = 0;
+    private int     drunkTimer               = 0;
+    private float   targetDrunkYaw           = 0;
+    private int     currentDrunkDuration     = 0;
+    private boolean rocketsWarningSent       = false;
+    private int     totemPops                = 0;
+    private boolean emergencyLanding         = false;
+    private int     takeoffTimer             = 0;
 
+    // Pattern flight state
+    private boolean paused         = false;
+    private Vec3d   origin         = null;
+    private Vec3d   currentTarget  = null;
+
+    // Grid state
+    private int gridStep       = 1;
+    private int gridStepsInLeg = 0;
+    private int gridDirection  = 0;  // 0:E, 1:N, 2:W, 3:S
+
+    // ZigZag state
+    private float   zigzagCurrentYaw = 0;
+    private boolean zigzagTurnRight  = true;
+    private boolean zigzagFirstLeg   = true;
+
+    // Circle state
+    private double circleAngle = 0;
+
+    // ─── Constructor ─────────────────────────────────────────────────────────────
     public RocketPilot() {
-        super(HuntingUtilities.CATEGORY, "rocket-pilot", "Automatic elytra + rocket flight with height maintenance and auto-takeoff.");
+        super(HuntingUtilities.CATEGORY, "rocket-pilot",
+            "Automatic elytra + rocket flight with height maintenance, auto-takeoff, and pattern flight.");
     }
 
+    // ─── Utilities ───────────────────────────────────────────────────────────────
+    private boolean isPatternMode() {
+        FlightMode m = flightMode.get();
+        return m == FlightMode.Grid || m == FlightMode.ZigZag || m == FlightMode.Circle;
+    }
+
+    private void togglePause() {
+        if (!isPatternMode()) return;
+        paused = !paused;
+        info("Pattern flight %s.", paused ? "paused" : "resumed");
+    }
+
+    private void resetPatternState() {
+        paused         = false;
+        origin         = null;
+        currentTarget  = null;
+        gridStep       = 1;
+        gridStepsInLeg = 0;
+        gridDirection  = 0;
+        zigzagCurrentYaw = 0;
+        zigzagTurnRight  = true;
+        zigzagFirstLeg   = true;
+        circleAngle      = 0;
+    }
+
+    // ─── Lifecycle ────────────────────────────────────────────────────────────────
     @Override
     public void onActivate() {
-        lastRocketTime = 0;
-        needsTakeoffRocket = false;
-        waveTicks = 0;
-        drunkTimer = 0;
-        currentDrunkDuration = 0;
-        ascentMode = false;
-        pitch40Climbing = false;
-        pitch40Rocketing = false;
-        pitch40BelowMinStartTime = 0;
-        rocketsWarningSent = false;
-        emergencyLanding = false;
-        takeoffTimer = 0;
+        lastRocketTime           = 0;
+        needsTakeoffRocket       = false;
+        waveTicks                = 0;
+        drunkTimer               = 0;
+        currentDrunkDuration     = 0;
+        ascentMode               = false;
+        pitch40Climbing          = false;
+        pitch40Rocketing         = false;
+        pitch40BelowMinStartTime = -1;
+        rocketsWarningSent       = false;
+        emergencyLanding         = false;
+        takeoffTimer             = 0;
 
-        if (mc.player == null || mc.world == null) {
-            toggle();
-            return;
-        }
+        resetPatternState();
 
-        GridLock gridLock = Modules.get().get(GridLock.class);
-        if (gridLock != null && gridLock.isActive()) {
-            warning("GridLock is active. Disabling it to use RocketPilot.");
-            gridLock.toggle();
-        }
+        if (mc.player == null || mc.world == null) { toggle(); return; }
 
-        totemPops = mc.player.getStatHandler().getStat(Stats.USED, Items.TOTEM_OF_UNDYING);
-
-        if (useTargetY.get()) {
-            info("Targeting Y level of %.1f.", targetY.get());
-        } else {
-            info("Y Level Target ignored.");
-        }
-
-        targetPitch = mc.player.getPitch();
+        totemPops      = mc.player.getStatHandler().getStat(Stats.USED, Items.TOTEM_OF_UNDYING);
+        targetPitch    = mc.player.getPitch();
         targetDrunkYaw = mc.player.getYaw();
 
+        if (useTargetY.get()) info("Targeting Y level %.1f.", targetY.get());
+        else                  info("Y-level targeting disabled.");
+
         if (mc.player.isGliding()) return;
-        if (!autoTakeoff.get()) return;
+        if (!autoTakeoff.get())    return;
 
         ItemStack elytra = mc.player.getEquippedStack(EquipmentSlot.CHEST);
         if (elytra.isEmpty() || !elytra.isOf(Items.ELYTRA)) {
@@ -439,13 +539,11 @@ public class RocketPilot extends Module {
             toggle();
             return;
         }
-
         if (countFireworks() == 0) {
             error("No fireworks in inventory.");
             toggle();
             return;
         }
-
         if (!isNearGround()) {
             warning("Not on ground — auto-takeoff skipped.");
             return;
@@ -455,40 +553,42 @@ public class RocketPilot extends Module {
         mc.player.setPitch(targetPitch);
         mc.player.jump();
         needsTakeoffRocket = true;
-        info("Flying up!");
+        info("Taking off!");
     }
 
     @Override
     public void onDeactivate() {
         needsTakeoffRocket = false;
+        resetPatternState();
     }
 
+    // ─── Main Tick ────────────────────────────────────────────────────────────────
     @EventHandler
     private void onTick(TickEvent.Pre event) {
         if (mc.player == null || mc.world == null) return;
 
+        // ── Safety: totem pop disconnect ──
         if (disconnectOnTotemPop.get()) {
             int currentPops = mc.player.getStatHandler().getStat(Stats.USED, Items.TOTEM_OF_UNDYING);
             if (currentPops > totemPops) {
                 error("Totem popped! Disconnecting...");
-                if (mc.player.networkHandler != null) {
-                    mc.player.networkHandler.getConnection().disconnect(Text.literal("[RocketPilot] Disconnected on totem pop."));
-                }
-                toggle();
+                disconnect("[RocketPilot] Disconnected on totem pop.");
                 return;
             }
         }
 
+        // ── Safety: low health with totem ──
         if (autoDisableOnLowHealth.get()) {
-            boolean hasTotem = mc.player.getOffHandStack().isOf(Items.TOTEM_OF_UNDYING) || mc.player.getMainHandStack().isOf(Items.TOTEM_OF_UNDYING);
-            if (hasTotem && mc.player.getHealth() <= lowHealthThreshold.get() * 2) {
-                error("Health is critical (%.1f), disabling to prevent totem pop.", mc.player.getHealth());
+            boolean hasTotem = mc.player.getOffHandStack().isOf(Items.TOTEM_OF_UNDYING)
+                            || mc.player.getMainHandStack().isOf(Items.TOTEM_OF_UNDYING);
+            if (hasTotem && mc.player.getHealth() <= lowHealthThreshold.get() * 2f) {
+                error("Health critical (%.1f hp), disabling.", mc.player.getHealth());
                 toggle();
                 return;
             }
         }
 
-        // Check elytra
+        // ── Elytra presence check ──
         ItemStack elytra = mc.player.getEquippedStack(EquipmentSlot.CHEST);
         if (elytra.isEmpty() || !elytra.isOf(Items.ELYTRA)) {
             error("Elytra missing — disabling.");
@@ -498,7 +598,7 @@ public class RocketPilot extends Module {
 
         if (takeoffTimer > 0) takeoffTimer--;
 
-        // Check disable on land
+        // ── Land detection ──
         if (disableOnLand.get() && mc.player.isOnGround() && !needsTakeoffRocket && takeoffTimer == 0) {
             info("Landed — disabling.");
             toggle();
@@ -507,63 +607,29 @@ public class RocketPilot extends Module {
 
         replenishRockets();
 
-        // If on ground and below target Y, try to take off again.
-        if (isNearGround() && !mc.player.isGliding() && (!useTargetY.get() || mc.player.getY() < targetY.get())) {
-            if (autoTakeoff.get() && countFireworks() > 0 && !needsTakeoffRocket) {
-                targetPitch = -28.0f;
-                mc.player.setPitch(targetPitch);
-                if (mc.player.isOnGround()) mc.player.jump();
-                needsTakeoffRocket = true;
-                info("Flying up!");
-            }
+        // ── Re-takeoff if on ground and below target ──
+        if (isNearGround() && !mc.player.isGliding()
+                && (!useTargetY.get() || mc.player.getY() < targetY.get())
+                && autoTakeoff.get() && countFireworks() > 0 && !needsTakeoffRocket) {
+            targetPitch = -28.0f;
+            mc.player.setPitch(targetPitch);
+            if (mc.player.isOnGround()) mc.player.jump();
+            needsTakeoffRocket = true;
+            info("Re-launching!");
         }
 
-        // ─────────────────────────────── Auto-takeoff logic ───────────────────────────────
+        // ── Takeoff sequence ──
         if (needsTakeoffRocket) {
-            if (mc.player.isOnGround()) {
-                mc.player.jump();
-            } else if (mc.player.isGliding()) {
-                if (shouldFireRocket() && countFireworks() > 0) {
-                    fireRocket();
-                    lastRocketTime = System.currentTimeMillis();
-                }
-                needsTakeoffRocket = false;
-                takeoffTimer = 40;
-            } else if (mc.player.getVelocity().y < -0.04) {
-                // Not gliding, but falling -> try to deploy
-                if (mc.player.networkHandler != null) {
-                    mc.player.networkHandler.sendPacket(new ClientCommandC2SPacket(mc.player, ClientCommandC2SPacket.Mode.START_FALL_FLYING));
-                }
-            }
+            handleTakeoff();
             return;
         }
 
-        // ─────────────────────────────── Main flight logic ───────────────────────────────
         if (!mc.player.isGliding()) return;
 
-        Float desiredPitch = null;
-        
-        // ─────────────────────────────── Safety Checks ───────────────────────────────
-        boolean assistantHandling = false;
-        ElytraAssistant assistant = Modules.get().get(ElytraAssistant.class);
-        if (assistant != null && assistant.isAutoSwapEnabled()) {
-            assistantHandling = true;
-        }
+        // ── Elytra durability / swap ──
+        handleElytraHealth();
 
-        if (!assistantHandling) {
-            double percent = getDurabilityPercent();
-            if (percent <= 5.0) { // 5% durability threshold
-                Integer newDura = swapToFreshElytra();
-                if (newDura != null) {
-                    info("Auto-swapped elytra, durability was low.");
-                    emergencyLanding = false;
-                } else if (!emergencyLanding && disconnectAfterEmergencyLanding.get()) {
-                    emergencyLanding = true;
-                    warning("No replacement elytra found! Initiating emergency landing...");
-                }
-            }
-        }
-        
+        // ── Rocket warning ──
         int rockets = countFireworks();
         if (rockets > 0 && rockets <= minRocketsWarning.get()) {
             if (!rocketsWarningSent) {
@@ -574,244 +640,452 @@ public class RocketPilot extends Module {
             rocketsWarningSent = false;
         }
 
-        // 1. Critical Landing / Safety Overrides
-        if (autoLandOnLowRockets.get() && rockets <= autoLandThreshold.get() && mc.player.isGliding()) {
-            if (getDistanceToGround() <= landingHeight.get()) {
-                desiredPitch = MathHelper.lerp(0.1f, mc.player.getPitch(), -10.0f);
-                if (mc.player.isOnGround()) {
-                    info("Safe landing complete (Low Rockets).");
-                    toggle();
-                }
-            } else {
-                desiredPitch = MathHelper.lerp(0.05f, mc.player.getPitch(), 20.0f);
-            }
+        // ── Determine desired pitch (priority order) ──
+        Float desiredPitch = null;
+
+        // Priority 1: auto-land on low rockets
+        if (autoLandOnLowRockets.get() && rockets <= autoLandThreshold.get()) {
+            desiredPitch = handleLowRocketLanding();
         }
 
-        // ─────────────────────────────── Emergency Landing (Low Elytra, No Swap) ───────────────────────────────
+        // Priority 2: emergency landing (elytra critical, no swap)
         if (desiredPitch == null && emergencyLanding) {
-            float current = mc.player.getPitch();
-            int distToGround = getDistanceToGround();
-
-            if (mc.player.isOnGround()) {
-                info("Emergency landing complete.");
-                if (disconnectAfterEmergencyLanding.get() && mc.player.networkHandler != null) {
-                    mc.player.networkHandler.getConnection().disconnect(
-                        Text.literal("[RocketPilot] Emergency landing complete — elytra critically low, no replacement found.")
-                    );
-                }
-                toggle();
-                return;
-            }
-
-            if (distToGround <= 8) {
-                // Very close to ground — flare up sharply to bleed speed and land softly
-                desiredPitch = MathHelper.lerp(0.15f, current, -20.0f);
-            } else {
-                // Descend gradually at a shallow angle
-                desiredPitch = MathHelper.lerp(0.05f, current, 25.0f);
-            }
+            desiredPitch = handleEmergencyLanding();
+            if (desiredPitch == null) return; // module was toggled inside
         }
 
-        // ─────────────────────────────── 2. Collision Avoidance ───────────────────────────────
-        if (desiredPitch == null && collisionAvoidance.get() && mc.player.isGliding()) {
-            // Don't avoid if looking down too much, safe landing should handle it.
-            if (mc.player.getPitch() < 30) {
-                Vec3d cameraPos = mc.player.getCameraPosVec(1.0F);
-                Vec3d velocity = mc.player.getVelocity();
-                Vec3d forward = velocity.normalize();
-                
-                // Cast 3 rays: Center, Left, Right
-                Vec3d[] rays = new Vec3d[] {
-                    forward,
-                    forward.rotateY(0.5f), // ~30 degrees left
-                    forward.rotateY(-0.5f) // ~30 degrees right
-                };
-
-                boolean obstacleDetected = false;
-                for (Vec3d dir : rays) {
-                    Vec3d endPos = cameraPos.add(dir.multiply(avoidanceDistance.get()));
-                    BlockHitResult result = mc.world.raycast(new RaycastContext(cameraPos, endPos, RaycastContext.ShapeType.COLLIDER, RaycastContext.FluidHandling.NONE, mc.player));
-                    if (result.getType() == HitResult.Type.BLOCK) {
-                        obstacleDetected = true;
-                        break;
-                    }
-                }
-
-                if (obstacleDetected) {
-                    // Obstacle detected. Pull up.
-                    float currentPitch = mc.player.getPitch();
-                    // Pull up more sharply if we are going faster
-                    double speed = mc.player.getVelocity().horizontalLength();
-                    float pullUpStrength = (float) MathHelper.clamp(speed * 20, 20, 60);
-
-                    desiredPitch = MathHelper.lerp(0.3f, currentPitch, -pullUpStrength);
-
-                    // Fire a rocket to gain altitude quickly
-                    if (shouldFireRocket() && countFireworks() > 0 && mc.player.getVelocity().y < 0.2) {
-                        long now = System.currentTimeMillis();
-                        if (now - lastRocketTime >= 200) {
-                            fireRocket();
-                            lastRocketTime = now;
-                        }
-                    }
-                }
-            }
+        // Priority 3: collision avoidance
+        if (desiredPitch == null && collisionAvoidance.get()) {
+            desiredPitch = handleCollisionAvoidance();
         }
 
-        // ─────────────────────────────── 3. Safe Landing ───────────────────────────────
+        // Priority 4: safe landing near ground
         if (desiredPitch == null && safeLanding.get() && getDistanceToGround() <= landingHeight.get()) {
-            // Flare up slightly to slow down and avoid crash
             desiredPitch = MathHelper.lerp(0.1f, mc.player.getPitch(), -10.0f);
         }
 
-        // ─────────────────────────────── 4. Normal Flight Modes ───────────────────────────────
+        // Priority 5: normal flight modes
         if (desiredPitch == null) {
-            if (flightMode.get() == FlightMode.Pitch40) {
-                desiredPitch = handlePitch40Mode();
-            } else if (flightMode.get() == FlightMode.Oscillation) {
-                desiredPitch = handleOscillationMode();
-            } else {
-                handleFlightControl();
-                if (useTargetY.get()) {
-                    float currentPitch = mc.player.getPitch();
-                    float smooth = pitchSmoothing.get().floatValue();
-                    desiredPitch = currentPitch + (targetPitch - currentPitch) * smooth;
-                }
-            }
+            desiredPitch = switch (flightMode.get()) {
+                case Pitch40             -> handlePitch40Mode();
+                case Oscillation         -> handleOscillationMode();
+                case Grid, ZigZag, Circle -> handlePatternFlight();
+                default                  -> handleNormalMode();
+            };
 
-            // Drunk mode handles Yaw, so it can run alongside pitch modes
+            // Drunk mode adjusts yaw independently; runs alongside any pitch mode
             if (drunkMode.get()) {
                 double yDiff = Math.abs(mc.player.getY() - targetY.get());
-                if (yDiff <= flightTolerance.get()) {
-                    handleDrunkMode();
-                } else {
-                    targetDrunkYaw = mc.player.getYaw();
-                    drunkTimer = 0;
-                }
+                if (yDiff <= flightTolerance.get()) handleDrunkMode();
+                else { targetDrunkYaw = mc.player.getYaw(); drunkTimer = 0; }
             }
         }
 
-        // 3. Apply Pitch
-        if (desiredPitch != null) {
-            if (limitRotationSpeed.get()) {
-                float currentPitch = mc.player.getPitch();
-                float diff = desiredPitch - currentPitch;
-                float max = maxRotationPerTick.get().floatValue();
-                diff = MathHelper.clamp(diff, -max, max);
-                mc.player.setPitch(currentPitch + diff);
-            } else {
-                mc.player.setPitch(desiredPitch);
+        applyPitch(desiredPitch);
+    }
+
+    // ─── Takeoff ─────────────────────────────────────────────────────────────────
+    private void handleTakeoff() {
+        if (mc.player.isOnGround()) {
+            mc.player.jump();
+        } else if (mc.player.isGliding()) {
+            if (shouldFireRocket() && countFireworks() > 0) {
+                fireRocket();
+                lastRocketTime = System.currentTimeMillis();
+            }
+            needsTakeoffRocket = false;
+            takeoffTimer = TAKEOFF_GRACE_TICKS;
+        } else if (mc.player.getVelocity().y < -0.04 && mc.player.networkHandler != null) {
+            mc.player.networkHandler.sendPacket(
+                new ClientCommandC2SPacket(mc.player, ClientCommandC2SPacket.Mode.START_FALL_FLYING)
+            );
+        }
+    }
+
+    // ─── Elytra Health ───────────────────────────────────────────────────────────
+    private void handleElytraHealth() {
+        boolean assistantHandling = false;
+        ElytraAssistant assistant = Modules.get().get(ElytraAssistant.class);
+        if (assistant != null && assistant.isAutoSwapEnabled()) assistantHandling = true;
+
+        if (!assistantHandling && getDurabilityPercent() <= ELYTRA_LOW_PERCENT) {
+            Integer newDura = swapToFreshElytra();
+            if (newDura != null) {
+                info("Auto-swapped elytra (durability was low).");
+                emergencyLanding = false;
+            } else if (!emergencyLanding && disconnectAfterEmergencyLanding.get()) {
+                emergencyLanding = true;
+                warning("No replacement elytra found! Initiating emergency landing...");
             }
         }
     }
 
+    // ─── Low Rocket Landing ───────────────────────────────────────────────────────
+    private Float handleLowRocketLanding() {
+        if (getDistanceToGround() <= landingHeight.get()) {
+            float pitch = MathHelper.lerp(0.1f, mc.player.getPitch(), -10.0f);
+            if (mc.player.isOnGround()) {
+                info("Safe landing complete (low rockets).");
+                toggle();
+            }
+            return pitch;
+        }
+        return MathHelper.lerp(0.05f, mc.player.getPitch(), 20.0f);
+    }
+
+    // ─── Emergency Landing ────────────────────────────────────────────────────────
+    /** @return desired pitch, or null if the module was toggled inside */
+    private Float handleEmergencyLanding() {
+        if (mc.player.isOnGround()) {
+            info("Emergency landing complete.");
+            if (disconnectAfterEmergencyLanding.get()) {
+                disconnect("[RocketPilot] Emergency landing complete — elytra critically low, no replacement found.");
+            } else {
+                toggle();
+            }
+            return null;
+        }
+        float current = mc.player.getPitch();
+        return (getDistanceToGround() <= 8)
+            ? MathHelper.lerp(0.15f, current, -20.0f)
+            : MathHelper.lerp(0.05f, current,  25.0f);
+    }
+
+    // ─── Collision Avoidance ──────────────────────────────────────────────────────
+    private Float handleCollisionAvoidance() {
+        if (!mc.player.isGliding() || mc.player.getPitch() >= 30) return null;
+
+        Vec3d camPos   = mc.player.getCameraPosVec(1.0f);
+        Vec3d velocity = mc.player.getVelocity();
+        if (velocity.lengthSquared() < 0.01) return null;
+
+        Vec3d fwd    = velocity.normalize();
+        Vec3d[] rays = { fwd, fwd.rotateY(0.5f), fwd.rotateY(-0.5f) };
+
+        boolean obstacleDetected = false;
+        for (Vec3d dir : rays) {
+            BlockHitResult hit = mc.world.raycast(new RaycastContext(
+                camPos, camPos.add(dir.multiply(avoidanceDistance.get())),
+                RaycastContext.ShapeType.COLLIDER,
+                RaycastContext.FluidHandling.NONE,
+                mc.player
+            ));
+            if (hit.getType() == HitResult.Type.BLOCK) { obstacleDetected = true; break; }
+        }
+
+        if (!obstacleDetected) return null;
+
+        float currentPitch = mc.player.getPitch();
+        double speed       = mc.player.getVelocity().horizontalLength();
+        float pullUpStr    = (float) MathHelper.clamp(speed * 20, 20, 60);
+
+        if (shouldFireRocket() && countFireworks() > 0 && mc.player.getVelocity().y < 0.2) {
+            long now = System.currentTimeMillis();
+            if (now - lastRocketTime >= COLLISION_ROCKET_COOLDOWN) {
+                fireRocket();
+                lastRocketTime = now;
+            }
+        }
+        return MathHelper.lerp(0.3f, currentPitch, -pullUpStr);
+    }
+
+    // ─── Normal Mode ─────────────────────────────────────────────────────────────
+    private Float handleNormalMode() {
+        if (!useTargetY.get()) {
+            long now = System.currentTimeMillis();
+            if (now - lastRocketTime >= rocketDelay.get()
+                    && mc.player.getVelocity().y < 0.5
+                    && shouldFireRocket() && countFireworks() > 0) {
+                fireRocket();
+                lastRocketTime = now;
+            }
+            return null;
+        }
+
+        double currentY  = mc.player.getY();
+        double target    = targetY.get();
+        double tolerance = flightTolerance.get();
+        double diff      = target - currentY;
+
+        if      (diff > tolerance) ascentMode = true;
+        else if (diff <= 0)        ascentMode = false;
+
+        if (ascentMode) {
+            long now = System.currentTimeMillis();
+            if (now - lastRocketTime >= rocketDelay.get()
+                    && mc.player.getVelocity().y < 0.5
+                    && shouldFireRocket() && countFireworks() > 0) {
+                fireRocket();
+                lastRocketTime = now;
+            }
+        }
+
+        // tanh S-curve: gentle angles for small diffs, approaches ±45° for large diffs
+        float calculatedPitch;
+        if (Math.abs(diff) < 0.5) {
+            calculatedPitch = 0.0f;
+        } else {
+            calculatedPitch = (float) (-Math.tanh(diff / 10.0) * 45.0);
+            calculatedPitch = MathHelper.clamp(calculatedPitch, -45.0f, 40.0f);
+        }
+
+        targetPitch = calculatedPitch;
+        float smooth = pitchSmoothing.get().floatValue();
+        return mc.player.getPitch() + (targetPitch - mc.player.getPitch()) * smooth;
+    }
+
+    // ─── Oscillation Mode ────────────────────────────────────────────────────────
     private Float handleOscillationMode() {
         waveTicks++;
-        // Calculate sine wave: Range -40 to +40
-        double cycle = waveTicks * oscillationSpeed.get();
-        float calculatedPitch = (float) (40.0 * Math.sin(cycle));
+        float calculatedPitch = (float) (40.0 * Math.sin(waveTicks * oscillationSpeed.get()));
 
-        if (oscillationRockets.get() && countFireworks() > 0) {
-            // Check if near the peak of the upward swing (pitch approx -40)
-            if (calculatedPitch < -38.0f && shouldFireRocket()) {
-                long now = System.currentTimeMillis();
-                if (now - lastRocketTime >= oscillationRocketDelay.get()) {
-                    fireRocket();
-                    lastRocketTime = now;
-                }
+        if (oscillationRockets.get() && countFireworks() > 0 && calculatedPitch < -38.0f) {
+            long now = System.currentTimeMillis();
+            if (shouldFireRocket() && now - lastRocketTime >= oscillationRocketDelay.get()) {
+                fireRocket();
+                lastRocketTime = now;
             }
         }
         return calculatedPitch;
     }
 
+    // ─── Pitch40 Mode ────────────────────────────────────────────────────────────
     private Float handlePitch40Mode() {
-        if (mc.player == null) return null;
-
         double currentY = mc.player.getY();
-        double upperY = pitch40UpperY.get();
-        double lowerY = pitch40LowerY.get();
-        float smooth = pitch40Smoothing.get().floatValue();
+        double upperY   = pitch40UpperY.get();
+        double lowerY   = pitch40LowerY.get();
+        float  smooth   = pitch40Smoothing.get().floatValue();
 
-        // Hysteresis logic: Climb if below lower limit, stop climbing if above upper limit
-        if (currentY <= lowerY) {
-            pitch40Climbing = true;
-        } else if (currentY >= upperY) {
-            pitch40Climbing = false;
-            pitch40Rocketing = false;
-        }
+        if      (currentY <= lowerY) { pitch40Climbing = true; }
+        else if (currentY >= upperY) { pitch40Climbing = false; pitch40Rocketing = false; }
 
-        // Momentum check: if below lowerY for too long, engage rockets
         if (currentY < lowerY) {
-            if (pitch40BelowMinStartTime == 0) pitch40BelowMinStartTime = System.currentTimeMillis();
-            if (System.currentTimeMillis() - pitch40BelowMinStartTime > pitch40BelowMinDelay.get()) pitch40Rocketing = true;
+            if (pitch40BelowMinStartTime < 0) pitch40BelowMinStartTime = System.currentTimeMillis();
+            if (System.currentTimeMillis() - pitch40BelowMinStartTime > pitch40BelowMinDelay.get()) {
+                pitch40Rocketing = true;
+            }
         } else {
-            pitch40BelowMinStartTime = 0;
+            pitch40BelowMinStartTime = -1;
         }
 
-        Float pitch;
-        if (pitch40Climbing) {
-            pitch = MathHelper.lerp(smooth, mc.player.getPitch(), -40f); // Pitch up to -40 degrees
-        } else {
-            // Pitch down to 40 degrees to descend and gain speed
-            pitch = MathHelper.lerp(smooth, mc.player.getPitch(), 40f);
-        }
+        float pitch = pitch40Climbing
+            ? MathHelper.lerp(smooth, mc.player.getPitch(), -40f)
+            : MathHelper.lerp(smooth, mc.player.getPitch(),  40f);
 
         if (pitch40Rocketing) {
             long now = System.currentTimeMillis();
-            if (now - lastRocketTime >= rocketDelay.get()) {
-                if (shouldFireRocket() && countFireworks() > 0) {
-                    fireRocket();
-                    lastRocketTime = now;
-                }
+            if (now - lastRocketTime >= rocketDelay.get() && shouldFireRocket() && countFireworks() > 0) {
+                fireRocket();
+                lastRocketTime = now;
             }
         }
         return pitch;
     }
 
+    // ─── Pattern Flight ───────────────────────────────────────────────────────────
+    /**
+     * Handles Grid, ZigZag, and Circle modes.
+     * Returns a desired pitch like all other mode handlers so limitRotationSpeed
+     * and applyPitch() are respected consistently.
+     * Height maintenance uses the same tanh/target-Y logic as Normal mode.
+     */
+    private Float handlePatternFlight() {
+        if (paused) return null;
+
+        // Anchor origin on first run
+        if (origin == null) origin = mc.player.getPos();
+
+        // Initialise or advance waypoint
+        if (currentTarget == null) {
+            calculateNextTarget();
+        } else {
+            double dx = currentTarget.x - mc.player.getX();
+            double dz = currentTarget.z - mc.player.getZ();
+            int radius = waypointReachRadius.get();
+            if (dx * dx + dz * dz < (double)(radius * radius)) {
+                calculateNextTarget();
+            }
+        }
+
+        if (currentTarget == null) return null;
+
+        // ── Yaw toward waypoint ──
+        double dx = currentTarget.x - mc.player.getX();
+        double dz = currentTarget.z - mc.player.getZ();
+
+        float targetYaw  = (float) Math.toDegrees(Math.atan2(-dx, dz));
+        float currentYaw = mc.player.getYaw();
+        float diffYaw    = MathHelper.wrapDegrees(targetYaw - currentYaw);
+        float yawChange  = diffYaw * patternTurnSpeed.get().floatValue();
+
+        if (limitRotationSpeed.get()) {
+            yawChange = MathHelper.clamp(yawChange,
+                -maxRotationPerTick.get().floatValue(),
+                 maxRotationPerTick.get().floatValue());
+        }
+        mc.player.setYaw(currentYaw + yawChange);
+
+        // ── Pitch: height-hold using target-Y (same logic as Normal mode) ──
+        if (!useTargetY.get()) {
+            // No target Y: fire rockets to stay airborne, let pitch float
+            long now = System.currentTimeMillis();
+            boolean needsRocket = mc.player.getVelocity().y < -0.05
+                                || mc.player.getVelocity().horizontalLength() < 1.5;
+            if (needsRocket && now - lastRocketTime >= rocketDelay.get()
+                    && shouldFireRocket() && countFireworks() > 0) {
+                fireRocket();
+                lastRocketTime = now;
+            }
+            return null;
+        }
+
+        double diff      = targetY.get() - mc.player.getY();
+        double tolerance = flightTolerance.get();
+
+        if      (diff > tolerance) ascentMode = true;
+        else if (diff <= 0)        ascentMode = false;
+
+        if (ascentMode) {
+            long now = System.currentTimeMillis();
+            if (now - lastRocketTime >= rocketDelay.get()
+                    && mc.player.getVelocity().y < 0.5
+                    && shouldFireRocket() && countFireworks() > 0) {
+                fireRocket();
+                lastRocketTime = now;
+            }
+        }
+
+        float calculatedPitch;
+        if (Math.abs(diff) < 0.5) {
+            calculatedPitch = 0.0f;
+        } else {
+            calculatedPitch = (float) (-Math.tanh(diff / 10.0) * 45.0);
+            calculatedPitch = MathHelper.clamp(calculatedPitch, -45.0f, 40.0f);
+        }
+        float smooth = pitchSmoothing.get().floatValue();
+        return mc.player.getPitch() + (calculatedPitch - mc.player.getPitch()) * smooth;
+    }
+
+    /**
+     * Calculates the next waypoint.
+     *
+     * FIX Grid:   gridStepsInLeg incremented AFTER placing waypoint, not before.
+     *             First leg no longer immediately skips.
+     *             gridStep increments after directions 0 and 2 (not 1 and 3) so the
+     *             spiral expands correctly every two legs.
+     *
+     * FIX ZigZag: First leg flies straight (no turn). Subsequent legs alternate
+     *             2× angle left/right so coverage stays symmetric.
+     *
+     * FIX Circle: First waypoint is placed at circleAngle=0 (straight ahead), then
+     *             angle is advanced for the next call — no off-axis turn on start.
+     */
+    private void calculateNextTarget() {
+        if (origin == null) origin = mc.player.getPos();
+
+        double targetYValue = useTargetY.get() ? targetY.get() : mc.player.getY();
+        double nextX, nextZ;
+        FlightMode mode = flightMode.get();
+
+        if (mode == FlightMode.Grid) {
+            int spacing = gridSpacing.get() * 16;
+
+            if (currentTarget == null) {
+                // First leg: head South from origin
+                gridDirection  = 3;
+                gridStepsInLeg = 0;
+                Vec3d offset = getGridDirectionOffset(gridDirection, spacing);
+                nextX = origin.x + offset.x;
+                nextZ = origin.z + offset.z;
+                // Count this leg step AFTER placing the waypoint
+                gridStepsInLeg = 1;
+            } else {
+                // Check if this leg is done
+                if (gridStepsInLeg >= gridStep) {
+                    gridDirection  = (gridDirection + 1) % 4;
+                    gridStepsInLeg = 0;
+                    // Expand the spiral after completing directions 0 (E) and 2 (W)
+                    if (gridDirection == 0 || gridDirection == 2) gridStep++;
+                }
+                Vec3d offset = getGridDirectionOffset(gridDirection, spacing);
+                nextX = currentTarget.x + offset.x;
+                nextZ = currentTarget.z + offset.z;
+                gridStepsInLeg++;
+            }
+
+        } else if (mode == FlightMode.ZigZag) {
+            double legLength = zigzagLegLength.get() * 16.0;
+
+            if (currentTarget == null) {
+                // Initialise: capture player's current heading, first leg is straight
+                zigzagCurrentYaw = mc.player.getYaw();
+                zigzagTurnRight  = true;
+                zigzagFirstLeg   = true;
+            }
+
+            if (zigzagFirstLeg) {
+                // No turn on the very first leg — fly straight ahead
+                zigzagFirstLeg = false;
+            } else {
+                // Alternate left/right with the full 2× angle
+                double turnAmount = zigzagAngle.get() * 2.0;
+                zigzagCurrentYaw = MathHelper.wrapDegrees(
+                    zigzagCurrentYaw + (float)(zigzagTurnRight ? turnAmount : -turnAmount)
+                );
+                zigzagTurnRight = !zigzagTurnRight;
+            }
+
+            double radYaw    = Math.toRadians(zigzagCurrentYaw);
+            Vec3d startPoint = (currentTarget != null) ? currentTarget : origin;
+            nextX = startPoint.x + (-Math.sin(radYaw) * legLength);
+            nextZ = startPoint.z + ( Math.cos(radYaw) * legLength);
+
+        } else if (mode == FlightMode.Circle) {
+            double angleStep       = 2.0 * Math.PI / circleSegments.get();
+            double expansionBlocks = circleExpansion.get() * 16.0;
+            double b               = expansionBlocks / (2.0 * Math.PI);
+            double radius          = b * circleAngle;
+
+            // Place waypoint at current angle, then advance for the next call
+            nextX = origin.x + radius * Math.cos(circleAngle);
+            nextZ = origin.z + radius * Math.sin(circleAngle);
+            circleAngle += angleStep;
+
+        } else {
+            return;
+        }
+
+        currentTarget = new Vec3d(nextX, targetYValue, nextZ);
+    }
+
+    private Vec3d getGridDirectionOffset(int dir, int dist) {
+        return switch (dir) {
+            case 0 -> new Vec3d( dist, 0,    0);  // East  (+X)
+            case 1 -> new Vec3d(   0, 0, -dist);  // North (-Z)
+            case 2 -> new Vec3d(-dist, 0,    0);  // West  (-X)
+            case 3 -> new Vec3d(   0, 0,  dist);  // South (+Z)
+            default -> Vec3d.ZERO;
+        };
+    }
+
+    // ─── Drunk Mode ──────────────────────────────────────────────────────────────
     private void handleDrunkMode() {
         if (drunkTimer++ >= currentDrunkDuration) {
             float intensity = drunkIntensity.get().floatValue();
-            
+
             if (positiveCoordsOnly.get()) {
-                // ── Quadrant-aware "drift away from origin" heading ──
-                // Minecraft yaw convention:
-                //   0°    = South (+Z)
-                //  -90°   = East  (+X)
-                //   90°   = West  (-X)
-                //  ±180°  = North (-Z)
-                //
-                // Goal: fly AWAY from 0,0 — deeper into the current quadrant.
-                //
-                //  Q1 (X≥0, Z≥0): South-East  [-90°,   0°]   (+X and +Z)
-                //  Q2 (X<0, Z≥0): South-West  [  0°,  90°]   (-X and +Z)
-                //  Q3 (X<0, Z<0): North-West  [ 90°, 180°]   (-X and -Z)
-                //  Q4 (X≥0, Z<0): North-East  [-180°, -90°]  (+X and -Z)
-                double x = mc.player.getX();
-                double z = mc.player.getZ();
-                boolean xNeg = x < 0;
-                boolean zNeg = z < 0;
-
+                // Minecraft yaw: 0°=South(+Z), -90°=East(+X), 90°=West(-X), ±180°=North(-Z)
+                double px = mc.player.getX();
+                double pz = mc.player.getZ();
                 float minYaw, maxYaw;
-                if (!xNeg && !zNeg) {
-                    // Q1: South-East
-                    minYaw = -90.0f; maxYaw = 0.0f;
-                } else if (xNeg && !zNeg) {
-                    // Q2: South-West
-                    minYaw = 0.0f; maxYaw = 90.0f;
-                } else if (xNeg) {
-                    // Q3: North-West
-                    minYaw = 90.0f; maxYaw = 180.0f;
-                } else {
-                    // Q4: North-East
-                    minYaw = -180.0f; maxYaw = -90.0f;
-                }
-
-                // Pick a truly uniform random heading anywhere in the full 90° quadrant window.
-                // This avoids clustering near the midpoint diagonal.
-                targetDrunkYaw = minYaw + (float) (Math.random() * (maxYaw - minYaw));
+                if      (px >= 0 && pz >= 0) { minYaw = -90f; maxYaw =   0f; } // SE (+X, +Z)
+                else if (px <  0 && pz >= 0) { minYaw =   0f; maxYaw =  90f; } // SW (-X, +Z)
+                else if (px <  0)            { minYaw =  90f; maxYaw = 180f; } // NW (-X, -Z)
+                else                         { minYaw = -180f; maxYaw = -90f;} // NE (+X, -Z)
+                targetDrunkYaw = minYaw + (float)(Math.random() * (maxYaw - minYaw));
             } else {
-                float changeYaw = (float) ((Math.random() - 0.5) * 2 * intensity);
-                targetDrunkYaw = mc.player.getYaw() + changeYaw;
+                targetDrunkYaw = mc.player.getYaw()
+                    + (float)((Math.random() - 0.5) * 2.0 * intensity);
             }
 
             drunkTimer = 0;
@@ -819,74 +1093,36 @@ public class RocketPilot extends Module {
         }
 
         float currentYaw = mc.player.getYaw();
-        float diffYaw = MathHelper.wrapDegrees(targetDrunkYaw - currentYaw);
-        float change = diffYaw * drunkSmoothing.get().floatValue();
+        float diffYaw    = MathHelper.wrapDegrees(targetDrunkYaw - currentYaw);
+        float change     = diffYaw * drunkSmoothing.get().floatValue();
 
         if (limitRotationSpeed.get()) {
             float max = maxRotationPerTick.get().floatValue();
             change = MathHelper.clamp(change, -max, max);
         }
-
         mc.player.setYaw(currentYaw + change);
     }
 
-    private void handleFlightControl() {
-        double diff = 0;
-
-        if (useTargetY.get()) {
-            double currentY = mc.player.getY();
-            double target = targetY.get();
-            double tolerance = flightTolerance.get();
-            diff = target - currentY;
-
-            if (diff > tolerance) {
-                ascentMode = true;
-            } else if (diff <= 0) {
-                ascentMode = false;
-            }
+    // ─── Apply Pitch ─────────────────────────────────────────────────────────────
+    private void applyPitch(Float desiredPitch) {
+        if (desiredPitch == null) return;
+        float current = mc.player.getPitch();
+        if (limitRotationSpeed.get()) {
+            float max  = maxRotationPerTick.get().floatValue();
+            float diff = MathHelper.clamp(desiredPitch - current, -max, max);
+            mc.player.setPitch(current + diff);
         } else {
-            ascentMode = true;
-        }
-
-        // ─── ROCKET FIRING LOGIC ───
-        if (ascentMode) {
-            long now = System.currentTimeMillis();
-            long delay = rocketDelay.get();
-
-            if (now - lastRocketTime >= delay && mc.player.getVelocity().y < 0.5) {
-                if (shouldFireRocket() && countFireworks() > 0) {
-                    fireRocket();
-                    lastRocketTime = now;
-                }
-            }
-        }
-
-        // ─── IMPROVED PITCH CALCULATION ───
-        if (!useTargetY.get()) return;
-
-        float maxPitchUp = -45.0f;
-        float maxPitchDown = 40.0f;
-
-        if (Math.abs(diff) < 0.5) {
-            targetPitch = 0.0f;
-        } else {
-            double scale = 10.0;
-            float calculatedPitch = (float) (- (diff / scale) * 45.0f);
-            targetPitch = MathHelper.clamp(calculatedPitch, maxPitchUp, maxPitchDown);
+            mc.player.setPitch(desiredPitch);
         }
     }
 
+    // ─── Public Accessors ────────────────────────────────────────────────────────
     public boolean shouldFireRocket() {
         if (mc.player == null) return false;
         ItemStack elytra = mc.player.getEquippedStack(EquipmentSlot.CHEST);
         if (elytra.isEmpty() || !elytra.isOf(Items.ELYTRA)) return false;
-
-        // Don't fire rockets when looking straight up or down.
         if (Math.abs(mc.player.getPitch()) > 70) return false;
-
-        // Don't fire if moving too slowly (wasteful)
         if (!needsTakeoffRocket && mc.player.getVelocity().horizontalLength() < 0.3) return false;
-
         return elytra.getDamage() < elytra.getMaxDamage() - 1;
     }
 
@@ -894,106 +1130,82 @@ public class RocketPilot extends Module {
         if (mc.player == null) return 100.0;
         ItemStack elytra = mc.player.getEquippedStack(EquipmentSlot.CHEST);
         if (elytra.isEmpty() || !elytra.isOf(Items.ELYTRA)) return 100.0;
-        return 100.0 * (elytra.getMaxDamage() - elytra.getDamage()) / elytra.getMaxDamage();
+        return 100.0 * (elytra.getMaxDamage() - elytra.getDamage()) / (double) elytra.getMaxDamage();
     }
 
+    public boolean isEmergencyLanding() { return emergencyLanding; }
+
+    // ─── Private Helpers ─────────────────────────────────────────────────────────
     private void replenishRockets() {
-        // Check hotbar for rockets
         for (int i = 0; i < 9; i++) {
             if (mc.player.getInventory().getStack(i).isOf(Items.FIREWORK_ROCKET)) return;
         }
-
-        // Find rockets in main inventory
         int invSlot = -1;
         for (int i = 9; i < 36; i++) {
-            if (mc.player.getInventory().getStack(i).isOf(Items.FIREWORK_ROCKET)) {
-                invSlot = i;
-                break;
-            }
+            if (mc.player.getInventory().getStack(i).isOf(Items.FIREWORK_ROCKET)) { invSlot = i; break; }
         }
+        if (invSlot == -1) return;
 
-        if (invSlot != -1) {
-            int hotbarSlot = -1;
-            for (int i = 0; i < 9; i++) {
-                if (mc.player.getInventory().getStack(i).isEmpty()) {
-                    hotbarSlot = i;
-                    break;
-                }
-            }
-            if (hotbarSlot == -1) {
-                hotbarSlot = mc.player.getInventory().selectedSlot;
-            }
-            InvUtils.move().from(invSlot).toHotbar(hotbarSlot);
+        int hotbarSlot = -1;
+        for (int i = 0; i < 9; i++) {
+            if (mc.player.getInventory().getStack(i).isEmpty()) { hotbarSlot = i; break; }
         }
+        if (hotbarSlot == -1) hotbarSlot = mc.player.getInventory().selectedSlot;
+        InvUtils.move().from(invSlot).toHotbar(hotbarSlot);
     }
 
     private int countFireworks() {
         if (mc.player == null) return 0;
         int count = 0;
         for (int i = 0; i < 36; i++) {
-            ItemStack stack = mc.player.getInventory().getStack(i);
-            if (stack != null && stack.isOf(Items.FIREWORK_ROCKET)) {
-                count += stack.getCount();
-            }
+            ItemStack s = mc.player.getInventory().getStack(i);
+            if (s.isOf(Items.FIREWORK_ROCKET)) count += s.getCount();
         }
-        if (mc.player.getOffHandStack() != null && mc.player.getOffHandStack().isOf(Items.FIREWORK_ROCKET)) {
-            count += mc.player.getOffHandStack().getCount();
-        }
+        ItemStack offhand = mc.player.getOffHandStack();
+        if (offhand.isOf(Items.FIREWORK_ROCKET)) count += offhand.getCount();
         return count;
     }
 
+    /**
+     * Swaps to the highest-durability elytra in inventory.
+     * Passes raw inventory index (0–35) to InvUtils.move().from() — no slot remapping.
+     */
     private Integer swapToFreshElytra() {
-        int bestSlot = -1;
-        int bestDurability = -1;
-
+        int bestSlot = -1, bestDurability = -1;
         for (int i = 0; i < 36; i++) {
             ItemStack stack = mc.player.getInventory().getStack(i);
             if (stack.isOf(Items.ELYTRA)) {
-                int durability = stack.getMaxDamage() - stack.getDamage();
-                if (durability > bestDurability && durability > 50) {
+                int dur = stack.getMaxDamage() - stack.getDamage();
+                if (dur > bestDurability && dur > ELYTRA_MIN_SWAP_DUR) {
                     bestSlot = i;
-                    bestDurability = durability;
+                    bestDurability = dur;
                 }
             }
         }
-
-        if (bestSlot != -1) {
-            int slotId;
-            if (bestSlot < 9) {
-                slotId = 36 + bestSlot;
-            } else {
-                slotId = bestSlot;
-            }
-            InvUtils.move().from(slotId).toArmor(2);
-            return bestDurability;
-        }
-
-        return null;
+        if (bestSlot == -1) return null;
+        InvUtils.move().from(bestSlot).toArmor(2);
+        return bestDurability;
     }
 
     private boolean isNearGround() {
         if (mc.player == null || mc.world == null) return false;
         if (mc.player.isOnGround()) return true;
-
         BlockPos.Mutable pos = new BlockPos.Mutable();
         for (int i = 1; i <= 3; i++) {
             pos.set(mc.player.getX(), mc.player.getY() - i, mc.player.getZ());
-            if (mc.world.getBlockState(pos).isSolidBlock(mc.world, pos)) {
-                return true;
-            }
+            if (mc.world.getBlockState(pos).isSolidBlock(mc.world, pos)) return true;
         }
         return false;
     }
 
+    /** Starts at i=1 (one block below feet) to avoid a spurious return of 0. */
     private int getDistanceToGround() {
         if (mc.player == null || mc.world == null) return 999;
         BlockPos.Mutable pos = new BlockPos.Mutable();
         int max = landingHeight.get();
-        for (int i = 0; i <= max; i++) {
+        for (int i = 1; i <= max; i++) {
             pos.set(mc.player.getX(), mc.player.getY() - i, mc.player.getZ());
-            if (!mc.world.getBlockState(pos).isAir()) {
-                return i;
-            }
+            if (!mc.world.getBlockState(pos).isAir()) return i;
         }
         return 999;
     }
@@ -1001,32 +1213,38 @@ public class RocketPilot extends Module {
     private void fireRocket() {
         if (mc.player == null || mc.interactionManager == null) return;
 
+        int selected   = mc.player.getInventory().selectedSlot;
         int rocketSlot = -1;
-        int selected = mc.player.getInventory().selectedSlot;
 
         for (int i = 0; i < 9; i++) {
-            if (mc.player.getInventory().getStack(i).isOf(Items.FIREWORK_ROCKET)) {
-                rocketSlot = i;
-                break;
-            }
+            if (mc.player.getInventory().getStack(i).isOf(Items.FIREWORK_ROCKET)) { rocketSlot = i; break; }
         }
-
-        if (rocketSlot == -1 && mc.player.getOffHandStack().isOf(Items.FIREWORK_ROCKET)) {
-            rocketSlot = 40;
-        }
-
+        if (rocketSlot == -1 && mc.player.getOffHandStack().isOf(Items.FIREWORK_ROCKET)) rocketSlot = 40;
         if (rocketSlot == -1) return;
 
         if (rocketSlot < 9) {
             mc.player.getInventory().selectedSlot = rocketSlot;
-            mc.interactionManager.interactItem(mc.player, Hand.MAIN_HAND);
+            if (silentRockets.get()) {
+                mc.player.networkHandler.sendPacket(
+                    new net.minecraft.network.packet.c2s.play.PlayerInteractItemC2SPacket(
+                        Hand.MAIN_HAND, 0,
+                        mc.player.getYaw(), mc.player.getPitch()
+                    )
+                );
+            } else {
+                mc.interactionManager.interactItem(mc.player, Hand.MAIN_HAND);
+            }
             mc.player.getInventory().selectedSlot = selected;
         } else {
             mc.interactionManager.interactItem(mc.player, Hand.OFF_HAND);
         }
     }
 
-    public boolean isEmergencyLanding() {
-        return emergencyLanding;
+    /** Disconnects from the server with the given reason and toggles the module. */
+    private void disconnect(String reason) {
+        if (mc.player != null && mc.player.networkHandler != null) {
+            mc.player.networkHandler.getConnection().disconnect(Text.literal(reason));
+        }
+        toggle();
     }
 }

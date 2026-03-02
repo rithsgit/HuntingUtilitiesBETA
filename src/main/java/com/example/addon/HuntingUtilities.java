@@ -3,7 +3,6 @@ package com.example.addon;
 import com.example.addon.modules.DungeonAssistant;
 import com.example.addon.modules.ElytraAssistant;
 import com.example.addon.modules.Graveyard;
-import com.example.addon.modules.GridLock;
 import com.example.addon.modules.Inventory101;
 import com.example.addon.modules.LavaMarker;
 import com.example.addon.modules.LootLens;
@@ -36,7 +35,6 @@ public class HuntingUtilities extends MeteorAddon {
         modules.add(new DungeonAssistant());
         modules.add(new ElytraAssistant());
         modules.add(new Graveyard());
-        modules.add(new GridLock());
         modules.add(new Inventory101());
         modules.add(new LavaMarker());
         modules.add(new LootLens());

@@ -13,20 +13,22 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 @Mixin(ClientPlayerInteractionManager.class)
 public class ObsidianFistMixin {
+
     @Shadow private int blockBreakingCooldown;
 
+    /**
+     * Zeroes the block-breaking cooldown every tick that ObsidianFist is active.
+     *
+     * updateBlockBreakingProgress() returns early if blockBreakingCooldown > 0,
+     * which would otherwise limit break attempts to once every few ticks.
+     * Injecting at HEAD means we zero it before that guard is read.
+     *
+     * attackBlock() does NOT check this cooldown, so no inject is needed there.
+     */
     @Inject(method = "updateBlockBreakingProgress", at = @At("HEAD"))
     private void onUpdateBlockBreakingProgress(BlockPos pos, Direction direction, CallbackInfoReturnable<Boolean> cir) {
-        ObsidianFist obsidianFist = Modules.get().get(ObsidianFist.class);
-        if (obsidianFist != null && obsidianFist.isActive()) {
-            this.blockBreakingCooldown = 0;
-        }
-    }
-
-    @Inject(method = "attackBlock", at = @At("HEAD"))
-    private void onAttackBlock(BlockPos pos, Direction direction, CallbackInfoReturnable<Boolean> cir) {
-        ObsidianFist obsidianFist = Modules.get().get(ObsidianFist.class);
-        if (obsidianFist != null && obsidianFist.isActive()) {
+        ObsidianFist module = Modules.get().get(ObsidianFist.class);
+        if (module != null && module.isActive()) {
             this.blockBreakingCooldown = 0;
         }
     }
