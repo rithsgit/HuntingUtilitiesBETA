@@ -53,35 +53,33 @@ import net.minecraft.world.chunk.WorldChunk;
 public class LootLens extends Module {
 
     // ─────────────────────────── State ───────────────────────────
-    private final Map<BlockPos, StorageType> containers       = new HashMap<>();
-    /**
-     * Positions whose inventories have been read by the player opening them.
-     * This is the ONLY place that should gate "has the player seen inside this container".
-     */
-    private final Set<BlockPos> inventoryCheckedContainers = new HashSet<>();
-    /**
-     * Positions already registered in `containers` by the block entity scanner.
-     * Used only to avoid redundant put() calls in scanBlockEntities — never used
-     * to decide whether to scan an inventory.
-     */
-    private final Set<BlockPos> scannedByScanner          = new HashSet<>();
-    private final Set<BlockPos>              shulkerContainers = new HashSet<>();
-    private final Map<BlockPos, Integer>     shulkerCounts     = new HashMap<>();
-    private final Map<BlockPos, Integer>     stackedMinecartCounts = new HashMap<>();
-    private final Map<Vec3d, ItemFrameEntity>      itemFrameEntities     = new HashMap<>();
-    private final Map<Vec3d, GlowItemFrameEntity>  glowItemFrameEntities = new HashMap<>();
-    private final Set<Vec3d>                 notifiedItemFrames = new HashSet<>();
 
-    /** The container the player most recently opened manually. Cleared on screen close. */
-    private BlockPos lastOpenedContainer = null;
-    /** True while a HandledScreen is open so we only scan once on open, not every tick. */
+    private final Map<BlockPos, StorageType> containers                = new HashMap<>();
+    private final Set<BlockPos>              inventoryCheckedContainers = new HashSet<>();
+    private final Set<BlockPos>              scannedByScanner           = new HashSet<>();
+    private final Set<BlockPos>              shulkerContainers          = new HashSet<>();
+    private final Map<BlockPos, Integer>     shulkerCounts              = new HashMap<>();
+    private final Map<BlockPos, Integer>     stackedMinecartCounts      = new HashMap<>();
+    private final Map<Vec3d, ItemFrameEntity>     itemFrameEntities     = new HashMap<>();
+    private final Map<Vec3d, GlowItemFrameEntity> glowItemFrameEntities = new HashMap<>();
+    private final Set<Vec3d>                 notifiedItemFrames         = new HashSet<>();
+
+    private BlockPos lastOpenedContainer    = null;
     private boolean  screenInventoryChecked = false;
 
     private String lastDimension = "";
     private static final int DIMENSION_CHANGE_COOLDOWN_TICKS = 40;
     private int dimensionChangeCooldown = 0;
 
+    /**
+     * FIX: cleanupDistantContainers was running every tick. Now throttled to
+     * every CLEANUP_INTERVAL ticks to reduce per-tick overhead.
+     */
+    private static final int CLEANUP_INTERVAL = 40;
+    private int cleanupTimer = 0;
+
     // ─────────────────────────── Setting Groups ───────────────────────────
+
     private final SettingGroup sgGeneral    = settings.getDefaultGroup();
     private final SettingGroup sgStorage    = settings.createGroup("Storage");
     private final SettingGroup sgUtility    = settings.createGroup("Utility");
@@ -147,8 +145,6 @@ public class LootLens extends Module {
     );
 
     // ── Storage ──
-    // FIX #6/#7: All storage type settings now have onChanged handlers to remove
-    // already-tracked entries when a type is toggled off mid-session.
     private final Setting<Boolean> scanChests = sgStorage.add(new BoolSetting.Builder()
         .name("chests")
         .description("Detect chests.")
@@ -158,7 +154,6 @@ public class LootLens extends Module {
     );
     private final Setting<SettingColor> chestColor = sgStorage.add(new ColorSetting.Builder()
         .name("chest-color")
-        .description("Chest highlight color.")
         .defaultValue(new SettingColor(255, 215, 0, 38))
         .visible(scanChests::get)
         .build()
@@ -173,7 +168,6 @@ public class LootLens extends Module {
     );
     private final Setting<SettingColor> trappedChestColor = sgStorage.add(new ColorSetting.Builder()
         .name("trapped-chest-color")
-        .description("Trapped chest highlight color.")
         .defaultValue(new SettingColor(255, 69, 0, 38))
         .visible(scanTrappedChests::get)
         .build()
@@ -188,9 +182,23 @@ public class LootLens extends Module {
     );
     private final Setting<SettingColor> barrelColor = sgStorage.add(new ColorSetting.Builder()
         .name("barrel-color")
-        .description("Barrel highlight color.")
         .defaultValue(new SettingColor(139, 69, 19, 38))
         .visible(scanBarrels::get)
+        .build()
+    );
+
+    // FIX: ShulkerBoxBlock placed in the world is now a tracked StorageType.
+    private final Setting<Boolean> scanShulkerBoxes = sgStorage.add(new BoolSetting.Builder()
+        .name("shulker-boxes")
+        .description("Detect shulker boxes placed in the world.")
+        .defaultValue(true)
+        .onChanged(v -> { if (!v) removeContainersOfType(StorageType.SHULKER_BOX); })
+        .build()
+    );
+    private final Setting<SettingColor> shulkerBoxColor = sgStorage.add(new ColorSetting.Builder()
+        .name("shulker-box-color")
+        .defaultValue(new SettingColor(160, 32, 240, 80))
+        .visible(scanShulkerBoxes::get)
         .build()
     );
 
@@ -203,7 +211,6 @@ public class LootLens extends Module {
     );
     private final Setting<SettingColor> chestMinecartColor = sgStorage.add(new ColorSetting.Builder()
         .name("chest-minecart-color")
-        .description("Chest minecart highlight color.")
         .defaultValue(new SettingColor(255, 180, 0, 38))
         .visible(scanChestMinecarts::get)
         .build()
@@ -219,7 +226,6 @@ public class LootLens extends Module {
 
     private final Setting<SettingColor> stackedMinecartColor = sgStorage.add(new ColorSetting.Builder()
         .name("stacked-minecart-color")
-        .description("Highlight color for stacked chest minecarts.")
         .defaultValue(new SettingColor(255, 0, 255, 100))
         .visible(() -> scanChestMinecarts.get() && highlightStacked.get())
         .build()
@@ -333,7 +339,6 @@ public class LootLens extends Module {
     );
     private final Setting<SettingColor> itemFrameColor = sgDecorative.add(new ColorSetting.Builder()
         .name("item-frame-color")
-        .description("Item frame highlight color (only shown when a tracked item is inside).")
         .defaultValue(new SettingColor(255, 100, 255, 150))
         .visible(scanItemFrames::get)
         .build()
@@ -373,8 +378,9 @@ public class LootLens extends Module {
         itemFrameEntities.clear();
         glowItemFrameEntities.clear();
         notifiedItemFrames.clear();
-        lastOpenedContainer = null;
+        lastOpenedContainer    = null;
         screenInventoryChecked = false;
+        cleanupTimer           = 0;
     }
 
     // ─────────────────────────── Tick Logic ───────────────────────────
@@ -395,7 +401,6 @@ public class LootLens extends Module {
         try {
             String currDim = mc.world.getRegistryKey().getValue().toString();
             if (!currDim.equals(lastDimension)) {
-                // FIX #2: Use a real cooldown so we don't re-scan in an inconsistent state
                 dimensionChangeCooldown = DIMENSION_CHANGE_COOLDOWN_TICKS;
                 lastDimension = currDim;
                 clearAllState();
@@ -403,7 +408,12 @@ public class LootLens extends Module {
             }
         } catch (Exception ignored) { return; }
 
-        cleanupDistantContainers();
+        // FIX: Cleanup now throttled — only runs every CLEANUP_INTERVAL ticks.
+        if (++cleanupTimer >= CLEANUP_INTERVAL) {
+            cleanupTimer = 0;
+            cleanupDistantContainers();
+        }
+
         scanChestMinecarts();
         scanItemFrames();
 
@@ -411,35 +421,24 @@ public class LootLens extends Module {
         scanBlockEntities(currentPos.getX() >> 4, currentPos.getZ() >> 4);
     }
 
-    /**
-     * FIX #5: Screen inventory is now only checked ONCE per open event, not on
-     * every tick. `screenInventoryChecked` is set to true after the first scan
-     * and cleared when the screen closes.
-     */
     @EventHandler
     private void onTickPost(TickEvent.Post event) {
         if (mc.player == null || mc.world == null) return;
 
-        // FIX #9: Only process HandledScreens that are NOT the player's own inventory,
-        // and only when lastOpenedContainer is set (i.e. the player opened a block container).
         if (mc.currentScreen instanceof HandledScreen<?>
                 && !(mc.currentScreen instanceof InventoryScreen)
                 && lastOpenedContainer != null
                 && !screenInventoryChecked) {
 
             HandledScreen<?> screen = (HandledScreen<?>) mc.currentScreen;
-            // Gate on containers (registered by scanner) OR shulkerContainers (already known good).
-            // Intentionally NOT gated on inventoryCheckedContainers so every open gets a fresh read.
             if (containers.containsKey(lastOpenedContainer) || shulkerContainers.contains(lastOpenedContainer)) {
                 checkScreenInventoryForShulkers(screen);
                 screenInventoryChecked = true;
             }
         }
 
-        // FIX #9: Clear lastOpenedContainer when the screen closes so stale data
-        // doesn't bleed into the next screen open.
         if (mc.currentScreen == null && lastOpenedContainer != null) {
-            lastOpenedContainer = null;
+            lastOpenedContainer    = null;
             screenInventoryChecked = false;
         }
     }
@@ -450,7 +449,6 @@ public class LootLens extends Module {
     private void onOpenScreen(OpenScreenEvent event) {
         if (mc.player == null || mc.world == null) return;
 
-        // Reset the per-screen check flag whenever a new screen opens
         screenInventoryChecked = false;
 
         if (event.screen instanceof InventoryScreen) return;
@@ -461,18 +459,37 @@ public class LootLens extends Module {
         }
     }
 
+    // ─────────────────────────── Mixin-facing API ───────────────────────────
+
+    /**
+     * Called by LootLensInteractMixin — records the block the player clicked
+     * before the server responds with an OpenScreen packet.
+     */
+    public void setLastInteractedPos(BlockPos pos) {
+        lastOpenedContainer    = pos;
+        screenInventoryChecked = false;
+    }
+
+    /**
+     * Called by LootLensMixin on OpenScreenS2CPacket arrival — confirms that
+     * a screen open followed the interaction and resets the per-screen flag.
+     */
+    public void onOpenScreenPacket() {
+        screenInventoryChecked = false;
+    }
+
     // ─────────────────────────── Container Logic ───────────────────────────
 
     private void checkScreenInventoryForShulkers(HandledScreen<?> screen) {
         if (lastOpenedContainer == null) return;
 
-        ScreenHandler handler = screen.getScreenHandler();
-        int playerInventoryStart = handler.slots.size() - 36;
-        int shulkerCount = 0;
-        boolean previouslyHadShulker = shulkerContainers.contains(lastOpenedContainer);
+        ScreenHandler handler         = screen.getScreenHandler();
+        int playerInventoryStart      = handler.slots.size() - 36;
+        int shulkerCount              = 0;
+        boolean previouslyHadShulker  = shulkerContainers.contains(lastOpenedContainer);
 
         for (int i = 0; i < playerInventoryStart; i++) {
-            Slot slot = handler.slots.get(i);
+            Slot      slot  = handler.slots.get(i);
             ItemStack stack = slot.getStack();
             if (stack.isEmpty()) continue;
 
@@ -482,18 +499,14 @@ public class LootLens extends Module {
             }
         }
 
-        // FIX #4: Look up the partner using the correct ChestBlock direction API,
-        // then keep both halves in sync atomically every time we get a fresh scan.
         BlockPos adjacentChest = findAdjacentChest(lastOpenedContainer, false);
 
-        // Mark both halves as inventory-checked (player has seen inside)
         inventoryCheckedContainers.add(lastOpenedContainer);
         if (adjacentChest != null) inventoryCheckedContainers.add(adjacentChest);
 
         if (shulkerCount > 0) {
             shulkerContainers.add(lastOpenedContainer);
             shulkerCounts.put(lastOpenedContainer, shulkerCount);
-            // Sync partner so highlight and count are always consistent
             if (adjacentChest != null) {
                 shulkerContainers.add(adjacentChest);
                 shulkerCounts.put(adjacentChest, shulkerCount);
@@ -504,7 +517,6 @@ public class LootLens extends Module {
                 info("§a%d %s found!", shulkerCount, shulkerCount == 1 ? "item" : "items");
             }
         } else {
-            // Container is empty of tracked items — remove highlight from both halves
             containers.remove(lastOpenedContainer);
             shulkerContainers.remove(lastOpenedContainer);
             shulkerCounts.remove(lastOpenedContainer);
@@ -522,27 +534,17 @@ public class LootLens extends Module {
 
     // ─────────────────────────── Scanning ───────────────────────────
 
-    /**
-     * FIX #1: Chunk loop now guards with the same circular `dx²+dz² ≤ chunkRange²`
-     * used elsewhere, removing the off-by-one overreach from the original code.
-     *
-     * FIX #6: The `containers.containsKey` early-out is removed so that entries
-     * can be re-evaluated if their owning setting is later toggled back on.
-     * The guard is now: skip only if already checked AND not a shulker container
-     * (shulker containers are kept in view indefinitely until opened/emptied).
-     */
     private void scanBlockEntities(int centerChunkX, int centerChunkZ) {
-        int rangeBlocks = range.get();
-        int chunkRange  = (rangeBlocks >> 4) + 1;
+        int rangeBlocks  = range.get();
+        int chunkRange   = (rangeBlocks >> 4) + 1;
         int chunkRangeSq = chunkRange * chunkRange;
-        int maxDistSq   = rangeBlocks * rangeBlocks;
+        int maxDistSq    = rangeBlocks * rangeBlocks;
         BlockPos playerPos = mc.player.getBlockPos();
 
         for (int cx = centerChunkX - chunkRange; cx <= centerChunkX + chunkRange; cx++) {
             for (int cz = centerChunkZ - chunkRange; cz <= centerChunkZ + chunkRange; cz++) {
                 int dx = cx - centerChunkX;
                 int dz = cz - centerChunkZ;
-                // FIX #1: guard against chunkRangeSq, not (chunkRange+1)²
                 if (dx * dx + dz * dz > chunkRangeSq) continue;
 
                 WorldChunk chunk = mc.world.getChunkManager().getChunk(cx, cz, ChunkStatus.FULL, false);
@@ -551,8 +553,6 @@ public class LootLens extends Module {
                 for (BlockEntity be : chunk.getBlockEntities().values()) {
                     BlockPos pos = be.getPos();
                     if (pos.getSquaredDistance(playerPos) > maxDistSq) continue;
-                    // Skip positions already registered by the scanner — the player-open
-                    // path (inventoryCheckedContainers) is intentionally not consulted here.
                     if (scannedByScanner.contains(pos) && !shulkerContainers.contains(pos)) continue;
 
                     Block block = mc.world.getBlockState(pos).getBlock();
@@ -567,21 +567,22 @@ public class LootLens extends Module {
     }
 
     /**
-     * Classifies a block into a StorageType respecting the current toggle settings.
-     * Returns null if the block isn't tracked or its setting is off.
+     * FIX: ShulkerBoxBlock placed in the world is now classified as SHULKER_BOX.
      */
     private StorageType classifyBlock(Block block) {
-        if (block == Blocks.CHEST            && scanChests.get())        return StorageType.CHEST;
-        if (block == Blocks.TRAPPED_CHEST    && scanTrappedChests.get()) return StorageType.TRAPPED_CHEST;
-        if (block == Blocks.BARREL           && scanBarrels.get())       return StorageType.BARREL;
-        if (block == Blocks.DISPENSER        && scanDispensers.get())    return StorageType.DISPENSER;
-        if (block == Blocks.DROPPER          && scanDroppers.get())      return StorageType.DROPPER;
-        if (block == Blocks.HOPPER           && scanHoppers.get())       return StorageType.HOPPER;
-        if (block == Blocks.BREWING_STAND    && scanBrewingStands.get()) return StorageType.BREWING_STAND;
-        if (block == Blocks.CRAFTER          && scanCrafters.get())      return StorageType.CRAFTER;
-        if (block == Blocks.DECORATED_POT    && scanDecoratedPots.get()) return StorageType.DECORATED_POT;
-        if (scanFurnaces.get() && (block == Blocks.FURNACE || block == Blocks.BLAST_FURNACE || block == Blocks.SMOKER))
-            return StorageType.FURNACE;
+        if (block == Blocks.CHEST             && scanChests.get())        return StorageType.CHEST;
+        if (block == Blocks.TRAPPED_CHEST     && scanTrappedChests.get()) return StorageType.TRAPPED_CHEST;
+        if (block == Blocks.BARREL            && scanBarrels.get())       return StorageType.BARREL;
+        if (block == Blocks.DISPENSER         && scanDispensers.get())    return StorageType.DISPENSER;
+        if (block == Blocks.DROPPER           && scanDroppers.get())      return StorageType.DROPPER;
+        if (block == Blocks.HOPPER            && scanHoppers.get())       return StorageType.HOPPER;
+        if (block == Blocks.BREWING_STAND     && scanBrewingStands.get()) return StorageType.BREWING_STAND;
+        if (block == Blocks.CRAFTER           && scanCrafters.get())      return StorageType.CRAFTER;
+        if (block == Blocks.DECORATED_POT     && scanDecoratedPots.get()) return StorageType.DECORATED_POT;
+        if (block instanceof ShulkerBoxBlock  && scanShulkerBoxes.get())  return StorageType.SHULKER_BOX;
+        if (scanFurnaces.get() && (block == Blocks.FURNACE
+                || block == Blocks.BLAST_FURNACE
+                || block == Blocks.SMOKER))                                return StorageType.FURNACE;
         return null;
     }
 
@@ -596,7 +597,8 @@ public class LootLens extends Module {
         );
 
         Map<BlockPos, Integer> minecartCountMap = new HashMap<>();
-        for (ChestMinecartEntity minecart : mc.world.getEntitiesByClass(ChestMinecartEntity.class, searchBox, entity -> true)) {
+        for (ChestMinecartEntity minecart : mc.world.getEntitiesByClass(
+                ChestMinecartEntity.class, searchBox, entity -> true)) {
             BlockPos pos = minecart.getBlockPos();
             minecartCountMap.put(pos, minecartCountMap.getOrDefault(pos, 0) + 1);
             containers.putIfAbsent(pos, StorageType.CHEST_MINECART);
@@ -605,7 +607,7 @@ public class LootLens extends Module {
         stackedMinecartCounts.clear();
         stackedMinecartCounts.putAll(minecartCountMap);
 
-        // Remove minecart entries that are no longer present
+        // FIX: Ghost minecart positions removed when no longer present.
         containers.entrySet().removeIf(entry -> {
             if (entry.getValue() != StorageType.CHEST_MINECART) return false;
             BlockPos pos = entry.getKey();
@@ -619,6 +621,10 @@ public class LootLens extends Module {
         });
     }
 
+    /**
+     * FIX: Item frame maps are now diffed rather than cleared and rebuilt from
+     * scratch every tick. Only entries that are no longer in the world are removed.
+     */
     private void scanItemFrames() {
         if (!scanItemFrames.get()) return;
 
@@ -629,18 +635,21 @@ public class LootLens extends Module {
             playerPos.getX() + scanRange, playerPos.getY() + scanRange, playerPos.getZ() + scanRange
         );
 
-        itemFrameEntities.clear();
-        glowItemFrameEntities.clear();
+        Set<Vec3d> currentFramePositions = new HashSet<>();
 
-        for (ItemFrameEntity frame : mc.world.getEntitiesByClass(ItemFrameEntity.class, searchBox, entity -> true)) {
+        for (ItemFrameEntity frame : mc.world.getEntitiesByClass(
+                ItemFrameEntity.class, searchBox, entity -> true)) {
             ItemStack heldStack = frame.getHeldItemStack();
             if (heldStack.isEmpty()) continue;
 
-            boolean isShulker = heldStack.getItem() instanceof BlockItem bi && bi.getBlock() instanceof ShulkerBoxBlock;
+            boolean isShulker = heldStack.getItem() instanceof BlockItem bi
+                && bi.getBlock() instanceof ShulkerBoxBlock;
             boolean isCustom  = customItems.get().contains(heldStack.getItem());
             if (!isShulker && !isCustom) continue;
 
             Vec3d pos = frame.getPos();
+            currentFramePositions.add(pos);
+
             if (frame instanceof GlowItemFrameEntity glow) {
                 glowItemFrameEntities.put(pos, glow);
             } else {
@@ -654,23 +663,15 @@ public class LootLens extends Module {
             }
         }
 
+        // Remove stale entries that are no longer in range or no longer valid.
+        itemFrameEntities.entrySet().removeIf(e -> !currentFramePositions.contains(e.getKey()));
+        glowItemFrameEntities.entrySet().removeIf(e -> !currentFramePositions.contains(e.getKey()));
         notifiedItemFrames.removeIf(pos ->
             !itemFrameEntities.containsKey(pos) && !glowItemFrameEntities.containsKey(pos));
     }
 
     // ─────────────────────────── Double Chest ───────────────────────────
 
-    /**
-     * Uses ChestBlock's CHEST_TYPE and FACING blockstate properties to
-     * deterministically find the other half of a double chest.
-     *
-     * The `checkContainers` parameter controls whether the partner must already
-     * be registered in `containers` (used by the renderer) or just needs to
-     * exist as a valid block (used when syncing shulker state).
-     *
-     * FIX #3: Result is cached per render frame via the `renderedDoubleChests`
-     * set in onRender, avoiding repeated blockstate lookups per chest per tick.
-     */
     private BlockPos findAdjacentChest(BlockPos pos, boolean checkContainers) {
         if (mc.world == null) return null;
 
@@ -681,12 +682,12 @@ public class LootLens extends Module {
             ChestType chestType = state.get(ChestBlock.CHEST_TYPE);
             if (chestType == ChestType.SINGLE) return null;
 
-            Direction facing = state.get(ChestBlock.FACING);
+            Direction facing      = state.get(ChestBlock.FACING);
             Direction neighborDir = chestType == ChestType.LEFT
                 ? facing.rotateYClockwise()
                 : facing.rotateYCounterclockwise();
 
-            BlockPos neighborPos = pos.offset(neighborDir);
+            BlockPos   neighborPos   = pos.offset(neighborDir);
             BlockState neighborState = mc.world.getBlockState(neighborPos);
 
             if (!(neighborState.getBlock() instanceof ChestBlock)) return null;
@@ -694,10 +695,9 @@ public class LootLens extends Module {
             ChestType neighborType   = neighborState.get(ChestBlock.CHEST_TYPE);
             Direction neighborFacing = neighborState.get(ChestBlock.FACING);
 
-            // Valid partner: same facing, opposite chest type (LEFT↔RIGHT), not SINGLE
-            if (neighborFacing != facing) return null;
-            if (neighborType == ChestType.SINGLE) return null;
-            if (neighborType == chestType) return null; // both same side — malformed
+            if (neighborFacing != facing)          return null;
+            if (neighborType == ChestType.SINGLE)  return null;
+            if (neighborType == chestType)         return null;
 
             if (checkContainers && !containers.containsKey(neighborPos)) return null;
 
@@ -725,9 +725,9 @@ public class LootLens extends Module {
     private void cleanupDistantContainers() {
         if (mc.player == null) return;
 
-        BlockPos playerPos = mc.player.getBlockPos();
-        int cleanupRange   = (int) (range.get() * 1.5);
-        int cleanupRangeSq = cleanupRange * cleanupRange;
+        BlockPos playerPos     = mc.player.getBlockPos();
+        int cleanupRange       = (int) (range.get() * 1.5);
+        int cleanupRangeSq     = cleanupRange * cleanupRange;
 
         containers.entrySet().removeIf(entry -> {
             if (entry.getKey().getSquaredDistance(playerPos) <= cleanupRangeSq) return false;
@@ -746,10 +746,8 @@ public class LootLens extends Module {
     private void onRender(Render3DEvent event) {
         if (mc.player == null || mc.world == null) return;
 
-        ShapeMode mode = shapeMode.get();
-        Set<BlockPos> toRemove           = new HashSet<>();
-        // FIX #3: Track which positions were already covered as a double chest partner
-        // this frame so we never draw both halves separately.
+        ShapeMode    mode               = shapeMode.get();
+        Set<BlockPos> toRemove          = new HashSet<>();
         Set<BlockPos> renderedDoubleChests = new HashSet<>();
 
         renderItemFrames(event);
@@ -778,8 +776,6 @@ public class LootLens extends Module {
                     continue;
                 }
 
-                // FIX #3: findAdjacentChest called once per chest per frame here,
-                // result used immediately for the render box and partner exclusion.
                 BlockPos adjacentPos = findAdjacentChest(pos, true);
                 if (adjacentPos != null) {
                     renderBox = createPaddedDoubleChestBox(pos, adjacentPos);
@@ -793,19 +789,14 @@ public class LootLens extends Module {
             if (shulkerContainers.contains(pos)) {
                 color = shulkerFoundColor.get();
                 event.renderer.box(renderBox, color, color, ShapeMode.Both, 0);
-
-                if (showBeam.get()) {
-                    renderBeam(event, renderBox, color);
-                }
+                if (showBeam.get()) renderBeam(event, renderBox, color);
             } else {
                 boolean isStacked = type == StorageType.CHEST_MINECART
                     && highlightStacked.get()
                     && stackedMinecartCounts.getOrDefault(pos, 0) >= 2;
 
                 color = isStacked ? stackedMinecartColor.get() : getColor(type);
-                if (color != null) {
-                    event.renderer.box(renderBox, color, color, mode, 0);
-                }
+                if (color != null) event.renderer.box(renderBox, color, color, mode, 0);
             }
         }
 
@@ -820,39 +811,34 @@ public class LootLens extends Module {
         }
     }
 
-    /**
-     * FIX #8: Beam now uses world height bounds instead of a hardcoded +256,
-     * so it's correct regardless of world type or dimension.
-     */
     private void renderBeam(Render3DEvent event, Box anchorBox, SettingColor color) {
-        double beamSize = beamWidth.get() / 100.0;
-        double centerX  = (anchorBox.minX + anchorBox.maxX) / 2.0;
-        double centerZ  = (anchorBox.minZ + anchorBox.maxZ) / 2.0;
-        int worldBottom = mc.world.getBottomY();
-        int worldTop    = worldBottom + mc.world.getHeight();
+        double beamSize  = beamWidth.get() / 100.0;
+        double centerX   = (anchorBox.minX + anchorBox.maxX) / 2.0;
+        double centerZ   = (anchorBox.minZ + anchorBox.maxZ) / 2.0;
+        int    worldBot  = mc.world.getBottomY();
+        int    worldTop  = worldBot + mc.world.getHeight();
 
         Box beamBox = new Box(
-            centerX - beamSize, worldBottom, centerZ - beamSize,
-            centerX + beamSize, worldTop,    centerZ + beamSize
+            centerX - beamSize, worldBot, centerZ - beamSize,
+            centerX + beamSize, worldTop, centerZ + beamSize
         );
         event.renderer.box(beamBox, color, color, ShapeMode.Both, 0);
     }
 
     private void renderItemFrames(Render3DEvent event) {
-        SettingColor color   = itemFrameColor.get();
+        SettingColor color    = itemFrameColor.get();
         double       beamSize = beamWidth.get() / 100.0;
-        int worldBottom = mc.world.getBottomY();
-        int worldTop    = worldBottom + mc.world.getHeight();
+        int worldBot = mc.world.getBottomY();
+        int worldTop = worldBot + mc.world.getHeight();
 
         for (ItemFrameEntity frame : itemFrameEntities.values()) {
             if (frame == null || frame.isRemoved()) continue;
             event.renderer.box(frame.getBoundingBox(), color, color, ShapeMode.Both, 0);
             if (showBeam.get()) {
                 Vec3d pos = frame.getPos();
-                // FIX #8: Use world height bounds
                 event.renderer.box(
-                    new Box(pos.x - beamSize, worldBottom, pos.z - beamSize,
-                            pos.x + beamSize, worldTop,    pos.z + beamSize),
+                    new Box(pos.x - beamSize, worldBot, pos.z - beamSize,
+                            pos.x + beamSize, worldTop, pos.z + beamSize),
                     color, color, ShapeMode.Both, 0);
             }
         }
@@ -863,8 +849,8 @@ public class LootLens extends Module {
             if (showBeam.get()) {
                 Vec3d pos = frame.getPos();
                 event.renderer.box(
-                    new Box(pos.x - beamSize, worldBottom, pos.z - beamSize,
-                            pos.x + beamSize, worldTop,    pos.z + beamSize),
+                    new Box(pos.x - beamSize, worldBot, pos.z - beamSize,
+                            pos.x + beamSize, worldTop, pos.z + beamSize),
                     color, color, ShapeMode.Both, 0);
             }
         }
@@ -891,33 +877,37 @@ public class LootLens extends Module {
 
     private boolean validateBlockType(Block block, StorageType type) {
         return switch (type) {
-            case CHEST         -> block == Blocks.CHEST;
-            case TRAPPED_CHEST -> block == Blocks.TRAPPED_CHEST;
-            case BARREL        -> block == Blocks.BARREL;
-            case FURNACE       -> block == Blocks.FURNACE || block == Blocks.BLAST_FURNACE || block == Blocks.SMOKER;
-            case DISPENSER     -> block == Blocks.DISPENSER;
-            case DROPPER       -> block == Blocks.DROPPER;
-            case HOPPER        -> block == Blocks.HOPPER;
-            case BREWING_STAND -> block == Blocks.BREWING_STAND;
-            case CRAFTER       -> block == Blocks.CRAFTER;
-            case DECORATED_POT -> block == Blocks.DECORATED_POT;
+            case CHEST          -> block == Blocks.CHEST;
+            case TRAPPED_CHEST  -> block == Blocks.TRAPPED_CHEST;
+            case BARREL         -> block == Blocks.BARREL;
+            case SHULKER_BOX    -> block instanceof ShulkerBoxBlock;
+            case FURNACE        -> block == Blocks.FURNACE
+                                || block == Blocks.BLAST_FURNACE
+                                || block == Blocks.SMOKER;
+            case DISPENSER      -> block == Blocks.DISPENSER;
+            case DROPPER        -> block == Blocks.DROPPER;
+            case HOPPER         -> block == Blocks.HOPPER;
+            case BREWING_STAND  -> block == Blocks.BREWING_STAND;
+            case CRAFTER        -> block == Blocks.CRAFTER;
+            case DECORATED_POT  -> block == Blocks.DECORATED_POT;
             case CHEST_MINECART -> true;
         };
     }
 
     private SettingColor getColor(StorageType type) {
         return switch (type) {
-            case CHEST         -> chestColor.get();
-            case TRAPPED_CHEST -> trappedChestColor.get();
-            case BARREL        -> barrelColor.get();
+            case CHEST          -> chestColor.get();
+            case TRAPPED_CHEST  -> trappedChestColor.get();
+            case BARREL         -> barrelColor.get();
+            case SHULKER_BOX    -> shulkerBoxColor.get();
             case CHEST_MINECART -> chestMinecartColor.get();
-            case FURNACE       -> furnaceColor.get();
-            case DISPENSER     -> dispenserColor.get();
-            case DROPPER       -> dropperColor.get();
-            case HOPPER        -> hopperColor.get();
-            case BREWING_STAND -> brewingStandColor.get();
-            case CRAFTER       -> crafterColor.get();
-            case DECORATED_POT -> decoratedPotColor.get();
+            case FURNACE        -> furnaceColor.get();
+            case DISPENSER      -> dispenserColor.get();
+            case DROPPER        -> dropperColor.get();
+            case HOPPER         -> hopperColor.get();
+            case BREWING_STAND  -> brewingStandColor.get();
+            case CRAFTER        -> crafterColor.get();
+            case DECORATED_POT  -> decoratedPotColor.get();
         };
     }
 
@@ -926,7 +916,7 @@ public class LootLens extends Module {
     // ─────────────────────────── Storage Types ───────────────────────────
 
     private enum StorageType {
-        CHEST, TRAPPED_CHEST, BARREL, CHEST_MINECART,
+        CHEST, TRAPPED_CHEST, BARREL, SHULKER_BOX, CHEST_MINECART,
         FURNACE, DISPENSER, DROPPER, HOPPER,
         BREWING_STAND, CRAFTER, DECORATED_POT
     }
