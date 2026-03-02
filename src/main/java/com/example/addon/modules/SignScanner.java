@@ -41,10 +41,8 @@ import net.minecraft.block.entity.SignBlockEntity;
 import net.minecraft.block.entity.SignText;
 import net.minecraft.client.gui.screen.ingame.AbstractSignEditScreen;
 import net.minecraft.item.DyeItem;
-import net.minecraft.item.HangingSignItem;
 import net.minecraft.item.Item;
 import net.minecraft.item.Items;
-import net.minecraft.item.SignItem;
 import net.minecraft.network.packet.c2s.play.UpdateSignC2SPacket;
 import net.minecraft.text.MutableText;
 import net.minecraft.text.PlainTextContent;
@@ -85,25 +83,8 @@ public class SignScanner extends Module {
     // --- Auto Sign ---
     private final Setting<Boolean> autoSign = sgAutoSign.add(new BoolSetting.Builder()
         .name("auto-sign")
-        .description("Enables the auto-sign feature to place and write on signs automatically.")
+        .description("Enables the auto-sign feature to write on signs automatically when placed.")
         .defaultValue(false)
-        .build()
-    );
-
-    private final Setting<SignType> signType = sgAutoSign.add(new EnumSetting.Builder<SignType>()
-        .name("sign-type")
-        .description("Which type of sign to place.")
-        .defaultValue(SignType.Normal)
-        .visible(autoSign::get)
-        .build()
-    );
-
-    private final Setting<Integer> placeDelay = sgAutoSign.add(new IntSetting.Builder()
-        .name("place-delay")
-        .description("Delay in ticks before placing a sign.")
-        .defaultValue(5)
-        .min(0)
-        .visible(autoSign::get)
         .build()
     );
 
@@ -247,7 +228,6 @@ public class SignScanner extends Module {
     private int timer = 0;
 
     // AutoSign state
-    private int placeTimer = 0;
     private int editTimer = 0;
     private AbstractSignEditScreen currentScreen = null;
 
@@ -260,7 +240,6 @@ public class SignScanner extends Module {
         signs.clear();
         notified.clear();
         timer = 0;
-        placeTimer = 0;
         editTimer = 0;
         currentScreen = null;
     }
@@ -274,31 +253,6 @@ public class SignScanner extends Module {
             editTimer++;
             if (editTimer >= editorDelay.get()) {
                 finishEditing();
-            }
-            return; // Don't try to place while editing
-        }
-
-        // Handle placement delay
-        if (placeTimer < placeDelay.get()) {
-            placeTimer++;
-            return;
-        }
-
-        // Try to place a sign
-        if (mc.crosshairTarget instanceof BlockHitResult hit && hit.getType() == HitResult.Type.BLOCK) {
-            if (mc.player.isUsingItem()) return;
-            if (mc.world.getBlockState(hit.getBlockPos()).isAir()) return;
-
-            FindItemResult item = findSign();
-            if (item.found()) {
-                placeTimer = 0; // Reset timer
-
-                Rotations.rotate(Rotations.getYaw(hit.getBlockPos()), Rotations.getPitch(hit.getBlockPos()), () -> {
-                    InvUtils.swap(item.slot(), false);
-                    mc.interactionManager.interactBlock(mc.player, Hand.MAIN_HAND, hit);
-                    mc.player.swingHand(Hand.MAIN_HAND);
-                    InvUtils.swapBack();
-                });
             }
         }
     }
@@ -651,21 +605,6 @@ public class SignScanner extends Module {
         }
         return null;
     }
-
-    private FindItemResult findSign() {
-        return InvUtils.findInHotbar(itemStack -> {
-            Item item = itemStack.getItem();
-            if (signType.get() == SignType.Normal) return item instanceof SignItem;
-            if (signType.get() == SignType.Hanging) return item instanceof HangingSignItem;
-            return false;
-        });
-    }
-
-    public enum SignType {
-        Normal,
-        Hanging
-    }
-
     private static class SignEntry {
         BlockPos pos;
         List<Text> lines;
