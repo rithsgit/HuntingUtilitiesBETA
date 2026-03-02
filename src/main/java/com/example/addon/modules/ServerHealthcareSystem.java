@@ -39,6 +39,8 @@ import java.util.Set;
 public class ServerHealthcareSystem extends Module {
 
     private final SettingGroup sgGeneral    = settings.getDefaultGroup();
+    private final SettingGroup sgAutoArmor  = settings.createGroup("Auto Armor");
+    private final SettingGroup sgAutoEat    = settings.createGroup("Auto Eat");
     private final SettingGroup sgSafety     = settings.createGroup("Safety");
     private final SettingGroup sgAutoIgnore = settings.createGroup("Auto Ignore");
     private final SettingGroup sgTracking   = settings.createGroup("Player Tracking");
@@ -59,14 +61,16 @@ public class ServerHealthcareSystem extends Module {
         .build()
     );
 
-    private final Setting<Boolean> autoArmor = sgGeneral.add(new BoolSetting.Builder()
+    // ── Auto Armor ────────────────────────────────────────────────────────────
+
+    private final Setting<Boolean> autoArmor = sgAutoArmor.add(new BoolSetting.Builder()
         .name("auto-armor")
         .description("Automatically equips the best armor in your inventory.")
         .defaultValue(true)
         .build()
     );
 
-    private final Setting<ChestplatePreference> chestplatePreference = sgGeneral.add(new EnumSetting.Builder<ChestplatePreference>()
+    private final Setting<ChestplatePreference> chestplatePreference = sgAutoArmor.add(new EnumSetting.Builder<ChestplatePreference>()
         .name("chestplate-preference")
         .description("Which item to prefer for the chest slot.")
         .defaultValue(ChestplatePreference.Chestplate)
@@ -74,7 +78,7 @@ public class ServerHealthcareSystem extends Module {
         .build()
     );
 
-    private final Setting<Boolean> chestplateOnGround = sgGeneral.add(new BoolSetting.Builder()
+    private final Setting<Boolean> chestplateOnGround = sgAutoArmor.add(new BoolSetting.Builder()
         .name("chestplate-on-ground")
         .description("Wears a chestplate while on the ground and an elytra while in the air.")
         .defaultValue(false)
@@ -82,7 +86,7 @@ public class ServerHealthcareSystem extends Module {
         .build()
     );
 
-    private final Setting<Integer> swapDelay = sgGeneral.add(new IntSetting.Builder()
+    private final Setting<Integer> swapDelay = sgAutoArmor.add(new IntSetting.Builder()
         .name("swap-delay")
         .description("Ticks to wait after performing a swap.")
         .defaultValue(10)
@@ -91,14 +95,16 @@ public class ServerHealthcareSystem extends Module {
         .build()
     );
 
-    private final Setting<Boolean> autoEat = sgGeneral.add(new BoolSetting.Builder()
+    // ── Auto Eat ──────────────────────────────────────────────────────────────
+
+    private final Setting<Boolean> autoEat = sgAutoEat.add(new BoolSetting.Builder()
         .name("auto-eat")
         .description("Automatically eats Golden Apples when low on health.")
         .defaultValue(true)
         .build()
     );
 
-    private final Setting<Integer> healthThreshold = sgGeneral.add(new IntSetting.Builder()
+    private final Setting<Integer> healthThreshold = sgAutoEat.add(new IntSetting.Builder()
         .name("health-threshold")
         .description("Health threshold to trigger auto-eat (in health points, 20 = full).")
         .defaultValue(10)
@@ -292,9 +298,10 @@ public class ServerHealthcareSystem extends Module {
 
         if (swapTimer > 0) swapTimer--;
 
+        int currentPops = mc.player.getStatHandler().getStat(Stats.USED, Items.TOTEM_OF_UNDYING);
+
         // Disconnect on Totem Pop
         if (disconnectOnTotemPop.get()) {
-            int currentPops = mc.player.getStatHandler().getStat(Stats.USED, Items.TOTEM_OF_UNDYING);
             if (currentPops > totemPops) {
                 int remainingTotems = countTotems();
                 if (mc.player.networkHandler != null) {
@@ -305,8 +312,8 @@ public class ServerHealthcareSystem extends Module {
                 this.toggle();
                 return;
             }
-            totemPops = currentPops;
         }
+        totemPops = currentPops;
 
         // Disconnect on Player
         if (disconnectOnPlayer.get()) {
