@@ -4,23 +4,6 @@
 
 Currently in **BETA** — expect bugs, incomplete features, and frequent updates.
 
-Current modules;
-
-- Dungeon Assistant
-- Elytra Assistant
-- Graveyard
-- Loot Lens
-- Portal Maker
-- Portal Tracker
-- Rocket Pilot
-- Server Healthcare System
-- Obsidian Fist (WIP)
-- Sign Scanner
-- Lava Marker
-- Inventory 101
-- Time Throttle
-- Mobanom
-
 More modules coming soon — 
 
 ## Requirements
