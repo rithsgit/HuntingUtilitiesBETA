@@ -25,7 +25,7 @@ public class PlayerListHudMixin {
     @Unique
     private int huntingUtilities$color = -1;
 
-    @Inject(method = "render", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/font/TextRenderer;drawWithShadow(Lnet/minecraft/client/gui/DrawContext;Lnet/minecraft/text/Text;FFI)I"), locals = LocalCapture.CAPTURE_FAILHARD)
+    @Inject(method = "render", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/gui/DrawContext;drawTextWithShadow(Lnet/minecraft/client/font/TextRenderer;Lnet/minecraft/text/Text;III)V"), locals = LocalCapture.CAPTURE_FAILHARD)
     private void onBeforeDraw(DrawContext context, int scaledWidth, Scoreboard scoreboard, ScoreboardObjective objective, CallbackInfo ci, List list, int i, int j, Iterator var10, int k, PlayerListEntry playerListEntry) {
         huntingUtilities$color = -1; // Reset
         ServerHealthcareSystem shs = Modules.get().get(ServerHealthcareSystem.class);
