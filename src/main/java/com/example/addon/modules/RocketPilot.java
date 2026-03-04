@@ -61,8 +61,8 @@ public class RocketPilot extends Module {
         .name("target-y")
         .description("The Y level to maintain.")
         .defaultValue(120.0)
-        .min(-64).max(320)
-        .sliderRange(0, 256)
+        .min(-64).max(10000)
+        .sliderRange(0, 10000)
         .visible(useTargetY::get)
         .build()
     );
