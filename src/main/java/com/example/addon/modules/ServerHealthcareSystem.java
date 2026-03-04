@@ -131,11 +131,13 @@ public class ServerHealthcareSystem extends Module {
     // ── State ─────────────────────────────────────────────────────────────────
 
     // Auto Eat
-    private boolean isEating            = false;
-    private boolean ateForFire          = false;
+    private boolean isEating              = false;
+    private boolean ateForFire            = false;
     private boolean tookDamageWhileOnFire = false;
-    private int     eatHotbarSlot       = -1;
-    private float   lastHealth          = -1;
+    private int     eatHotbarSlot         = -1;
+    private Item    eatTargetItem         = null; // the item we committed to eating this session
+    private int     eatStartupTicks       = 0;   // grace ticks after starting eat before we check active item
+    private float   lastHealth            = -1;
 
     // Auto Armor
     private int swapTimer = 0;
@@ -163,11 +165,7 @@ public class ServerHealthcareSystem extends Module {
 
     @Override
     public void onDeactivate() {
-        if (isEating) {
-            mc.options.useKey.setPressed(false);
-            isEating      = false;
-            eatHotbarSlot = -1;
-        }
+        stopEating();
         lastHealth = -1;
         resetState();
     }
@@ -183,11 +181,21 @@ public class ServerHealthcareSystem extends Module {
 
     /** Clears all transient session state. */
     private void resetState() {
-        isEating             = false;
-        ateForFire           = false;
+        isEating              = false;
+        ateForFire            = false;
         tookDamageWhileOnFire = false;
-        eatHotbarSlot        = -1;
-        swapTimer            = 0;
+        eatHotbarSlot         = -1;
+        eatTargetItem         = null;
+        eatStartupTicks       = 0;
+        swapTimer             = 0;
+    }
+
+    private void stopEating() {
+        mc.options.useKey.setPressed(false);
+        isEating        = false;
+        eatHotbarSlot   = -1;
+        eatTargetItem   = null;
+        eatStartupTicks = 0;
     }
 
     // ── Tick ──────────────────────────────────────────────────────────────────
@@ -199,7 +207,7 @@ public class ServerHealthcareSystem extends Module {
         if (swapTimer > 0) swapTimer--;
 
         tickHealthTracking();
-        if (tickTotemPop())           return; // disconnected — stop processing this tick
+        if (tickTotemPop())   return;
         tickAutoRespawn();
         tickAutoTotem();
         tickAutoArmor();
@@ -225,7 +233,7 @@ public class ServerHealthcareSystem extends Module {
 
         int currentPops = mc.player.getStatHandler().getStat(Stats.USED, Items.TOTEM_OF_UNDYING);
         if (currentPops > totemPops) {
-            totemPops = currentPops; // update before disconnect so re-enable doesn't re-trigger
+            totemPops = currentPops;
             disconnect("[SHS] Disconnected on totem pop. " + countTotems() + " totems remaining.");
             return true;
         }
@@ -295,48 +303,79 @@ public class ServerHealthcareSystem extends Module {
     private void tickAutoEat() {
         if (!autoEat.get()) return;
 
-        // Logic to start eating
-        if (!isEating && !mc.player.isUsingItem()) {
+        if (!isEating) {
+            // ── Decide whether to start eating ───────────────────────────────
             boolean needsHealth = mc.player.getHealth() <= healthThreshold.get();
             boolean needsFireEat = mc.player.isOnFire() && tookDamageWhileOnFire && !ateForFire;
 
-            if (needsHealth || needsFireEat) {
-                int gappleSlot = findBestGapple();
-                if (gappleSlot == -1) return;
+            if (!needsHealth && !needsFireEat) return;
 
-                if (gappleSlot < 9) {
-                    eatHotbarSlot = gappleSlot;
-                } else {
-                    eatHotbarSlot = mc.player.getInventory().selectedSlot;
-                    InvUtils.move().from(gappleSlot).toHotbar(eatHotbarSlot);
-                }
-                mc.player.getInventory().selectedSlot = eatHotbarSlot;
+            int gappleSlot = findBestGapple();
+            if (gappleSlot == -1) return;
 
-                mc.options.useKey.setPressed(true);
-                isEating = true;
+            // Remember what item type we are eating so we can validate it later
+            eatTargetItem = mc.player.getInventory().getStack(gappleSlot).getItem();
 
-                if (needsFireEat) {
-                    ateForFire = true;
-                    tookDamageWhileOnFire = false;
-                }
+            // Move to hotbar if needed
+            if (gappleSlot < 9) {
+                eatHotbarSlot = gappleSlot;
+            } else {
+                eatHotbarSlot = mc.player.getInventory().selectedSlot;
+                InvUtils.move().from(gappleSlot).toHotbar(eatHotbarSlot);
             }
-        }
-        // Logic to stop eating
-        else if (isEating) {
-            ItemStack activeItem = mc.player.getActiveItem();
-            boolean isHoldingGapple = activeItem.isOf(Items.GOLDEN_APPLE) || activeItem.isOf(Items.ENCHANTED_GOLDEN_APPLE);
+            mc.player.getInventory().selectedSlot = eatHotbarSlot;
 
-            if (!mc.player.isUsingItem() || !isHoldingGapple) {
-                mc.options.useKey.setPressed(false);
-                isEating = false;
-                eatHotbarSlot = -1;
-            } else if (mc.player.getInventory().selectedSlot != eatHotbarSlot) {
+            // Give the server/client 3 ticks to reflect the item move before
+            // we check whether the active item is correct. Without this grace
+            // period the stop-condition fires on the very first tick.
+            eatStartupTicks = 3;
+
+            mc.options.useKey.setPressed(true);
+            isEating = true;
+
+            if (needsFireEat) {
+                ateForFire            = true;
+                tookDamageWhileOnFire = false;
+            }
+
+        } else {
+            // ── Already eating — keep holding or stop ─────────────────────────
+
+            // During startup grace period just hold the key and wait
+            if (eatStartupTicks > 0) {
+                eatStartupTicks--;
+                // Make sure we are still on the right hotbar slot
                 mc.player.getInventory().selectedSlot = eatHotbarSlot;
+                mc.options.useKey.setPressed(true);
+                return;
+            }
+
+            // After grace period, check that we are actually eating the right item
+            ItemStack hotbarStack = mc.player.getInventory().getStack(eatHotbarSlot);
+            boolean hotbarHasGapple = eatTargetItem != null && hotbarStack.isOf(eatTargetItem);
+
+            // Also accept if the player is actively using a gapple (covers edge cases
+            // where the item animates but selectedSlot temporarily differs)
+            ItemStack activeItem = mc.player.getActiveItem();
+            boolean activeIsGapple = activeItem.isOf(Items.GOLDEN_APPLE)
+                    || activeItem.isOf(Items.ENCHANTED_GOLDEN_APPLE);
+
+            if (!hotbarHasGapple && !activeIsGapple) {
+                // Gapple is gone (eaten or moved) — stop
+                stopEating();
+                return;
+            }
+
+            // Keep hotbar slot and use key locked
+            mc.player.getInventory().selectedSlot = eatHotbarSlot;
+            mc.options.useKey.setPressed(true);
+
+            // Stop once the player finishes using the item naturally
+            if (!mc.player.isUsingItem()) {
+                stopEating();
             }
         }
     }
-
-    // ── Event Handlers ────────────────────────────────────────────────────────
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -433,27 +472,26 @@ public class ServerHealthcareSystem extends Module {
      * 2. Gapple (Hotbar)
      * 3. Enchanted Gapple (Inventory)
      * 4. Gapple (Inventory)
-     * @return The inventory slot of the best gapple, or -1 if none are found.
      */
     private int findBestGapple() {
-        int hotbarGapple = -1;
-        int inventoryEgapple = -1;
-        int inventoryGapple = -1;
+        int hotbarGapple      = -1;
+        int inventoryEgapple  = -1;
+        int inventoryGapple   = -1;
 
         for (int i = 0; i < 36; i++) {
             ItemStack stack = mc.player.getInventory().getStack(i);
             if (stack.isEmpty()) continue;
 
             if (stack.isOf(Items.ENCHANTED_GOLDEN_APPLE)) {
-                if (i < 9) return i; // P1: E-Gapple in hotbar
-                if (inventoryEgapple == -1) inventoryEgapple = i; // P3: E-Gapple in inventory
+                if (i < 9) return i;
+                if (inventoryEgapple == -1) inventoryEgapple = i;
             } else if (stack.isOf(Items.GOLDEN_APPLE)) {
-                if (i < 9) { if (hotbarGapple == -1) hotbarGapple = i; } // P2: Gapple in hotbar
-                else { if (inventoryGapple == -1) inventoryGapple = i; } // P4: Gapple in inventory
+                if (i < 9) { if (hotbarGapple == -1) hotbarGapple = i; }
+                else        { if (inventoryGapple == -1) inventoryGapple = i; }
             }
         }
 
-        if (hotbarGapple != -1) return hotbarGapple;
+        if (hotbarGapple     != -1) return hotbarGapple;
         if (inventoryEgapple != -1) return inventoryEgapple;
         return inventoryGapple;
     }
@@ -462,7 +500,8 @@ public class ServerHealthcareSystem extends Module {
         ItemEnchantmentsComponent enchants = stack.get(DataComponentTypes.ENCHANTMENTS);
         if (enchants == null) return 0;
         for (RegistryEntry<Enchantment> entry : enchants.getEnchantments()) {
-            if (entry.getKey().isPresent() && entry.getKey().get().getValue().toString().equals(id)) return enchants.getLevel(entry);
+            if (entry.getKey().isPresent() && entry.getKey().get().getValue().toString().equals(id))
+                return enchants.getLevel(entry);
         }
         return 0;
     }
