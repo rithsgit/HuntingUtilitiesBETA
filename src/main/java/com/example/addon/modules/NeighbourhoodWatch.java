@@ -27,7 +27,6 @@ import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.network.packet.s2c.play.PlayerListS2CPacket;
 import net.minecraft.sound.SoundEvents;
 import net.minecraft.text.Text;
-import net.minecraft.util.profiling.jfr.event.PacketReceivedEvent;
 
 public class NeighbourhoodWatch extends Module {
 
@@ -61,6 +60,14 @@ public class NeighbourhoodWatch extends Module {
     private final Setting<Boolean> ignoreFriendsOnDisconnect = sgSafety.add(new BoolSetting.Builder()
         .name("ignore-friends-on-disconnect")
         .description("Does not disconnect if the nearby player is a friend.")
+        .defaultValue(true)
+        .visible(disconnectOnPlayer::get)
+        .build()
+    );
+
+    private final Setting<Boolean> ignoreProxiesOnDisconnect = sgSafety.add(new BoolSetting.Builder()
+        .name("ignore-proxies-on-disconnect")
+        .description("Does not disconnect if the nearby player is a proxy.")
         .defaultValue(true)
         .visible(disconnectOnPlayer::get)
         .build()
@@ -134,6 +141,14 @@ public class NeighbourhoodWatch extends Module {
         .build()
     );
 
+    private final Setting<Boolean> trackProxies = sgTracking.add(new BoolSetting.Builder()
+        .name("track-proxies")
+        .description("Highlight proxy accounts in range.")
+        .defaultValue(true)
+        .visible(trackPlayers::get)
+        .build()
+    );
+
     private final Setting<Boolean> trackOthers = sgTracking.add(new BoolSetting.Builder()
         .name("track-others")
         .description("Highlight unknown players in range.")
@@ -192,6 +207,14 @@ public class NeighbourhoodWatch extends Module {
         .build()
     );
 
+    private final Setting<List<String>> proxies = sgFriends.add(new StringListSetting.Builder()
+        .name("proxies")
+        .description("Players treated as proxies. Case-insensitive.")
+        .defaultValue(List.of())
+        .onChanged(l -> updateFriendEnemySets())
+        .build()
+    );
+
     private final Setting<SettingColor> friendColor = sgFriends.add(new ColorSetting.Builder()
         .name("friend-color")
         .description("Highlight color for friends.")
@@ -204,6 +227,14 @@ public class NeighbourhoodWatch extends Module {
         .name("enemy-color")
         .description("Highlight color for enemies.")
         .defaultValue(new SettingColor(255, 0, 0, 255))
+        .visible(trackPlayers::get)
+        .build()
+    );
+
+    private final Setting<SettingColor> proxyColor = sgFriends.add(new ColorSetting.Builder()
+        .name("proxy-color")
+        .description("Highlight color for proxies.")
+        .defaultValue(new SettingColor(255, 140, 0, 255))
         .visible(trackPlayers::get)
         .build()
     );
@@ -257,6 +288,14 @@ public class NeighbourhoodWatch extends Module {
         .build()
     );
 
+    private final Setting<Boolean> tabNotifyProxies = sgTabList.add(new BoolSetting.Builder()
+        .name("notify-proxies")
+        .description("Notify when a proxy joins or leaves.")
+        .defaultValue(true)
+        .visible(monitorTabList::get)
+        .build()
+    );
+
     private final Setting<Boolean> tabNotifyOthers = sgTabList.add(new BoolSetting.Builder()
         .name("notify-others")
         .description("Notify when an unknown player joins or leaves.")
@@ -272,6 +311,7 @@ public class NeighbourhoodWatch extends Module {
     private final Set<String>  playersInTab       = new HashSet<>();
     private final Set<String>  friendSet          = new HashSet<>();
     private final Set<String>  enemySet           = new HashSet<>();
+    private final Set<String>  proxySet           = new HashSet<>();
 
     // ── Constructor ───────────────────────────────────────────────────────────
 
@@ -319,6 +359,7 @@ public class NeighbourhoodWatch extends Module {
             SettingColor color = switch (getPlayerStatus(player.getName().getString())) {
                 case Friend -> trackFriends.get() ? friendColor.get() : null;
                 case Enemy  -> trackEnemies.get() ? enemyColor.get()  : null;
+                case Proxy  -> trackProxies.get() ? proxyColor.get()  : null;
                 case Other  -> trackOthers.get()  ? otherColor.get()  : null;
             };
 
@@ -370,6 +411,7 @@ public class NeighbourhoodWatch extends Module {
         for (PlayerEntity player : mc.world.getPlayers()) {
             if (player == mc.player || player.isCreative() || player.isSpectator()) continue;
             if (ignoreFriendsOnDisconnect.get() && isFriend(player.getName().getString())) continue;
+            if (ignoreProxiesOnDisconnect.get() && isProxy(player.getName().getString())) continue;
             if (mc.player.distanceTo(player) <= playerDetectionRange.get()) {
                 disconnect("[NeighbourhoodWatch] Player detected: " + player.getName().getString());
                 return true;
@@ -423,7 +465,7 @@ public class NeighbourhoodWatch extends Module {
         }
 
         if (sender.equalsIgnoreCase(mc.player.getName().getString())) return;
-        if (isFriend(sender)) return;
+        if (isFriend(sender) || isProxy(sender)) return;
         if (ignoredThisSession.contains(sender.toLowerCase())) return;
 
         boolean matched = false;
@@ -465,6 +507,7 @@ public class NeighbourhoodWatch extends Module {
         boolean shouldNotify = switch (status) {
             case Friend -> tabNotifyFriends.get();
             case Enemy  -> tabNotifyEnemies.get();
+            case Proxy  -> tabNotifyProxies.get();
             case Other  -> tabNotifyOthers.get();
         };
         if (!shouldNotify) return;
@@ -474,6 +517,7 @@ public class NeighbourhoodWatch extends Module {
         String label = switch (status) {
             case Friend -> "§aFriend";
             case Enemy  -> "§cEnemy";
+            case Proxy  -> "§6Proxy";
             case Other  -> "Player";
         };
         info("%s %s has %s the server.", label, playerName, action);
@@ -488,6 +532,10 @@ public class NeighbourhoodWatch extends Module {
         for (String name : enemies.get()) {
             enemySet.add(name.toLowerCase());
         }
+        proxySet.clear();
+        for (String name : proxies.get()) {
+            proxySet.add(name.toLowerCase());
+        }
     }
 
     public boolean isFriend(String name) {
@@ -500,13 +548,19 @@ public class NeighbourhoodWatch extends Module {
         return enemySet.contains(name.toLowerCase());
     }
 
+    public boolean isProxy(String name) {
+        if (name == null) return false;
+        return proxySet.contains(name.toLowerCase());
+    }
+
     private PlayerStatus getPlayerStatus(String name) {
         if (isFriend(name)) return PlayerStatus.Friend;
         if (isEnemy(name))  return PlayerStatus.Enemy;
+        if (isProxy(name))  return PlayerStatus.Proxy;
         return PlayerStatus.Other;
     }
 
     // ── Enums ─────────────────────────────────────────────────────────────────
 
-    public enum PlayerStatus { Friend, Enemy, Other }
+    public enum PlayerStatus { Friend, Enemy, Proxy, Other }
 }
