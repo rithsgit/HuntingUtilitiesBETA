@@ -118,18 +118,6 @@ public class LootLens extends Module {
         .build()
     );
 
-    private final Setting<Integer> beamWidth = sgGeneral.add(new IntSetting.Builder()
-        .name("beam-width")
-        .description("Beam width (in hundredths of a block).")
-        .defaultValue(15)
-        .min(5)
-        .max(50)
-        .sliderMin(5)
-        .sliderMax(50)
-        .visible(showBeam::get)
-        .build()
-    );
-
     private final Setting<Boolean> notification = sgGeneral.add(new BoolSetting.Builder()
         .name("notification")
         .description("Send chat messages and play sound when shulkers are found.")
@@ -226,8 +214,21 @@ public class LootLens extends Module {
 
     private final Setting<SettingColor> stackedMinecartColor = sgStorage.add(new ColorSetting.Builder()
         .name("stacked-minecart-color")
-        .defaultValue(new SettingColor(255, 0, 255, 100))
+        .defaultValue(new SettingColor(255, 0, 255, 180))
         .visible(() -> scanChestMinecarts.get() && highlightStacked.get())
+        .build()
+    );
+
+    // Moved from sgGeneral to fix forward reference
+    private final Setting<Integer> beamWidth = sgGeneral.add(new IntSetting.Builder()
+        .name("beam-width")
+        .description("Beam width (in hundredths of a block).")
+        .defaultValue(15)
+        .min(5)
+        .max(50)
+        .sliderMin(5)
+        .sliderMax(50)
+        .visible(() -> showBeam.get() || (scanChestMinecarts.get() && highlightStacked.get()))
         .build()
     );
 
@@ -768,7 +769,7 @@ public class LootLens extends Module {
                     toRemove.add(pos);
                     continue;
                 }
-                renderBox = minecarts.get(0).getBoundingBox();
+                renderBox = getMinecartChestBox(minecarts.get(0));
             } else {
                 Block currentBlock = mc.world.getBlockState(pos).getBlock();
                 if (!validateBlockType(currentBlock, type)) {
@@ -796,7 +797,11 @@ public class LootLens extends Module {
                     && stackedMinecartCounts.getOrDefault(pos, 0) >= 2;
 
                 color = isStacked ? stackedMinecartColor.get() : getColor(type);
-                if (color != null) event.renderer.box(renderBox, color, color, mode, 0);
+                if (color != null) {
+                    event.renderer.box(renderBox, color, color, mode, 0);
+                    // Automatically render a beam for stacked minecarts to improve visibility
+                    if (isStacked) renderBeam(event, renderBox, color);
+                }
             }
         }
 
@@ -857,6 +862,31 @@ public class LootLens extends Module {
     }
 
     // ─────────────────────────── Utilities ───────────────────────────
+
+    private Box getMinecartChestBox(ChestMinecartEntity minecart) {
+        Box entityBox = minecart.getBoundingBox();
+        // A standard chest is 14/16 blocks wide/deep.
+        double chestSize = 14.0 / 16.0; // 0.875
+        // A minecart is 0.98 blocks wide. Center the chest box.
+        double xPadding = (entityBox.getLengthX() - chestSize) / 2.0;
+        double zPadding = (entityBox.getLengthZ() - chestSize) / 2.0;
+
+        // The chest model is roughly 10/16 blocks high.
+        double chestHeight = 10.0 / 16.0; // 0.625
+
+        // The chest sits in the top portion of the minecart's bounding box.
+        double minY = entityBox.maxY - chestHeight;
+        double maxY = entityBox.maxY;
+
+        return new Box(
+            entityBox.minX + xPadding,
+            minY,
+            entityBox.minZ + zPadding,
+            entityBox.maxX - xPadding,
+            maxY,
+            entityBox.maxZ - zPadding
+        );
+    }
 
     private Box createPaddedBox(BlockPos pos) {
         double p = 0.0625;

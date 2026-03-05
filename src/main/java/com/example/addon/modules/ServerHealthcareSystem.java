@@ -5,6 +5,7 @@ import java.util.Set;
 import com.example.addon.HuntingUtilities;
 
 import meteordevelopment.meteorclient.events.game.GameJoinedEvent;
+import meteordevelopment.meteorclient.events.packets.PacketEvent;
 import meteordevelopment.meteorclient.events.world.TickEvent;
 import meteordevelopment.meteorclient.settings.BoolSetting;
 import meteordevelopment.meteorclient.settings.EnchantmentListSetting;
@@ -15,9 +16,9 @@ import meteordevelopment.meteorclient.settings.Setting;
 import meteordevelopment.meteorclient.settings.SettingGroup;
 import meteordevelopment.meteorclient.systems.modules.Module;
 import meteordevelopment.meteorclient.systems.modules.Modules;
+import meteordevelopment.meteorclient.utils.misc.Keybind;
 import meteordevelopment.meteorclient.utils.player.FindItemResult;
 import meteordevelopment.meteorclient.utils.player.InvUtils;
-import meteordevelopment.meteorclient.utils.misc.Keybind;
 import meteordevelopment.orbit.EventHandler;
 import net.minecraft.client.gui.screen.DeathScreen;
 import net.minecraft.component.DataComponentTypes;
@@ -29,9 +30,9 @@ import net.minecraft.entity.EquipmentSlot;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
 import net.minecraft.item.Items;
+import net.minecraft.network.packet.s2c.play.EntityStatusS2CPacket;
 import net.minecraft.registry.RegistryKey;
 import net.minecraft.registry.entry.RegistryEntry;
-import net.minecraft.stat.Stats;
 import net.minecraft.text.Text;
 
 public class ServerHealthcareSystem extends Module {
@@ -160,9 +161,6 @@ public class ServerHealthcareSystem extends Module {
     // Auto Armor
     private int swapTimer = 0;
 
-    // Auto Totem / Safety
-    private int totemPops = 0;
-
     // ── Constructor ───────────────────────────────────────────────────────────
 
     public ServerHealthcareSystem() {
@@ -175,7 +173,6 @@ public class ServerHealthcareSystem extends Module {
     @Override
     public void onActivate() {
         if (mc.player != null) {
-            totemPops  = mc.player.getStatHandler().getStat(Stats.USED, Items.TOTEM_OF_UNDYING);
             lastHealth = mc.player.getHealth();
         }
         resetState();
@@ -191,10 +188,12 @@ public class ServerHealthcareSystem extends Module {
     @EventHandler
     private void onGameJoined(GameJoinedEvent event) {
         if (mc.player != null) {
-            totemPops  = mc.player.getStatHandler().getStat(Stats.USED, Items.TOTEM_OF_UNDYING);
             lastHealth = mc.player.getHealth();
         }
         resetState();
+        if (autoTotem.get()) {
+            tickAutoTotem();
+        }
     }
 
     /** Clears all transient session state. */
@@ -225,7 +224,6 @@ public class ServerHealthcareSystem extends Module {
         if (swapTimer > 0) swapTimer--;
 
         tickHealthTracking();
-        if (tickTotemPop())   return;
         tickAutoRespawn();
         tickAutoTotem();
         tickAutoArmor();
@@ -243,20 +241,6 @@ public class ServerHealthcareSystem extends Module {
             tookDamageWhileOnFire = false;
         }
         lastHealth = health;
-    }
-
-    /** @return true if a disconnect was triggered */
-    private boolean tickTotemPop() {
-        if (!disconnectOnTotemPop.get()) return false;
-
-        int currentPops = mc.player.getStatHandler().getStat(Stats.USED, Items.TOTEM_OF_UNDYING);
-        if (currentPops > totemPops) {
-            totemPops = currentPops;
-            disconnect("[SHS] Disconnected on totem pop. " + countTotems() + " totems remaining.");
-            return true;
-        }
-        totemPops = currentPops;
-        return false;
     }
 
     private void tickAutoRespawn() {
@@ -391,6 +375,17 @@ public class ServerHealthcareSystem extends Module {
             // Stop once the player finishes using the item naturally
             if (!mc.player.isUsingItem()) {
                 stopEating();
+            }
+        }
+    }
+
+    @EventHandler
+    private void onPacketReceive(PacketEvent.Receive event) {
+        if (mc.player == null || mc.world == null || !disconnectOnTotemPop.get()) return;
+
+        if (event.packet instanceof EntityStatusS2CPacket packet) {
+            if (packet.getStatus() == 35 && packet.getEntity(mc.world) != null && packet.getEntity(mc.world).getId() == mc.player.getId()) {
+                disconnect("[SHS] Disconnected on totem pop. " + countTotems() + " totems remaining.");
             }
         }
     }
