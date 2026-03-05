@@ -15,6 +15,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 @Mixin(Camera.class)
 public abstract class RocketPilotMixin {
     @Shadow protected abstract void setPos(double x, double y, double z);
+    @Shadow protected abstract void setRotation(float yaw, float pitch);
     @Shadow public abstract net.minecraft.util.math.Vec3d getPos();
 
     @Inject(method = "update", at = @At("RETURN"))
@@ -23,6 +24,7 @@ public abstract class RocketPilotMixin {
         if (rocketPilot != null && rocketPilot.isActive() && rocketPilot.useFreeLookY.get()) {
             if (focusedEntity instanceof LivingEntity living && living.isGliding()) {
                 setPos(getPos().x, rocketPilot.freeLookY.get(), getPos().z);
+                setRotation(rocketPilot.freeLookYaw, rocketPilot.freeLookPitch);
             }
         }
     }
