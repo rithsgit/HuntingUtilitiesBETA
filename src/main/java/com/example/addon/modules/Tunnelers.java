@@ -10,7 +10,6 @@ import meteordevelopment.meteorclient.utils.render.color.SettingColor;
 import meteordevelopment.orbit.EventHandler;
 import net.minecraft.block.BlockState;
 import net.minecraft.block.Blocks;
-import net.minecraft.text.Text;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.ChunkPos;
 import net.minecraft.world.chunk.ChunkSection;
@@ -342,25 +341,16 @@ public class Tunnelers extends Module {
         if (inFlight.contains(cp)) return;
         inFlight.add(cp);
 
-        // Capture all settings on the main thread before handing off.
-        boolean do1x1       = find1x1.get();
-        boolean do2x2       = find2x2.get();
-        boolean doHoles     = findHoles.get();
-        boolean doAbnormal  = findAbnormalTunnels.get();
-        boolean doLadder    = findLadderShafts.get();
-        int     holeDepth   = minHoleHeight.get();
-        int     ladderMin   = minLadderHeight.get();
-        int     minY        = mc.world.getBottomY();
-        int     maxY        = minY + mc.world.getHeight();
-        int     bottomCoord = minY >> 4;
+        ScanConfig config = new ScanConfig(
+            find1x1.get(), find2x2.get(), findHoles.get(), findAbnormalTunnels.get(), findLadderShafts.get(),
+            minHoleHeight.get(), minLadderHeight.get(),
+            mc.world.getBottomY(), mc.world.getBottomY() + mc.world.getHeight()
+        );
+        int bottomCoord = config.minY >> 4;
 
         executor.submit(() -> {
             try {
-                Map<BlockPos, TunnelType> results = scanSnapshot(
-                    cp, snapshot, bottomCoord, minY, maxY,
-                    do1x1, do2x2, doHoles, doAbnormal, doLadder,
-                    holeDepth, ladderMin
-                );
+                Map<BlockPos, TunnelType> results = scanSnapshot(cp, snapshot, bottomCoord, config);
                 pendingResults.add(new ScanResult(cp, results));
             } finally {
                 inFlight.remove(cp);
@@ -375,29 +365,25 @@ public class Tunnelers extends Module {
     private Map<BlockPos, TunnelType> scanSnapshot(
             ChunkPos cp,
             BlockState[][] snapshot,
-            int bottomCoord, int minY, int maxY,
-            boolean do1x1, boolean do2x2, boolean doHoles, boolean doAbnormal,
-            boolean doLadder, int holeDepth, int ladderMin
+            int bottomCoord, ScanConfig config
     ) {
         Map<BlockPos, TunnelType> results = new HashMap<>();
         int baseX = cp.x << 4;
         int baseZ = cp.z << 4;
-        ScanContext ctx = new ScanContext(snapshot, bottomCoord, minY, maxY, baseX, baseZ);
+        ScanContext ctx = new ScanContext(snapshot, bottomCoord, config.minY, config.maxY, baseX, baseZ);
 
         for (int si = 0; si < snapshot.length; si++) {
             if (snapshot[si] == null) continue;
             int sectionMinY = (bottomCoord + si) << 4;
             int sectionMaxY = sectionMinY + 16;
-            if (sectionMaxY <= minY || sectionMinY >= maxY) continue;
+            if (sectionMaxY <= config.minY || sectionMinY >= config.maxY) continue;
 
             for (int lx = 0; lx < 16; lx++) {
                 for (int ly = 0; ly < 16; ly++) {
                     int wy = sectionMinY + ly;
-                    if (wy < minY || wy >= maxY) continue;
+                    if (wy < config.minY || wy >= config.maxY) continue;
                     for (int lz = 0; lz < 16; lz++) {
-                        classifyBlock(baseX + lx, wy, baseZ + lz, ctx,
-                            do1x1, do2x2, doHoles, doAbnormal, doLadder,
-                            holeDepth, ladderMin, results);
+                        classifyBlock(baseX + lx, wy, baseZ + lz, ctx, config, results);
                     }
                 }
             }
@@ -408,32 +394,31 @@ public class Tunnelers extends Module {
     private void classifyBlock(
             int wx, int wy, int wz,
             ScanContext ctx,
-            boolean do1x1, boolean do2x2, boolean doHoles, boolean doAbnormal,
-            boolean doLadder, int holeDepth, int ladderMin,
+            ScanConfig config,
             Map<BlockPos, TunnelType> results
     ) {
         // ---- HOLE --------------------------------------------------------
-        if (doHoles && isHole(wx, wy, wz, ctx, holeDepth)) {
+        if (config.doHoles && isHole(wx, wy, wz, ctx, config.holeDepth)) {
             // Highlight the air column inside the shaft (below the rim).
-            for (int i = 1; i <= holeDepth; i++)
+            for (int i = 1; i <= config.holeDepth; i++)
                 results.put(new BlockPos(wx, wy - i, wz), TunnelType.HOLE);
             return;
         }
 
         // ---- LADDER SHAFT ------------------------------------------------
-        if (doLadder && isLadderShaft(wx, wy, wz, ctx, ladderMin)) {
-            for (int i = 0; i < ladderMin; i++)
+        if (config.doLadder && isLadderShaft(wx, wy, wz, ctx, config.ladderMin)) {
+            for (int i = 0; i < config.ladderMin; i++)
                 results.put(new BlockPos(wx, wy + i, wz), TunnelType.LADDER_SHAFT);
         }
 
         // ---- 1x1 TUNNEL --------------------------------------------------
-        if (do1x1 && is1x1Tunnel(wx, wy, wz, ctx)) {
+        if (config.do1x1 && is1x1Tunnel(wx, wy, wz, ctx)) {
             results.put(new BlockPos(wx, wy + 1, wz), TunnelType.TUNNEL_1x1);
             results.put(new BlockPos(wx, wy + 2, wz), TunnelType.TUNNEL_1x1);
         }
 
         // ---- ABNORMAL (3x3 / 4x4 / 5x5) ---------------------------------
-        if (doAbnormal) {
+        if (config.doAbnormal) {
             int sz = getAbnormalTunnelSize(wx, wy, wz, ctx);
             if (sz > 0) {
                 for (int dx = 0; dx < sz; dx++)
@@ -445,7 +430,7 @@ public class Tunnelers extends Module {
         }
 
         // ---- 2x2 ---------------------------------------------------------
-        if (do2x2 && is2x2Tunnel(wx, wy, wz, ctx)) {
+        if (config.do2x2 && is2x2Tunnel(wx, wy, wz, ctx)) {
             for (int dx = 0; dx < 2; dx++)
                 for (int dy = 1; dy <= 2; dy++)
                     for (int dz = 0; dz < 2; dz++)
@@ -657,16 +642,6 @@ public class Tunnelers extends Module {
         }
     }
 
-    private String typeLabel(TunnelType type) {
-        return switch (type) {
-            case TUNNEL_1x1      -> "1x1 tunnel";
-            case TUNNEL_2x2      -> "2x2 tunnel";
-            case HOLE            -> "hole";
-            case ABNORMAL_TUNNEL -> "abnormal tunnel";
-            case LADDER_SHAFT    -> "ladder shaft";
-        };
-    }
-
     // ------------------------------------------------------------------ //
     //  Render                                                              //
     // ------------------------------------------------------------------ //
@@ -711,6 +686,12 @@ public class Tunnelers extends Module {
     // ------------------------------------------------------------------ //
     //  ScanResult record                                                   //
     // ------------------------------------------------------------------ //
+
+    private record ScanConfig(
+        boolean do1x1, boolean do2x2, boolean doHoles, boolean doAbnormal, boolean doLadder,
+        int holeDepth, int ladderMin,
+        int minY, int maxY
+    ) {}
 
     private static final class ScanResult {
         final ChunkPos chunkPos;
