@@ -19,6 +19,7 @@
     "LootLensMixin",
     "ObsidianFistMixin",
     "RocketPilotMixin",
+    "TunnelersMixin",
     "ServerHealthcareSystemMixin"
   ],
   "injectors": {

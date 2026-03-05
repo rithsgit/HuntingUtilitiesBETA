@@ -357,7 +357,6 @@ public class LootLens extends Module {
     public void onActivate() {
         clearAllState();
         if (mc.player != null && mc.world != null) {
-            info("§bLoot Lens activated");
             if (mc.world.getRegistryKey() != null) {
                 lastDimension = mc.world.getRegistryKey().getValue().toString();
             }

@@ -245,7 +245,6 @@ public class PortalTracker extends Module {
 
         if (mc.player != null && mc.world != null && mc.world.getRegistryKey() != null) {
             lastDimension = mc.world.getRegistryKey().getValue().toString();
-            sendMessage("§bPortal Tracker activated");
         }
     }
 

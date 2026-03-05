@@ -15,6 +15,7 @@ import com.example.addon.modules.RocketPilot;
 import com.example.addon.modules.ServerHealthcareSystem;
 import com.example.addon.modules.SignScanner;
 import com.example.addon.modules.Timethrottle;
+import com.example.addon.modules.Tunnelers;
 import meteordevelopment.meteorclient.addons.MeteorAddon;
 import meteordevelopment.meteorclient.systems.hud.HudGroup;
 import meteordevelopment.meteorclient.systems.modules.Category;
@@ -48,6 +49,7 @@ public class HuntingUtilities extends MeteorAddon {
         modules.add(new Timethrottle());
         modules.add(new Mobanom());
         modules.add(new NeighbourhoodWatch());
+        modules.add(new Tunnelers());
     }
 
     @Override

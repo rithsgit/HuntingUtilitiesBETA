@@ -561,9 +561,6 @@ public class RocketPilot extends Module {
         targetPitch    = mc.player.getPitch();
         targetDrunkYaw = mc.player.getYaw();
 
-        if (useTargetY.get()) info("Targeting Y level %.1f.", targetY.get());
-        else                  info("Y-level targeting disabled.");
-
         if (mc.player.isGliding()) return;
         if (!autoTakeoff.get())    return;
 
