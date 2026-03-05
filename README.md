@@ -20,6 +20,7 @@ Current Modules
 - Sign Scanner
 - Time Throttle
 - Neighbourhood Watch
+- Tunnelers
 
 More modules coming soon — 
 
