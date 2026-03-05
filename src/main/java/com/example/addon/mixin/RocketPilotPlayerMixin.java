@@ -11,14 +11,4 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 @Mixin(ClientPlayerEntity.class)
 public class RocketPilotPlayerMixin {
-    @Inject(method = "changeLookDirection", at = @At("HEAD"), cancellable = true)
-    private void onChangeLookDirection(double cursorDeltaX, double cursorDeltaY, CallbackInfo ci) {
-        RocketPilot rp = Modules.get().get(RocketPilot.class);
-        if (rp != null && rp.isActive() && rp.useFreeLookY.get() && ((ClientPlayerEntity)(Object)this).isGliding()) {
-            rp.freeLookYaw += (float)cursorDeltaX * 0.15f;
-            rp.freeLookPitch += (float)cursorDeltaY * 0.15f;
-            rp.freeLookPitch = MathHelper.clamp(rp.freeLookPitch, -90.0F, 90.0F);
-            ci.cancel();
-        }
-    }
 }

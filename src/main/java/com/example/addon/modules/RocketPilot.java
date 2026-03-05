@@ -80,12 +80,6 @@ public class RocketPilot extends Module {
         .name("use-freelook-y")
         .description("Render the camera at a specific Y level while flying.")
         .defaultValue(false)
-        .onChanged(v -> {
-            if (v && mc.player != null) {
-                freeLookYaw = mc.player.getYaw();
-                freeLookPitch = mc.player.getPitch();
-            }
-        })
         .build()
     );
 
@@ -497,8 +491,6 @@ public class RocketPilot extends Module {
     private long    pitch40BelowMinStartTime = -1;   // -1 = not tracking
 
     private float   targetPitch              = 0;
-    public  float   freeLookYaw              = 0;
-    public  float   freeLookPitch            = 0;
     private int     waveTicks                = 0;
     private int     drunkTimer               = 0;
     private float   targetDrunkYaw           = 0;
@@ -594,9 +586,6 @@ public class RocketPilot extends Module {
         resetPatternState();
 
         if (mc.player == null || mc.world == null) { toggle(); return; }
-
-        freeLookYaw = mc.player.getYaw();
-        freeLookPitch = mc.player.getPitch();
 
         totemPops      = mc.player.getStatHandler().getStat(Stats.USED, Items.TOTEM_OF_UNDYING);
         targetPitch    = mc.player.getPitch();
