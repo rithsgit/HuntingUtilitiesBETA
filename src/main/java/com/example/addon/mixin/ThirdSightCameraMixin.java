@@ -3,8 +3,6 @@ package com.example.addon.mixin;
 import com.example.addon.modules.ThirdSight;
 import meteordevelopment.meteorclient.systems.modules.Modules;
 import net.minecraft.client.render.Camera;
-import net.minecraft.entity.Entity;
-import net.minecraft.world.BlockView;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
@@ -14,6 +12,10 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 @Mixin(Camera.class)
 public abstract class ThirdSightCameraMixin {
+
+    // Shadow the protected method so we can call it from inject handlers.
+    @org.spongepowered.asm.mixin.Shadow
+    protected abstract void moveBy(float forward, float up, float right);
 
     /**
      * Intercept the distance passed to clipToSpace so we always get
@@ -27,12 +29,9 @@ public abstract class ThirdSightCameraMixin {
     }
 
     /**
-     * When free-look is on, intercept the yaw argument passed to
-     * Camera#setRotation inside Camera#update and replace it with our
-     * independent cameraYaw. This is the same technique Meteor's FreeLook
-     * uses — modifying the rotation argument at the point it's set, rather
-     * than overwriting it after the fact, so vanilla's camera positioning
-     * logic uses our angle from the start.
+     * When free-look or BirdsEye is active, replace the yaw passed to
+     * Camera#setRotation with our independent cameraYaw so vanilla's
+     * camera positioning logic uses our angle from the start.
      */
     @ModifyArg(
         method = "update",
@@ -44,7 +43,7 @@ public abstract class ThirdSightCameraMixin {
     )
     private float modifyCameraYaw(float yaw) {
         ThirdSight module = Modules.get().get(ThirdSight.class);
-        if (module == null || !module.isActive() || !module.freeLook.get()) return yaw;
+        if (module == null || !module.isFreeLookActive()) return yaw;
         return module.cameraYaw;
     }
 
@@ -58,7 +57,19 @@ public abstract class ThirdSightCameraMixin {
     )
     private float modifyCameraPitch(float pitch) {
         ThirdSight module = Modules.get().get(ThirdSight.class);
-        if (module == null || !module.isActive() || !module.freeLook.get()) return pitch;
+        if (module == null || !module.isFreeLookActive()) return pitch;
         return module.cameraPitch;
+    }
+
+    /**
+     * After Camera#update has fully positioned the camera, apply the lateral
+     * shoulder offset by moving along the camera's right axis.
+     * Camera#moveBy signature: moveBy(forward, up, right).
+     */
+    @Inject(method = "update", at = @At("RETURN"))
+    private void onUpdateReturn(CallbackInfo ci) {
+        ThirdSight module = Modules.get().get(ThirdSight.class);
+        if (module == null || !module.isActive() || module.lateralOffset == 0f) return;
+        moveBy(0, 0, module.lateralOffset);
     }
 }
