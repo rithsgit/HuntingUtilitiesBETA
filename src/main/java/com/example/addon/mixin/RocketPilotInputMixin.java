@@ -12,8 +12,10 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 @Mixin(KeyboardInput.class)
 public class RocketPilotInputMixin {
+
+    // 1.21.4: KeyboardInput#tick takes no parameters beyond CallbackInfo.
     @Inject(method = "tick", at = @At("TAIL"))
-    private void onTick(boolean slowDown, float slowDownFactor, CallbackInfo ci) {
+    private void onTick(CallbackInfo ci) {
         RocketPilot rocketPilot = Modules.get().get(RocketPilot.class);
         if (rocketPilot != null && rocketPilot.isActive() && rocketPilot.useFreeLookY.get()) {
             MinecraftClient mc = MinecraftClient.getInstance();
