@@ -7,7 +7,7 @@
     "PortalMakerMixin",
     "PortalTrackerMixin"
   ],
-"client": [
+  "client": [
     "ClientPlayerEntityMixin",
     "DungeonAssistantMixin",
     "ElytraAssistantMixin",
@@ -15,16 +15,16 @@
     "GraveyardMixin",
     "HandledScreenAccessor",
     "HandledScreenMixin",
+    "IMouseAccessor",
     "MixinSignBlockEntityRenderer",
-    "LootLensMixin",
     "ObsidianFistMixin",
     "RocketPilotMixin",
-    "TunnelersMixin",
-    "IMouseAccessor",
+    "RocketPilotInputMixin",
+    "ServerHealthcareSystemMixin",
     "ThirdSightCameraMixin",
     "ThirdSightMouseMixin",
-    "ServerHealthcareSystemMixin"
-],
+    "TunnelersMixin"
+  ],
   "injectors": {
     "defaultRequire": 1
   }
