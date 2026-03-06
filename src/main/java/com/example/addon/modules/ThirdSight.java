@@ -1,18 +1,26 @@
 package com.example.addon.modules;
 
 import com.example.addon.HuntingUtilities;
-import meteordevelopment.meteorclient.events.world.TickEvent;
 import meteordevelopment.meteorclient.settings.BoolSetting;
 import meteordevelopment.meteorclient.settings.DoubleSetting;
+import meteordevelopment.meteorclient.settings.EnumSetting;
 import meteordevelopment.meteorclient.settings.Setting;
 import meteordevelopment.meteorclient.settings.SettingGroup;
 import meteordevelopment.meteorclient.systems.modules.Module;
-import meteordevelopment.orbit.EventHandler;
 import net.minecraft.client.option.Perspective;
 
 public class ThirdSight extends Module {
 
+    public enum CameraView { Back, Front }
+
     private final SettingGroup sgGeneral = settings.getDefaultGroup();
+
+    public final Setting<CameraView> cameraView = sgGeneral.add(new EnumSetting.Builder<CameraView>()
+        .name("camera-view")
+        .description("Which third-person perspective to use.")
+        .defaultValue(CameraView.Back)
+        .build()
+    );
 
     public final Setting<Double> distance = sgGeneral.add(new DoubleSetting.Builder()
         .name("distance")
@@ -43,7 +51,7 @@ public class ThirdSight extends Module {
     );
 
     // Independent camera yaw/pitch for free look.
-    // Updated by ThirdSightCameraMixin via mouse delta.
+    // Updated by ThirdSightMouseMixin via mouse delta.
     public float cameraYaw   = 0f;
     public float cameraPitch = 0f;
 
@@ -60,8 +68,11 @@ public class ThirdSight extends Module {
         cameraYaw   = mc.player.getYaw();
         cameraPitch = mc.player.getPitch();
         previousPerspective = mc.options.getPerspective();
-        mc.options.setPerspective(Perspective.THIRD_PERSON_BACK);
-        info("ThirdSight enabled.");
+        mc.options.setPerspective(
+            cameraView.get() == CameraView.Front
+                ? Perspective.THIRD_PERSON_FRONT
+                : Perspective.THIRD_PERSON_BACK
+        );
     }
 
     @Override
@@ -70,13 +81,5 @@ public class ThirdSight extends Module {
             mc.options.setPerspective(previousPerspective);
         }
         previousPerspective = null;
-    }
-
-    @EventHandler
-    private void onTick(TickEvent.Pre event) {
-        if (!freeLook.get() || mc.player == null) return;
-        // Keep the player entity's yaw/pitch frozen at whatever it was
-        // when free-look started so movement direction never changes.
-        // The camera uses cameraYaw/cameraPitch independently.
     }
 }
