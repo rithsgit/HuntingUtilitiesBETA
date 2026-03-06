@@ -62,7 +62,7 @@ public class ThirdSight extends Module {
     // ── Shoulder ─────────────────────────────────────────────────────────────
 
     public final Setting<Boolean> shoulderEnabled = sgShoulder.add(new BoolSetting.Builder()
-        .name("enabled")
+        .name("over-the-shoulder")
         .description("Offset the camera left or right for an over-the-shoulder look.")
         .defaultValue(false)
         .build()
@@ -134,6 +134,7 @@ public class ThirdSight extends Module {
         }
         previousPerspective = null;
         lateralOffset = 0f;
+        shoulderEnabled.set(false);
     }
 
     // ── Tick ──────────────────────────────────────────────────────────────────
