@@ -21,6 +21,8 @@ import net.minecraft.enchantment.Enchantments;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.EntityType;
 import net.minecraft.entity.mob.MobEntity;
+import net.minecraft.entity.passive.AbstractDonkeyEntity;
+import net.minecraft.entity.passive.LlamaEntity;
 import net.minecraft.item.BlockItem;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
@@ -115,6 +117,13 @@ public class Mobanom extends Module {
         .build()
     );
 
+    private final Setting<Boolean> detectChestedAnimals = sgItemAnomaly.add(new BoolSetting.Builder()
+        .name("detect-chested-animals")
+        .description("Detects animals (donkeys, llamas, etc.) carrying a chest.")
+        .defaultValue(true)
+        .build()
+    );
+
     private final Setting<Boolean> chatNotification = sgGeneral.add(new BoolSetting.Builder()
         .name("chat-notification")
         .description("Notify in chat when an anomaly is detected.")
@@ -196,13 +205,14 @@ public class Mobanom extends Module {
 
             boolean isDimensionAnomaly = isAnomaly(mob.getType(), dim);
             boolean isItemAnomaly = detectUnnaturalItems.get() && hasUnnaturalItems(mob);
+            boolean isChestedAnomaly = detectChestedAnimals.get() && hasChestAttachment(mob);
 
-            if (isDimensionAnomaly || isItemAnomaly) {
+            if (isDimensionAnomaly || isItemAnomaly || isChestedAnomaly) {
                 currentAnomalies.add(mob.getId());
                 highlightedEntities.add(mob.getId());
 
-                SettingColor sideColor = getSideColorForAnomaly(mob, isItemAnomaly);
-                SettingColor lineColor = getColorForAnomaly(mob, isItemAnomaly);
+                SettingColor sideColor = getSideColorForAnomaly(mob, isItemAnomaly || isChestedAnomaly);
+                SettingColor lineColor = getColorForAnomaly(mob, isItemAnomaly || isChestedAnomaly);
 
                 // Draw the bounding box around the mob
                 event.renderer.box(mob.getBoundingBox(), sideColor, lineColor, shapeMode.get(), 0);
@@ -212,7 +222,9 @@ public class Mobanom extends Module {
                 setEntityTeam(mob, getNearestColor(lineColor));
 
                 if (chatNotification.get() && notifiedEntities.add(mob.getId())) {
-                    if (isItemAnomaly) {
+                    if (isChestedAnomaly) {
+                        info("Chested animal detected: " + mob.getType().getName().getString());
+                    } else if (isItemAnomaly) {
                         info("Item anomaly detected: " + mob.getType().getName().getString());
                     } else {
                         info("Dimension anomaly detected: " + mob.getType().getName().getString());
@@ -286,6 +298,16 @@ public class Mobanom extends Module {
             if (level > enchantment.getMaxLevel()) return true;
         }
 
+        return false;
+    }
+
+    private boolean hasChestAttachment(MobEntity mob) {
+        if (mob instanceof AbstractDonkeyEntity donkey) {
+            return donkey.hasChest();
+        }
+        if (mob instanceof LlamaEntity llama) {
+            return llama.hasChest();
+        }
         return false;
     }
 
