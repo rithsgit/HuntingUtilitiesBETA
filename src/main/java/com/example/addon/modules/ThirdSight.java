@@ -187,8 +187,9 @@ public class ThirdSight extends Module {
      * ThirdPerson mode with free-look on. BirdsEye drives cameraYaw itself.
      */
     public boolean isFreeLookActive() {
-        return isActive()
-            && cameraMode.get() == CameraMode.ThirdPerson
-            && freeLook.get();
+        return isActive() && (
+            (cameraMode.get() == CameraMode.ThirdPerson && freeLook.get()) ||
+            cameraMode.get() == CameraMode.BirdsEye
+        );
     }
 }
