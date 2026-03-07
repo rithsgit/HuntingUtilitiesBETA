@@ -111,6 +111,14 @@ public class PortalTracker extends Module {
         .build()
     );
 
+    private final Setting<Boolean> onlyNearestBeam = sgGeneral.add(new BoolSetting.Builder()
+        .name("only-nearest-beam")
+        .description("Only render the beam for the portal closest to the player.")
+        .defaultValue(false)
+        .visible(showBeam::get)
+        .build()
+    );
+
     private final Setting<Integer> beamWidth = sgGeneral.add(new IntSetting.Builder()
         .name("beam-width")
         .description("Beam width in hundredths of a block.")
@@ -636,6 +644,22 @@ public class PortalTracker extends Module {
     private void onRender(Render3DEvent event) {
         if (mc.player == null || mc.world == null) return;
 
+        PortalStructure nearest = null;
+        if (showBeam.get() && onlyNearestBeam.get()) {
+            double minSq = Double.MAX_VALUE;
+            for (PortalStructure structure : portalStructures) {
+                if (onlyShowCreated.get() && !structure.isCreated) continue;
+                double cx = (structure.boundingBox.minX + structure.boundingBox.maxX) * 0.5;
+                double cy = (structure.boundingBox.minY + structure.boundingBox.maxY) * 0.5;
+                double cz = (structure.boundingBox.minZ + structure.boundingBox.maxZ) * 0.5;
+                double sq = mc.player.squaredDistanceTo(cx, cy, cz);
+                if (sq < minSq) {
+                    minSq = sq;
+                    nearest = structure;
+                }
+            }
+        }
+
         for (PortalStructure structure : portalStructures) {
             if (onlyShowCreated.get() && !structure.isCreated) continue;
 
@@ -643,7 +667,11 @@ public class PortalTracker extends Module {
             if (color == null) continue;
 
             event.renderer.box(structure.boundingBox, color, color, shapeMode.get(), 0);
-            if (showBeam.get()) renderBeam(event, structure.boundingBox, color);
+            if (showBeam.get()) {
+                if (!onlyNearestBeam.get() || structure == nearest) {
+                    renderBeam(event, structure.boundingBox, color);
+                }
+            }
         }
     }
 

@@ -25,7 +25,7 @@ public abstract class ThirdSightCameraMixin {
     private void onClipToSpace(float desiredDistance, CallbackInfoReturnable<Float> cir) {
         ThirdSight module = Modules.get().get(ThirdSight.class);
         if (module == null || !module.isActive()) return;
-        cir.setReturnValue((float) module.distance.get().doubleValue());
+        cir.setReturnValue((float) module.getDistance());
     }
 
     /**

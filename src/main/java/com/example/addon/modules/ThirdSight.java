@@ -1,6 +1,7 @@
 package com.example.addon.modules;
 
 import com.example.addon.HuntingUtilities;
+import meteordevelopment.meteorclient.events.render.Render3DEvent;
 import meteordevelopment.meteorclient.events.world.TickEvent;
 import meteordevelopment.meteorclient.settings.BoolSetting;
 import meteordevelopment.meteorclient.settings.DoubleSetting;
@@ -20,6 +21,7 @@ public class ThirdSight extends Module {
 
     private final SettingGroup sgGeneral  = settings.getDefaultGroup();
     private final SettingGroup sgShoulder = settings.createGroup("Shoulder");
+    private final SettingGroup sgZoom     = settings.createGroup("Zoom");
 
     // ── General ──────────────────────────────────────────────────────────────
 
@@ -95,6 +97,50 @@ public class ThirdSight extends Module {
         .build()
     );
 
+    public final Setting<Boolean> smoothTransitions = sgShoulder.add(new BoolSetting.Builder()
+        .name("smooth-transitions")
+        .description("Smoothly interpolate between camera positions.")
+        .defaultValue(true)
+        .build()
+    );
+
+    public final Setting<Double> transitionSpeed = sgShoulder.add(new DoubleSetting.Builder()
+        .name("transition-speed")
+        .description("Speed of the smoothing.")
+        .defaultValue(0.15)
+        .min(0.01)
+        .max(1.0)
+        .sliderRange(0.05, 0.5)
+        .visible(smoothTransitions::get)
+        .build()
+    );
+
+    // ── Zoom ─────────────────────────────────────────────────────────────────
+
+    public final Setting<Double> zoomDistance = sgZoom.add(new DoubleSetting.Builder()
+        .name("zoom-distance")
+        .description("Camera distance when zoomed in.")
+        .defaultValue(2.0)
+        .min(0.5)
+        .max(30.0)
+        .sliderRange(0.5, 10.0)
+        .build()
+    );
+
+    public final Setting<Keybind> zoomKey = sgZoom.add(new KeybindSetting.Builder()
+        .name("zoom-key")
+        .description("Key to activate zoom.")
+        .defaultValue(Keybind.none())
+        .build()
+    );
+
+    public final Setting<Boolean> zoomToggle = sgZoom.add(new BoolSetting.Builder()
+        .name("toggle-mode")
+        .description("If true, press to toggle zoom. If false, hold to zoom.")
+        .defaultValue(false)
+        .build()
+    );
+
     // ── State ─────────────────────────────────────────────────────────────────
 
     // Independent camera yaw/pitch for free look.
@@ -106,6 +152,10 @@ public class ThirdSight extends Module {
     // Lateral offset read by ThirdSightCameraMixin.
     // Positive = right, negative = left.
     public float lateralOffset = 0f;
+    private float targetLateralOffset = 0f;
+    private double currentDistance = 4.0;
+    private boolean isZooming = false;
+    private boolean wasZoomKeyPressed = false;
 
     private Perspective previousPerspective = null;
     private boolean     wasKeyPressed       = false;
@@ -125,6 +175,11 @@ public class ThirdSight extends Module {
         previousPerspective = mc.options.getPerspective();
         mc.options.setPerspective(Perspective.THIRD_PERSON_BACK);
         updateLateralOffset();
+        if (smoothTransitions.get()) lateralOffset = 0f;
+
+        currentDistance = distance.get();
+        isZooming = false;
+        wasZoomKeyPressed = false;
     }
 
     @Override
@@ -168,18 +223,51 @@ public class ThirdSight extends Module {
             wasKeyPressed = isPressed;
         }
 
+        // Handle zoom keybind
+        boolean zoomPressed = zoomKey.get().isPressed();
+        if (zoomToggle.get()) {
+            if (zoomPressed && !wasZoomKeyPressed) {
+                isZooming = !isZooming;
+            }
+        } else {
+            isZooming = zoomPressed;
+        }
+        wasZoomKeyPressed = zoomPressed;
+
         updateLateralOffset();
+    }
+
+    @EventHandler
+    private void onRender(Render3DEvent event) {
+        double targetDist = isZooming ? zoomDistance.get() : distance.get();
+
+        if (!smoothTransitions.get()) {
+            lateralOffset = targetLateralOffset;
+            currentDistance = targetDist;
+            return;
+        }
+        float speed = transitionSpeed.get().floatValue();
+        lateralOffset += (targetLateralOffset - lateralOffset) * speed;
+        if (Math.abs(targetLateralOffset - lateralOffset) < 0.001f) lateralOffset = targetLateralOffset;
+
+        currentDistance += (targetDist - currentDistance) * speed;
+        if (Math.abs(targetDist - currentDistance) < 0.01) currentDistance = targetDist;
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     private void updateLateralOffset() {
         if (!shoulderEnabled.get()) {
-            lateralOffset = 0f;
-            return;
+            targetLateralOffset = 0f;
+        } else {
+            float offset = (float) shoulderOffset.get().doubleValue();
+            targetLateralOffset = shoulderSide.get() == ShoulderSide.Right ? offset : -offset;
         }
-        float offset = (float) shoulderOffset.get().doubleValue();
-        lateralOffset = shoulderSide.get() == ShoulderSide.Right ? offset : -offset;
+        if (!smoothTransitions.get()) lateralOffset = targetLateralOffset;
+    }
+
+    public double getDistance() {
+        return currentDistance;
     }
 
     /**

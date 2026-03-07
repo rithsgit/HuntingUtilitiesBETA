@@ -12,12 +12,17 @@ import meteordevelopment.meteorclient.systems.modules.Modules;
 import meteordevelopment.meteorclient.systems.modules.world.Timer;
 import meteordevelopment.meteorclient.utils.world.TickRate;
 import meteordevelopment.orbit.EventHandler;
+import net.minecraft.entity.Entity;
+import net.minecraft.entity.mob.HostileEntity;
+import net.minecraft.entity.player.PlayerEntity;
+import net.minecraft.util.math.Box;
 import net.minecraft.util.math.MathHelper;
 
 public class Timethrottle extends Module {
 
     private final SettingGroup sgTps = settings.createGroup("TPS");
     private final SettingGroup sgChunkLoading = settings.createGroup("Chunk Loading");
+    private final SettingGroup sgSafety = settings.createGroup("Safety");
 
     // TPS Settings
     private final Setting<Double> targetTps = sgTps.add(new DoubleSetting.Builder()
@@ -79,6 +84,34 @@ public class Timethrottle extends Module {
         .build()
     );
 
+    // Safety Settings
+    private final Setting<Boolean> combatSafety = sgSafety.add(new BoolSetting.Builder()
+        .name("combat-safety")
+        .description("Disables throttling when in combat or near enemies.")
+        .defaultValue(true)
+        .build()
+    );
+
+    private final Setting<Integer> safetyRange = sgSafety.add(new IntSetting.Builder()
+        .name("safety-range")
+        .description("Radius to check for hostile entities.")
+        .defaultValue(15)
+        .min(0)
+        .sliderMax(32)
+        .visible(combatSafety::get)
+        .build()
+    );
+
+    private final Setting<Integer> safetyDuration = sgSafety.add(new IntSetting.Builder()
+        .name("safety-duration")
+        .description("How long (in ticks) to disable throttling after combat activity.")
+        .defaultValue(60)
+        .min(0)
+        .sliderMax(200)
+        .visible(combatSafety::get)
+        .build()
+    );
+
     // General Settings
     private final Setting<Double> smoothing = settings.getDefaultGroup().add(new DoubleSetting.Builder()
         .name("smoothing")
@@ -91,6 +124,7 @@ public class Timethrottle extends Module {
     );
 
     private double currentSpeed = 1.0;
+    private int safetyTimer = 0;
 
     public Timethrottle() {
         super(HuntingUtilities.CATEGORY, "time-throttle", "Automatically adjusts game speed based on server performance (TPS, chunk loading).");
@@ -99,6 +133,7 @@ public class Timethrottle extends Module {
     @Override
     public void onActivate() {
         currentSpeed = 1.0;
+        safetyTimer = 0;
     }
 
     @Override
@@ -109,6 +144,27 @@ public class Timethrottle extends Module {
     @EventHandler
     private void onTick(TickEvent.Pre event) {
         if (mc.world == null || mc.player == null) {
+            return;
+        }
+
+        if (combatSafety.get()) {
+            if (mc.player.hurtTime > 0) {
+                safetyTimer = safetyDuration.get();
+            } else if (safetyRange.get() > 0) {
+                Box box = mc.player.getBoundingBox().expand(safetyRange.get());
+                boolean enemyNearby = !mc.world.getEntitiesByClass(HostileEntity.class, box, Entity::isAlive).isEmpty()
+                    || !mc.world.getEntitiesByClass(PlayerEntity.class, box, p -> p != mc.player && p.isAlive()).isEmpty();
+
+                if (enemyNearby) {
+                    safetyTimer = safetyDuration.get();
+                }
+            }
+        }
+
+        if (safetyTimer > 0) {
+            safetyTimer--;
+            currentSpeed = 1.0;
+            Modules.get().get(Timer.class).setOverride(1.0);
             return;
         }
 
