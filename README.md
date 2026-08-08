@@ -5,11 +5,11 @@ Currently in BETA — expect bugs, incomplete features, and frequent updates.
 Modules List
 - Baromine
 - Chambers Assistant
+- City Assistant
 - Datamine
 - Dungeon Assistant
 - Eight To One
 - Elytra Assistant
-- EndSafe
 - Gatekeeper
 - Graveyard
 - Handhold
@@ -24,14 +24,15 @@ Modules List
 - Mobanom
 - Neighbourhood Watch
 - Pearl Pulse
+- Penpal
 - Portal Maker
 - Rocket Pilot
+- Safety Net
 - Server Healthcare System
 - Sign Scanner
 - Third Sight
 - Time Throttle
 - Total Disposal
-- Trail Investigator
 - Tunnelers
 
 HUD List
@@ -39,13 +40,17 @@ HUD List
 - Motance
 - Portal Stock
 - Chambers Assistant
+- City Assistant
 - Dungeon Assistant
 - Dura Panel
 - Eight To One
+- End Assistant
 - Gatekeeper
 - Info Assistant
 - Inspector Gadget
+- Last Seen Player
 - Loot Lens
+- Manor Assistant
 - Mobanom
 - Neighbourhood Watch
 - Position
