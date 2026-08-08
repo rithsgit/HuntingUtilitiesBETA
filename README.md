@@ -1,7 +1,5 @@
 Tim (Trail Investigator Module) Formerly known as Hunting Utilities, Tim is a Meteor Client addon providing utilities focused on stash hunting, base hunting, and general survival/QoL on the 2b2t anarchy server (and similar environments).
 
-Currently in BETA — expect bugs, incomplete features, and frequent updates.
-
 Modules List
 - Baromine
 - Chambers Assistant
