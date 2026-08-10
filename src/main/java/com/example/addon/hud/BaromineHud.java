@@ -1,6 +1,6 @@
 package com.example.addon.hud;
 
-import com.example.addon.HuntingUtilities;
+import com.example.addon.Tim;
 import com.example.addon.modules.Baromine;
 import meteordevelopment.meteorclient.settings.*;
 import meteordevelopment.meteorclient.systems.hud.HudElement;
@@ -20,8 +20,8 @@ import java.util.List;
 
 public class BaromineHud extends HudElement {
     public static final HudElementInfo<BaromineHud> INFO = new HudElementInfo<>(
-        HuntingUtilities.HUD_GROUP, "Baromine Status",
-        "Baromine Status",
+        Tim.HUD_GROUP, "Baromine",
+        "Baromine",
         "Displays Baromine mining progress, target item, and inventory stock.",
         BaromineHud::new
     );

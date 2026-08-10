@@ -1,6 +1,6 @@
 package com.example.addon.hud;
 
-import com.example.addon.HuntingUtilities;
+import com.example.addon.Tim;
 import com.example.addon.modules.DungeonAssistant;
 import meteordevelopment.meteorclient.settings.*;
 import meteordevelopment.meteorclient.systems.hud.HudElement;
@@ -17,7 +17,7 @@ import java.util.Map;
 
 public class DungeonAssistantHud extends HudElement {
     public static final HudElementInfo<DungeonAssistantHud> INFO = new HudElementInfo<>(
-        HuntingUtilities.HUD_GROUP,
+        Tim.HUD_GROUP,
         "dungeon-assistant",
         "Displays dungeon element counts.",
         DungeonAssistantHud::new

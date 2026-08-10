@@ -9,7 +9,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 import com.example.addon.Tim;
-import com.example.addon.hud.ChambersAssistantHud;
+import com.example.addon.hud.CityAssistantHud;
 import com.example.addon.utils.GlowingRegistry;
 
 import meteordevelopment.meteorclient.events.render.Render3DEvent;
@@ -17,9 +17,9 @@ import meteordevelopment.meteorclient.events.world.TickEvent;
 import meteordevelopment.meteorclient.renderer.ShapeMode;
 import meteordevelopment.meteorclient.settings.BoolSetting;
 import meteordevelopment.meteorclient.settings.ColorSetting;
+import meteordevelopment.meteorclient.settings.DoubleSetting;
 import meteordevelopment.meteorclient.settings.EnumSetting;
 import meteordevelopment.meteorclient.settings.IntSetting;
-import meteordevelopment.meteorclient.settings.DoubleSetting;
 import meteordevelopment.meteorclient.settings.ItemListSetting;
 import meteordevelopment.meteorclient.settings.Setting;
 import meteordevelopment.meteorclient.settings.SettingGroup;
@@ -30,25 +30,15 @@ import meteordevelopment.orbit.EventHandler;
 import net.minecraft.block.Block;
 import net.minecraft.block.BlockState;
 import net.minecraft.block.Blocks;
-import net.minecraft.block.entity.BarrelBlockEntity;
 import net.minecraft.block.entity.BlockEntity;
 import net.minecraft.block.entity.ChestBlockEntity;
-import net.minecraft.block.entity.DecoratedPotBlockEntity;
-import net.minecraft.block.entity.DispenserBlockEntity;
-import net.minecraft.block.entity.TrialSpawnerBlockEntity;
-import net.minecraft.block.entity.VaultBlockEntity;
-import net.minecraft.block.enums.TrialSpawnerState;
-import net.minecraft.block.enums.VaultState;
+import net.minecraft.block.enums.SculkSensorPhase;
 import net.minecraft.client.gui.screen.ingame.HandledScreen;
 import net.minecraft.client.gui.screen.ingame.InventoryScreen;
 import net.minecraft.client.gui.screen.ingame.ShulkerBoxScreen;
-import net.minecraft.entity.ItemEntity;
-import net.minecraft.entity.decoration.ItemFrameEntity;
-import net.minecraft.entity.effect.StatusEffects;
-import net.minecraft.entity.mob.BreezeEntity;
+import net.minecraft.entity.mob.WardenEntity;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.entity.player.PlayerInventory;
-import net.minecraft.entity.projectile.WindChargeEntity;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
 import net.minecraft.item.Items;
@@ -67,23 +57,18 @@ import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.Vec3d;
 import net.minecraft.world.chunk.WorldChunk;
 
-public class ChambersAssistant extends Module {
+public class CityAssistant extends Module {
 
     // ═══════════════════════════════════════════════════════════════
     // Enums
     // ═══════════════════════════════════════════════════════════════════════════
 
     public enum TargetType {
-        TRIAL_SPAWNER,
-        ACTIVE_TRIAL_SPAWNER,
-        EJECTING_TRIAL_SPAWNER,
-        OMINOUS_SPAWNER,
-        ACTIVE_OMINOUS_SPAWNER,
-        EJECTING_OMINOUS_SPAWNER,
-        VAULT,
-        EJECTING_VAULT,
-        OMINOUS_VAULT,
-        LOOT_POT,
+        SHRIEKER,
+        ACTIVE_SHRIEKER,
+        DISABLED_SHRIEKER,
+        SENSOR,
+        ACTIVE_SENSOR,
         CONTAINER
     }
 
@@ -94,6 +79,7 @@ public class ChambersAssistant extends Module {
     }
 
     public enum AlertSound {
+        WARDEN_ROAR("Warden Roar"),
         DRAGON_GROWL("Dragon Growl"),
         LEVEL_UP("Level Up"),
         RAVAGER_ROAR("Ravager Roar"),
@@ -111,21 +97,17 @@ public class ChambersAssistant extends Module {
 
     private static final int DIMENSION_CHANGE_COOLDOWN_TICKS = 40;
     private static final int INTERACT_TIMEOUT_TICKS = 20;
+    private static final long WARDEN_DESPAWN_MS = 60000; // 60 seconds in milliseconds
 
     private final Map<BlockPos, TargetType> targets = new ConcurrentHashMap<>();
     private final Set<ChunkPos> scannedChunks = new HashSet<>();
     private final Set<BlockPos> checkedContainers = new HashSet<>();
-    private final Set<BlockPos> notifiedPots = new HashSet<>();
-    private final Set<BlockPos> notifiedActiveOminousSpawners = new HashSet<>();
     
-    private final List<BreezeEntity> breezeTargets = new ArrayList<>();
-    private final List<WindChargeEntity> windChargeTargets = new ArrayList<>();
-    private final List<ItemFrameEntity> itemFrameTargets = new ArrayList<>();
-    private final List<ItemEntity> trialItemTargets = new ArrayList<>();
-    
-    private final Set<Integer> notifiedBreezes = new HashSet<>();
-    private final Set<Integer> notifiedDroppedRewards = new HashSet<>();
-    private int omenWarnTimer = 0;
+    private final Set<Integer> notifiedWardens = new HashSet<>();
+    private final Map<Integer, Long> wardenSpawnTimes = new ConcurrentHashMap<>(); // For Despawn Timer
+    private int darknessWarnTimer = 0;
+    private int totalWardenSpawns = 0;
+    private boolean aggroWarned = false;
 
     private boolean wasAutoOpened = false;
     private BlockPos lastOpenedContainer = null;
@@ -143,8 +125,7 @@ public class ChambersAssistant extends Module {
     // ═══════════════════════════════════════════════════════════════════════════
 
     private final SettingGroup sgGeneral = settings.getDefaultGroup();
-    private final SettingGroup sgBlocks = settings.createGroup("Targets - Chambers");
-    private final SettingGroup sgEntities = settings.createGroup("Targets - Entities");
+    private final SettingGroup sgBlocks = settings.createGroup("Targets - City");
     private final SettingGroup sgAutomation = settings.createGroup("Automation");
     private final SettingGroup sgSafety = settings.createGroup("Safety");
 
@@ -159,10 +140,10 @@ public class ChambersAssistant extends Module {
         .build()
     );
 
-    private final Setting<Integer> chamberYLevel = sgGeneral.add(new IntSetting.Builder()
-        .name("chamber-y-level")
-        .description("Maximum Y level to scan. Trial Chambers can generate up to around Y = 40.")
-        .defaultValue(40).min(-64).max(320).sliderMin(-64).sliderMax(100)
+    private final Setting<Integer> cityYLevel = sgGeneral.add(new IntSetting.Builder()
+        .name("city-y-level")
+        .description("Maximum Y level to scan. Ancient Cities generate around Y = -52.")
+        .defaultValue(-20).min(-64).max(320).sliderMin(-64).sliderMax(100)
         .onChanged(v -> {
             scannedChunks.clear();
             targets.entrySet().removeIf(entry -> entry.getKey().getY() > v);
@@ -174,13 +155,6 @@ public class ChambersAssistant extends Module {
         .name("render-mode")
         .description("GLOW = layered bloom boxes. SPECTRAL = outline shader. PULSE = fading highlight.")
         .defaultValue(RenderMode.GLOW)
-        .build()
-    );
-
-    private final Setting<Integer> beamWidth = sgGeneral.add(new IntSetting.Builder()
-        .name("beam-width")
-        .description("Width of the beams for entities and anomalies.")
-        .defaultValue(15).min(5).max(50)
         .build()
     );
 
@@ -238,79 +212,63 @@ public class ChambersAssistant extends Module {
     // Settings — Targets
     // ═══════════════════════════════════════════════════════════════════════════
 
-    private final Setting<Boolean> trackSpawners = sgBlocks.add(new BoolSetting.Builder()
-        .name("track-spawners").description("Highlight Trial Spawners (normal and ominous).").defaultValue(true)
+    private final Setting<Boolean> trackShriekers = sgBlocks.add(new BoolSetting.Builder()
+        .name("track-shriekers").description("Highlight Sculk Shriekers.").defaultValue(true)
         .build()
     );
 
-    private final Setting<SettingColor> spawnerColor = sgBlocks.add(new ColorSetting.Builder()
-        .name("spawner-color").description("Color for idle Trial Spawners.").defaultValue(new SettingColor(255, 255, 255, 255))
-        .visible(trackSpawners::get).build()
+    private final Setting<SettingColor> shriekerColor = sgBlocks.add(new ColorSetting.Builder()
+        .name("shrieker-color").description("Color for idle Sculk Shriekers.").defaultValue(new SettingColor(0, 180, 255, 255))
+        .visible(trackShriekers::get).build()
     );
 
-    private final Setting<SettingColor> activeSpawnerColor = sgBlocks.add(new ColorSetting.Builder()
-        .name("active-spawner-color").description("Color for Trial Spawners that are currently active.")
+    private final Setting<SettingColor> activeShriekerColor = sgBlocks.add(new ColorSetting.Builder()
+        .name("active-shrieker-color").description("Color for currently shrieking blocks.")
         .defaultValue(new SettingColor(255, 0, 0, 255))
-        .visible(trackSpawners::get).build()
+        .visible(trackShriekers::get).build()
     );
 
-    private final Setting<SettingColor> ejectingSpawnerColor = sgBlocks.add(new ColorSetting.Builder()
-        .name("ejecting-spawner-color").description("Color for Trial Spawners that are ejecting rewards.")
-        .defaultValue(new SettingColor(0, 255, 0, 255)) // Green
-        .visible(trackSpawners::get).build()
+    private final Setting<SettingColor> disabledShriekerColor = sgBlocks.add(new ColorSetting.Builder()
+        .name("disabled-shrieker-color").description("Color for Shriekers that can no longer summon Wardens.")
+        .defaultValue(new SettingColor(100, 100, 100, 255))
+        .visible(trackShriekers::get).build()
     );
 
-    private final Setting<SettingColor> ominousSpawnerColor = sgBlocks.add(new ColorSetting.Builder()
-        .name("ominous-spawner-color").description("Color for idle Ominous Spawners.").defaultValue(new SettingColor(0, 180, 255, 255))
-        .visible(trackSpawners::get).build()
-    );
-
-    private final Setting<SettingColor> activeOminousSpawnerColor = sgBlocks.add(new ColorSetting.Builder()
-        .name("active-ominous-spawner-color").description("Color for Ominous Spawners that are currently active.")
-        .defaultValue(new SettingColor(180, 0, 0, 255))
-        .visible(trackSpawners::get).build()
-    );
-
-    private final Setting<Boolean> trackVaults = sgBlocks.add(new BoolSetting.Builder()
-        .name("track-vaults").description("Highlight Vaults (normal and ominous).").defaultValue(true)
+    private final Setting<Boolean> trackSensors = sgBlocks.add(new BoolSetting.Builder()
+        .name("track-sensors").description("Highlight Sculk Sensors.").defaultValue(true)
         .build()
     );
 
-    private final Setting<SettingColor> vaultColor = sgBlocks.add(new ColorSetting.Builder()
-        .name("vault-color").description("Color for active/unlooted vaults.").defaultValue(new SettingColor(255, 215, 0, 255))
-        .visible(trackVaults::get).build()
+    private final Setting<SettingColor> sensorColor = sgBlocks.add(new ColorSetting.Builder()
+        .name("sensor-color").description("Color for idle Sculk Sensors.").defaultValue(new SettingColor(255, 255, 255, 255))
+        .visible(trackSensors::get).build()
     );
 
-    private final Setting<SettingColor> ejectingVaultColor = sgBlocks.add(new ColorSetting.Builder()
-        .name("ejecting-vault-color").description("Color for vaults that are currently ejecting loot.")
-        .defaultValue(new SettingColor(0, 255, 0, 255)) // Green
-        .visible(trackVaults::get).build()
-    );
-
-    private final Setting<SettingColor> ominousVaultColor = sgBlocks.add(new ColorSetting.Builder()
-        .name("ominous-vault-color").description("Color for Ominous Vaults.").defaultValue(new SettingColor(180, 0, 255, 255))
-        .visible(trackVaults::get).build()
+    private final Setting<SettingColor> activeSensorColor = sgBlocks.add(new ColorSetting.Builder()
+        .name("active-sensor-color").description("Color for actively listening/triggered Sculk Sensors.")
+        .defaultValue(new SettingColor(255, 100, 0, 255))
+        .visible(trackSensors::get).build()
     );
 
     private final Setting<Boolean> trackContainers = sgBlocks.add(new BoolSetting.Builder()
-        .name("track-containers").description("Highlight standard chests, barrels, and dispensers.").defaultValue(true)
+        .name("track-containers").description("Highlight standard chests.").defaultValue(true)
         .build()
     );
 
     private final Setting<SettingColor> containerColor = sgBlocks.add(new ColorSetting.Builder()
-        .name("container-color").description("Color for standard chests, barrels, and dispensers.")
-        .defaultValue(new SettingColor(0, 0, 255, 255)) // Blue
+        .name("container-color").description("Color for standard chests.")
+        .defaultValue(new SettingColor(0, 0, 255, 255))
         .visible(trackContainers::get).build()
     );
 
     private final Setting<List<Item>> containerWhitelist = sgBlocks.add(new ItemListSetting.Builder()
         .name("container-whitelist")
-        .description("Items to alert you about when opening Chests/Barrels/Dispensers.")
+        .description("Items to alert you about when opening Chests.")
         .defaultValue(List.of(
             Items.NETHERITE_BLOCK, Items.NETHERITE_INGOT, Items.DIAMOND, 
             Items.DIAMOND_SWORD, Items.DIAMOND_PICKAXE, Items.DIAMOND_AXE, Items.DIAMOND_SHOVEL, Items.DIAMOND_HOE,
             Items.DIAMOND_HELMET, Items.DIAMOND_CHESTPLATE, Items.DIAMOND_LEGGINGS, Items.DIAMOND_BOOTS,
-            Items.ENDER_CHEST, Items.ENCHANTED_GOLDEN_APPLE, Items.ELYTRA, Items.MACE, Items.OMINOUS_BOTTLE,
+            Items.ENDER_CHEST, Items.ENCHANTED_GOLDEN_APPLE, Items.ELYTRA, Items.MACE,
             Items.NETHERITE_SWORD, Items.NETHERITE_PICKAXE, Items.NETHERITE_AXE, Items.NETHERITE_SHOVEL, Items.NETHERITE_HOE,
             Items.NETHERITE_HELMET, Items.NETHERITE_CHESTPLATE, Items.NETHERITE_LEGGINGS, Items.NETHERITE_BOOTS,
             Items.SHULKER_BOX, Items.WHITE_SHULKER_BOX, Items.ORANGE_SHULKER_BOX, Items.MAGENTA_SHULKER_BOX,
@@ -319,93 +277,20 @@ public class ChambersAssistant extends Module {
             Items.BLUE_SHULKER_BOX, Items.BROWN_SHULKER_BOX, Items.GREEN_SHULKER_BOX, Items.RED_SHULKER_BOX,
             Items.BLACK_SHULKER_BOX,
             Items.NETHERITE_UPGRADE_SMITHING_TEMPLATE,
-            Items.SENTRY_ARMOR_TRIM_SMITHING_TEMPLATE, Items.VEX_ARMOR_TRIM_SMITHING_TEMPLATE, Items.SILENCE_ARMOR_TRIM_SMITHING_TEMPLATE,
-            Items.WAYFINDER_ARMOR_TRIM_SMITHING_TEMPLATE, Items.RAISER_ARMOR_TRIM_SMITHING_TEMPLATE, Items.SHAPER_ARMOR_TRIM_SMITHING_TEMPLATE,
-            Items.HOST_ARMOR_TRIM_SMITHING_TEMPLATE, Items.WARD_ARMOR_TRIM_SMITHING_TEMPLATE, Items.SPIRE_ARMOR_TRIM_SMITHING_TEMPLATE,
-            Items.COAST_ARMOR_TRIM_SMITHING_TEMPLATE, Items.DUNE_ARMOR_TRIM_SMITHING_TEMPLATE, Items.WILD_ARMOR_TRIM_SMITHING_TEMPLATE,
-            Items.EYE_ARMOR_TRIM_SMITHING_TEMPLATE, Items.RIB_ARMOR_TRIM_SMITHING_TEMPLATE, Items.SNOUT_ARMOR_TRIM_SMITHING_TEMPLATE,
-            Items.TIDE_ARMOR_TRIM_SMITHING_TEMPLATE, Items.BOLT_ARMOR_TRIM_SMITHING_TEMPLATE, Items.FLOW_ARMOR_TRIM_SMITHING_TEMPLATE
+            Items.SILENCE_ARMOR_TRIM_SMITHING_TEMPLATE, Items.WARD_ARMOR_TRIM_SMITHING_TEMPLATE,
+            Items.ECHO_SHARD, Items.DISC_FRAGMENT_5, Items.MUSIC_DISC_5, Items.MUSIC_DISC_RELIC,
+            Items.SCULK_CATALYST, Items.SCULK_SHRIEKER, Items.SCULK_SENSOR
         ))
         .build()
-    );
-
-    private final Setting<List<Item>> potWhitelist = sgBlocks.add(new ItemListSetting.Builder()
-        .name("pot-whitelist")
-        .description("Items to search for inside Decorated Pots.")
-        .defaultValue(List.of(
-            Items.DIAMOND, Items.EMERALD, Items.ENCHANTED_GOLDEN_APPLE, Items.GOLDEN_APPLE,
-            Items.ENDER_PEARL, Items.TRIAL_KEY, Items.OMINOUS_TRIAL_KEY, Items.EXPERIENCE_BOTTLE, Items.OMINOUS_BOTTLE,
-            Items.IRON_INGOT, Items.GOLD_INGOT, Items.DIAMOND_PICKAXE, Items.DIAMOND_AXE,
-            Items.MUSIC_DISC_5, Items.MUSIC_DISC_RELIC,
-            Items.BOLT_ARMOR_TRIM_SMITHING_TEMPLATE, Items.FLOW_ARMOR_TRIM_SMITHING_TEMPLATE,
-            Items.ENDER_CHEST
-        ))
-        .build()
-    );
-
-    private final Setting<SettingColor> lootPotColor = sgBlocks.add(new ColorSetting.Builder()
-        .name("loot-pot-color")
-        .description("Color for pots containing whitelisted items.")
-        .defaultValue(new SettingColor(0, 255, 255, 255))
-        .build()
-    );
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // Settings — Entities
-    // ═══════════════════════════════════════════════════════════════════════════
-
-    private final Setting<Boolean> trackBreezes = sgEntities.add(new BoolSetting.Builder()
-        .name("track-breezes").description("Highlights Breezes and Wind Charge projectiles.").defaultValue(true)
-        .build()
-    );
-
-    private final Setting<SettingColor> breezeColor = sgEntities.add(new ColorSetting.Builder()
-        .name("breeze-color").description("Color for Breezes and Wind Charges.").defaultValue(new SettingColor(255, 255, 255, 255))
-        .visible(trackBreezes::get).build()
-    );
-
-    private final Setting<Boolean> trackOminousItemFrames = sgEntities.add(new BoolSetting.Builder()
-        .name("track-item-frames").description("Highlights invisible Ominous Item Frames holding items.").defaultValue(true)
-        .build()
-    );
-
-    private final Setting<SettingColor> itemFrameColor = sgEntities.add(new ColorSetting.Builder()
-        .name("item-frame-color").description("Color for invisible Item Frames.").defaultValue(new SettingColor(255, 0, 255, 255))
-        .visible(trackOminousItemFrames::get).build()
-    );
-
-    private final Setting<Boolean> trackTrialItems = sgEntities.add(new BoolSetting.Builder()
-        .name("track-keys-and-bottles").description("Highlights dropped Trial Keys and Ominous Bottles.").defaultValue(true)
-        .build()
-    );
-
-    private final Setting<SettingColor> trialItemColor = sgEntities.add(new ColorSetting.Builder()
-        .name("trial-item-color").description("Color for dropped Trial Keys and Ominous Bottles.")
-        .defaultValue(new SettingColor(255, 255, 0, 255))
-        .visible(trackTrialItems::get).build()
     );
 
     // ═══════════════════════════════════════════════════════════════════════════
     // Settings — Automation & Safety
     // ═══════════════════════════════════════════════════════════════════════════
 
-    private final Setting<Boolean> autoOpenVaults = sgAutomation.add(new BoolSetting.Builder()
-        .name("auto-open-vaults")
-        .description("Automatically opens Vaults when you have a Trial Key.")
-        .defaultValue(true)
-        .build()
-    );
-
-    private final Setting<Boolean> autoDrinkOminous = sgAutomation.add(new BoolSetting.Builder()
-        .name("auto-drink-ominous")
-        .description("Automatically drinks an Ominous Bottle when near a Trial Spawner to trigger Ominous state.")
-        .defaultValue(false)
-        .build()
-    );
-
     private final Setting<Boolean> enableAlerts = sgAutomation.add(new BoolSetting.Builder()
         .name("alerts")
-        .description("Master toggle for audio cues, reward announcements, and omen effect warnings.")
+        .description("Master toggle for audio cues and loot announcements.")
         .defaultValue(true)
         .build()
     );
@@ -413,7 +298,7 @@ public class ChambersAssistant extends Module {
     private final Setting<AlertSound> alertSound = sgAutomation.add(new EnumSetting.Builder<AlertSound>()
         .name("alert-sound")
         .description("Which sound to play for module alerts.")
-        .defaultValue(AlertSound.DRAGON_GROWL)
+        .defaultValue(AlertSound.WARDEN_ROAR)
         .visible(enableAlerts::get)
         .build()
     );
@@ -426,10 +311,17 @@ public class ChambersAssistant extends Module {
         .build()
     );
 
-    private final Setting<Boolean> alertOnLootPot = sgAutomation.add(new BoolSetting.Builder()
-        .name("alert-on-loot-pot")
-        .description("Plays a sound and warns you when a pot containing whitelisted loot is found.")
+    private final Setting<Boolean> enableWardenPing = sgAutomation.add(new BoolSetting.Builder()
+        .name("warden-ping")
+        .description("Plays a distinct sound and warns you heavily when a Warden spawns or approaches.")
         .defaultValue(true)
+        .build()
+    );
+
+    private final Setting<Boolean> autoMilkDarkness = sgAutomation.add(new BoolSetting.Builder()
+        .name("auto-milk-darkness")
+        .description("Automatically drinks milk to clear the Darkness effect.")
+        .defaultValue(false)
         .build()
     );
 
@@ -449,8 +341,8 @@ public class ChambersAssistant extends Module {
     // Constructor & Lifecycle
     // ═══════════════════════════════════════════════════════════════════════════
 
-    public ChambersAssistant() {
-        super(Tim.CATEGORY, "chambers-assistant", "Highlights Trial Chambers elements: spawners, vaults, pots, and breezes.");
+    public CityAssistant() {
+        super(Tim.CATEGORY, "city-assistant", "Highlights Ancient City elements: shriekers, sensors, chests, and pings for Wardens.");
     }
 
     @Override
@@ -458,15 +350,11 @@ public class ChambersAssistant extends Module {
         targets.clear();
         scannedChunks.clear();
         checkedContainers.clear();
-        notifiedPots.clear();
-        notifiedActiveOminousSpawners.clear();
-        notifiedDroppedRewards.clear();
-        breezeTargets.clear();
-        windChargeTargets.clear();
-        itemFrameTargets.clear();
-        trialItemTargets.clear();
-        notifiedBreezes.clear();
-        omenWarnTimer = 0;
+        notifiedWardens.clear();
+        wardenSpawnTimes.clear();
+        darknessWarnTimer = 0;
+        totalWardenSpawns = 0;
+        aggroWarned = false;
         drinkTimer = 0;
         previousDrinkSlot = -1;
         hasAlertedForCurrentScreen = false;
@@ -494,10 +382,10 @@ public class ChambersAssistant extends Module {
         if (mc.player == null || mc.world == null) return;
         if (performSafetyChecks()) return;
         checkForPlayers();
-        checkOmenEffects();
+        checkDarknessEffect();
         updateContainerLogic();
         checkOpenedContainerLoot(); 
-        updateOminousDrink();
+        updateMilkDrink();
         updateDynamicStates();
         updateScanningLogic();
     }
@@ -536,15 +424,7 @@ public class ChambersAssistant extends Module {
 
         for (BlockPos pos : toRemove) {
             targets.remove(pos);
-            notifiedPots.remove(pos);
-            notifiedActiveOminousSpawners.remove(pos);
         }
-
-        // Breezes do not get beams, all other entities do
-        renderEntity(event, isSpectral, isPulse, trackBreezes.get(), false, breezeTargets, breezeColor.get());
-        renderEntity(event, isSpectral, isPulse, trackBreezes.get(), true, windChargeTargets, breezeColor.get());
-        renderEntity(event, isSpectral, isPulse, trackOminousItemFrames.get(), true, itemFrameTargets, itemFrameColor.get());
-        renderEntity(event, isSpectral, isPulse, trackTrialItems.get(), true, trialItemTargets, trialItemColor.get());
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -560,51 +440,34 @@ public class ChambersAssistant extends Module {
             BlockState state = mc.world.getBlockState(pos);
             Block block = state.getBlock();
 
-            if (block == Blocks.TRIAL_SPAWNER) {
-                boolean isOminous = state.get(Properties.OMINOUS);
-                TrialSpawnerState spawnerState = state.get(Properties.TRIAL_SPAWNER_STATE);
+            if (block == Blocks.SCULK_SHRIEKER) {
+                boolean isShrieking = state.get(Properties.SHRIEKING);
+                boolean canSummon = state.get(Properties.CAN_SUMMON);
                 TargetType currentType = targets.get(pos);
                 TargetType newType;
 
-                if (spawnerState == TrialSpawnerState.EJECTING_REWARD) {
-                    newType = isOminous ? TargetType.EJECTING_OMINOUS_SPAWNER : TargetType.EJECTING_TRIAL_SPAWNER;
-                } else if (spawnerState == TrialSpawnerState.ACTIVE) {
-                    newType = isOminous ? TargetType.ACTIVE_OMINOUS_SPAWNER : TargetType.ACTIVE_TRIAL_SPAWNER;
+                if (isShrieking) {
+                    newType = TargetType.ACTIVE_SHRIEKER;
+                } else if (!canSummon) {
+                    newType = TargetType.DISABLED_SHRIEKER;
                 } else {
-                    newType = isOminous ? TargetType.OMINOUS_SPAWNER : TargetType.TRIAL_SPAWNER;
+                    newType = TargetType.SHRIEKER;
                 }
 
                 if (currentType != newType) {
                     targets.put(pos, newType);
-                    
-                    if (newType == TargetType.ACTIVE_OMINOUS_SPAWNER && enableAlerts.get() && notifiedActiveOminousSpawners.add(pos)) {
-                        info("§cOminous Spawner Activated!");
+                    if (newType == TargetType.ACTIVE_SHRIEKER && enableAlerts.get()) {
+                        info("§cShrieker Activated! Warden spawn risk!");
                         playAlert();
-                    } else if (newType == TargetType.EJECTING_TRIAL_SPAWNER || newType == TargetType.EJECTING_OMINOUS_SPAWNER) {
-                        if (enableAlerts.get()) {
-                            info("§eTrial Spawner is ejecting rewards!");
-                            playAlert();
-                        }
                     }
                 }
-            } else if (block == Blocks.VAULT) {
-                boolean isOminous = state.get(Properties.OMINOUS);
-                VaultState vState = state.get(Properties.VAULT_STATE);
+            } else if (block == Blocks.SCULK_SENSOR) {
+                SculkSensorPhase phase = state.get(Properties.SCULK_SENSOR_PHASE);
                 TargetType currentType = targets.get(pos);
-                TargetType newType;
-
-                if (vState == VaultState.EJECTING) {
-                    newType = TargetType.EJECTING_VAULT;
-                } else {
-                    newType = isOminous ? TargetType.OMINOUS_VAULT : TargetType.VAULT;
-                }
+                TargetType newType = (phase == SculkSensorPhase.ACTIVE) ? TargetType.ACTIVE_SENSOR : TargetType.SENSOR;
 
                 if (currentType != newType) {
                     targets.put(pos, newType);
-                    if (newType == TargetType.EJECTING_VAULT && enableAlerts.get()) {
-                        info("§aVault is ejecting loot!");
-                        playAlert();
-                    }
                 }
             }
         }
@@ -633,113 +496,42 @@ public class ChambersAssistant extends Module {
         int centerChunkZ = playerPos.getZ() >> 4;
 
         cleanupDistantTargets(playerPos);
-        scanBreezes();
-        scanWindCharges();
-        scanOminousItemFrames();
-        scanTrialItems();
-        scanDroppedRewards(); 
+        scanWardens();
         pruneBlockTargets();
         scanNewChunks(centerChunkX, centerChunkZ);
     }
 
-    private void scanDroppedRewards() {
-        if (!enableAlerts.get()) return;
-        int blockRange = range.get() * 16;
-        Box searchBox = new Box(mc.player.getBlockPos()).expand(blockRange);
-        Set<Integer> currentIds = new HashSet<>();
-
-        for (ItemEntity item : mc.world.getEntitiesByClass(ItemEntity.class, searchBox, e -> true)) {
-            currentIds.add(item.getId());
-            if (notifiedDroppedRewards.add(item.getId())) {
-                for (Map.Entry<BlockPos, TargetType> entry : targets.entrySet()) {
-                    TargetType type = entry.getValue();
-                    if (type == TargetType.EJECTING_TRIAL_SPAWNER || type == TargetType.EJECTING_OMINOUS_SPAWNER || type == TargetType.EJECTING_VAULT) {
-                        if (entry.getKey().isWithinDistance(item.getPos(), 2.0)) {
-                            info("§bReward Ejected: §e" + item.getStack().getName().getString() + "§b!");
-                            playAlert();
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-        notifiedDroppedRewards.retainAll(currentIds);
-    }
-
-    private void scanBreezes() {
-        breezeTargets.clear();
-        if (!trackBreezes.get()) return;
+    private void scanWardens() {
+        if (!enableWardenPing.get()) return;
 
         int blockRange = range.get() * 16;
         Box searchBox = new Box(mc.player.getBlockPos()).expand(blockRange);
         Set<Integer> currentIds = new HashSet<>();
 
-        for (BreezeEntity breeze : mc.world.getEntitiesByClass(BreezeEntity.class, searchBox, e -> true)) {
-            breezeTargets.add(breeze);
-            currentIds.add(breeze.getId());
-
-            if (renderMode.get() == RenderMode.SPECTRAL) {
-                GlowingRegistry.add(breeze.getId(), toArgb(breezeColor.get()));
-            } else {
-                GlowingRegistry.remove(breeze.getId());
-            }
-
-            if (notifiedBreezes.add(breeze.getId())) {
-                info("Breeze Detected!");
+        for (WardenEntity warden : mc.world.getEntitiesByClass(WardenEntity.class, searchBox, e -> true)) {
+            currentIds.add(warden.getId());
+            
+            if (notifiedWardens.add(warden.getId())) {
+                totalWardenSpawns++;
+                wardenSpawnTimes.put(warden.getId(), System.currentTimeMillis());
+                aggroWarned = false;
+                warning("§4§lWARDEN DETECTED! §cStealth mode recommended.");
                 playAlert();
-            }
-        }
-        notifiedBreezes.retainAll(currentIds);
-    }
-
-    private void scanWindCharges() {
-        windChargeTargets.clear();
-        if (!trackBreezes.get()) return;
-
-        int blockRange = range.get() * 16;
-        Box searchBox = new Box(mc.player.getBlockPos()).expand(blockRange);
-
-        for (WindChargeEntity charge : mc.world.getEntitiesByClass(WindChargeEntity.class, searchBox, e -> true)) {
-            windChargeTargets.add(charge);
-            if (renderMode.get() == RenderMode.SPECTRAL) {
-                GlowingRegistry.add(charge.getId(), toArgb(breezeColor.get()));
-            }
-        }
-    }
-
-    private void scanOminousItemFrames() {
-        itemFrameTargets.clear();
-        if (!trackOminousItemFrames.get()) return;
-
-        int blockRange = range.get() * 16;
-        Box searchBox = new Box(mc.player.getBlockPos()).expand(blockRange);
-
-        for (ItemFrameEntity frame : mc.world.getEntitiesByClass(ItemFrameEntity.class, searchBox, e -> true)) {
-            if (frame.isInvisible() && !frame.getHeldItemStack().isEmpty()) {
-                itemFrameTargets.add(frame);
-                if (renderMode.get() == RenderMode.SPECTRAL) {
-                    GlowingRegistry.add(frame.getId(), toArgb(itemFrameColor.get()));
+            } else {
+                // Update despawn timer if the Warden gets aggro
+                if (warden.getTarget() != null) {
+                    wardenSpawnTimes.put(warden.getId(), System.currentTimeMillis());
+                    if (!aggroWarned) {
+                        warning("§cWarden is aggroed! Despawn timer reset.");
+                        aggroWarned = true;
+                    }
+                } else {
+                    aggroWarned = false;
                 }
             }
         }
-    }
-
-    private void scanTrialItems() {
-        trialItemTargets.clear();
-        if (!trackTrialItems.get()) return;
-
-        int blockRange = range.get() * 16;
-        Box searchBox = new Box(mc.player.getBlockPos()).expand(blockRange);
-
-        for (ItemEntity item : mc.world.getEntitiesByClass(ItemEntity.class, searchBox, e -> true)) {
-            Item stackItem = item.getStack().getItem();
-            if (stackItem == Items.TRIAL_KEY || stackItem == Items.OMINOUS_TRIAL_KEY || stackItem == Items.OMINOUS_BOTTLE) {
-                trialItemTargets.add(item);
-                if (renderMode.get() == RenderMode.SPECTRAL) {
-                    GlowingRegistry.add(item.getId(), toArgb(trialItemColor.get()));
-                }
-            }
-        }
+        notifiedWardens.retainAll(currentIds);
+        wardenSpawnTimes.keySet().retainAll(currentIds);
     }
 
     private void scanNewChunks(int centerChunkX, int centerChunkZ) {
@@ -798,53 +590,29 @@ public class ChambersAssistant extends Module {
     // ═══════════════════════════════════════════════════════════════════════════
 
     private void scanBlockEntitiesInChunk(WorldChunk chunk) {
-        int maxY = chamberYLevel.get(); 
+        int maxY = cityYLevel.get(); 
 
         for (BlockEntity be : chunk.getBlockEntities().values()) {
             BlockPos pos = be.getPos();
             if (pos.getY() > maxY) continue;
 
             BlockState state = mc.world.getBlockState(pos);
+            Block block = state.getBlock();
             
-            if (be instanceof TrialSpawnerBlockEntity) {
-                boolean isOminous = state.get(Properties.OMINOUS); 
-                TrialSpawnerState spawnerState = state.get(Properties.TRIAL_SPAWNER_STATE);
-
-                if (spawnerState == TrialSpawnerState.EJECTING_REWARD) {
-                    targets.put(pos, isOminous ? TargetType.EJECTING_OMINOUS_SPAWNER : TargetType.EJECTING_TRIAL_SPAWNER);
-                } else if (spawnerState == TrialSpawnerState.ACTIVE) {
-                    targets.put(pos, isOminous ? TargetType.ACTIVE_OMINOUS_SPAWNER : TargetType.ACTIVE_TRIAL_SPAWNER);
-                } else {
-                    targets.put(pos, isOminous ? TargetType.OMINOUS_SPAWNER : TargetType.TRIAL_SPAWNER);
-                }
-            } 
-            else if (be instanceof VaultBlockEntity) {
-                boolean isOminous = state.get(Properties.OMINOUS);
-                VaultState vState = state.get(Properties.VAULT_STATE);
+            if (block == Blocks.SCULK_SHRIEKER) {
+                boolean isShrieking = state.get(Properties.SHRIEKING);
+                boolean canSummon = state.get(Properties.CAN_SUMMON);
                 
-                if (vState == VaultState.EJECTING) {
-                    targets.put(pos, TargetType.EJECTING_VAULT);
-                } else {
-                    targets.put(pos, isOminous ? TargetType.OMINOUS_VAULT : TargetType.VAULT);
-                }
+                if (isShrieking) targets.put(pos, TargetType.ACTIVE_SHRIEKER);
+                else if (!canSummon) targets.put(pos, TargetType.DISABLED_SHRIEKER);
+                else targets.put(pos, TargetType.SHRIEKER);
+            } 
+            else if (block == Blocks.SCULK_SENSOR) {
+                SculkSensorPhase phase = state.get(Properties.SCULK_SENSOR_PHASE);
+                targets.put(pos, phase == SculkSensorPhase.ACTIVE ? TargetType.ACTIVE_SENSOR : TargetType.SENSOR);
             }
-            else if (be instanceof ChestBlockEntity || be instanceof BarrelBlockEntity || be instanceof DispenserBlockEntity) {
+            else if (be instanceof ChestBlockEntity) {
                 targets.put(pos, TargetType.CONTAINER);
-            }
-            else if (be instanceof DecoratedPotBlockEntity pot) {
-                if (!potWhitelist.get().isEmpty()) {
-                    ItemStack potItem = pot.getStack(); 
-                    if (!potItem.isEmpty() && potWhitelist.get().contains(potItem.getItem())) {
-                        targets.put(pos, TargetType.LOOT_POT);
-                        
-                        if (notifiedPots.add(pos)) {
-                            if (alertOnLootPot.get()) {
-                                info("§bLoot Pot detected containing: §e" + potItem.getName().getString() + "§b!");
-                                playAlert();
-                            }
-                        }
-                    }
-                }
             }
         }
     }
@@ -856,17 +624,17 @@ public class ChambersAssistant extends Module {
     private void updateContainerLogic() {
         if (interactTimeoutTimer > 0) interactTimeoutTimer--;
 
-        if (mc.currentScreen == null && !wasAutoOpened && autoOpenVaults.get()) {
-            List<BlockPos> nearbyVaults = targets.entrySet().stream()
-                .filter(e -> e.getValue() == TargetType.VAULT || e.getValue() == TargetType.OMINOUS_VAULT)
+        if (mc.currentScreen == null && !wasAutoOpened) {
+            List<BlockPos> nearbyChests = targets.entrySet().stream()
+                .filter(e -> e.getValue() == TargetType.CONTAINER)
                 .map(Map.Entry::getKey)
                 .filter(pos -> !checkedContainers.contains(pos))
                 .filter(pos -> Math.sqrt(pos.getSquaredDistance(mc.player.getPos())) <= 4.5)
                 .sorted(Comparator.comparingDouble(pos -> pos.getSquaredDistance(mc.player.getPos())))
                 .toList();
 
-            if (!nearbyVaults.isEmpty()) {
-                BlockPos pos = nearbyVaults.get(0);
+            if (!nearbyChests.isEmpty()) {
+                BlockPos pos = nearbyChests.get(0);
                 checkedContainers.add(pos);
                 wasAutoOpened = true;
                 interactTimeoutTimer = INTERACT_TIMEOUT_TICKS;
@@ -898,7 +666,7 @@ public class ChambersAssistant extends Module {
                     
                     ItemStack stack = slot.getStack();
                     if (!stack.isEmpty() && containerWhitelist.get().contains(stack.getItem())) {
-                        info("§cRare loot found in container: §e" + stack.getName().getString() + "§c!");
+                        info("§cRare loot found in chest: §e" + stack.getName().getString() + "§c!");
                         playAlert();
                         hasAlertedForCurrentScreen = true;
                         break;
@@ -910,8 +678,8 @@ public class ChambersAssistant extends Module {
         }
     }
 
-    private void updateOminousDrink() {
-        if (!autoDrinkOminous.get()) {
+    private void updateMilkDrink() {
+        if (!autoMilkDarkness.get()) {
             if (drinkTimer > 0) {
                 mc.options.useKey.setPressed(false);
                 if (previousDrinkSlot != -1 && mc.player != null) {
@@ -923,22 +691,19 @@ public class ChambersAssistant extends Module {
             return;
         }
 
-        boolean hasOmen = mc.player.hasStatusEffect(StatusEffects.BAD_OMEN) || mc.player.hasStatusEffect(StatusEffects.TRIAL_OMEN);
+        boolean hasDarkness = mc.player.hasStatusEffect(net.minecraft.entity.effect.StatusEffects.DARKNESS);
         
-        boolean hasNearbySpawner = targets.entrySet().stream()
-            .anyMatch(e -> e.getValue() == TargetType.TRIAL_SPAWNER && e.getKey().isWithinDistance(mc.player.getPos(), 8.0));
-
-        if (drinkTimer == 0 && !hasOmen && hasNearbySpawner && mc.currentScreen == null) {
-            int bottleSlot = findOminousBottle();
-            if (bottleSlot != -1) {
+        if (drinkTimer == 0 && hasDarkness && mc.currentScreen == null) {
+            int milkSlot = findMilkBucket();
+            if (milkSlot != -1) {
                 previousDrinkSlot = mc.player.getInventory().selectedSlot;
-                mc.player.getInventory().selectedSlot = bottleSlot;
+                mc.player.getInventory().selectedSlot = milkSlot;
                 mc.options.useKey.setPressed(true);
-                drinkTimer = 40;
+                drinkTimer = 32;
             }
         } else if (drinkTimer > 0) {
             drinkTimer--;
-            if (hasOmen || drinkTimer == 0 || mc.player.getInventory().getStack(mc.player.getInventory().selectedSlot).getItem() != Items.OMINOUS_BOTTLE) {
+            if (!hasDarkness || drinkTimer == 0 || mc.player.getInventory().getStack(mc.player.getInventory().selectedSlot).getItem() != Items.MILK_BUCKET) {
                 mc.options.useKey.setPressed(false);
                 if (previousDrinkSlot != -1) {
                     mc.player.getInventory().selectedSlot = previousDrinkSlot;
@@ -949,32 +714,27 @@ public class ChambersAssistant extends Module {
         }
     }
 
-    private int findOminousBottle() {
+    private int findMilkBucket() {
         for (int i = 0; i < 9; i++) {
-            if (mc.player.getInventory().getStack(i).isOf(Items.OMINOUS_BOTTLE)) return i;
+            if (mc.player.getInventory().getStack(i).isOf(Items.MILK_BUCKET)) return i;
         }
         return -1;
     }
 
-    private void checkOmenEffects() {
+    private void checkDarknessEffect() {
         if (!enableAlerts.get()) return;
 
-        if (omenWarnTimer > 0) {
-            omenWarnTimer--;
+        if (darknessWarnTimer > 0) {
+            darknessWarnTimer--;
             return;
         }
 
-        boolean hasBadOmen = mc.player.hasStatusEffect(StatusEffects.BAD_OMEN);
-        boolean hasTrialOmen = mc.player.hasStatusEffect(StatusEffects.TRIAL_OMEN);
+        boolean hasDarkness = mc.player.hasStatusEffect(net.minecraft.entity.effect.StatusEffects.DARKNESS);
 
-        if (hasTrialOmen) {
-            warning("You have the Trial Omen effect! Ominous Spawners are active.");
+        if (hasDarkness) {
+            warning("Darkness effect applied! Vision impaired.");
             playAlert();
-            omenWarnTimer = 200;
-        } else if (hasBadOmen) {
-            info("You have Bad Omen. Approaching a Trial Spawner will trigger an Ominous state.");
-            playAlert();
-            omenWarnTimer = 200;
+            darknessWarnTimer = 200;
         }
     }
 
@@ -997,7 +757,8 @@ public class ChambersAssistant extends Module {
             case RAVAGER_ROAR -> SoundEvents.ENTITY_RAVAGER_ROAR;
             case EXPERIENCE_ORB -> SoundEvents.ENTITY_EXPERIENCE_ORB_PICKUP;
             case BELL -> SoundEvents.BLOCK_BELL_USE;
-            default -> SoundEvents.ENTITY_ENDER_DRAGON_GROWL;
+            case DRAGON_GROWL -> SoundEvents.ENTITY_ENDER_DRAGON_GROWL;
+            case WARDEN_ROAR -> SoundEvents.ENTITY_WARDEN_ROAR;
         };
         mc.player.playSound(sound, alertVolume.get().floatValue(), 1.0f);
     }
@@ -1052,61 +813,25 @@ public class ChambersAssistant extends Module {
         event.renderer.box(box, withAlpha(pColor, pa / 3), pColor, ShapeMode.Both, 0);
     }
 
-    private void renderEntity(Render3DEvent event, boolean isSpectral, boolean isPulse, boolean isEnabled, boolean renderBeam, List<? extends net.minecraft.entity.Entity> entities, SettingColor color) {
-        if (!isEnabled || entities.isEmpty()) return;
-
-        double beamSize = beamWidth.get() / 100.0;
-        for (net.minecraft.entity.Entity entity : entities) {
-            if (!entity.isAlive()) continue;
-            Box box = entity.getBoundingBox();
-            Vec3d pos = entity.getPos();
-            Box beamBox = renderBeam ? new Box(
-                pos.x - beamSize, pos.y, pos.z - beamSize,
-                pos.x + beamSize, mc.world.getHeight(), pos.z + beamSize
-            ) : null;
-
-            if (isSpectral) {
-                event.renderer.box(box, withAlpha(color, 0), withAlpha(color, 200), ShapeMode.Lines, 0);
-                if (renderBeam) event.renderer.box(beamBox, withAlpha(color, 20), withAlpha(color, 180), ShapeMode.Both, 0);
-            } else if (isPulse) {
-                renderPulseBox(event, box, color);
-                if (renderBeam) renderPulseBox(event, beamBox, color);
-            } else {
-                renderGlowLayers(event, box, color);
-                event.renderer.box(box, withAlpha(color, 0), color, ShapeMode.Lines, 0);
-                if (renderBeam) {
-                    renderGlowLayers(event, beamBox, color);
-                    event.renderer.box(beamBox, withAlpha(color, 60), color, ShapeMode.Both, 0);
-                }
-            }
-        }
-    }
-
     // ═══════════════════════════════════════════════════════════════════════════
     // Utility Helpers
     // ═══════════════════════════════════════════════════════════════════════════
 
     private boolean validateBlockType(Block block, TargetType type) {
         return switch (type) {
-            case TRIAL_SPAWNER, ACTIVE_TRIAL_SPAWNER, EJECTING_TRIAL_SPAWNER, OMINOUS_SPAWNER, ACTIVE_OMINOUS_SPAWNER, EJECTING_OMINOUS_SPAWNER -> block == Blocks.TRIAL_SPAWNER;
-            case VAULT, EJECTING_VAULT, OMINOUS_VAULT -> block == Blocks.VAULT;
-            case LOOT_POT -> block == Blocks.DECORATED_POT;
-            case CONTAINER -> block == Blocks.CHEST || block == Blocks.TRAPPED_CHEST || block == Blocks.BARREL || block == Blocks.DISPENSER || block == Blocks.DROPPER;
+            case SHRIEKER, ACTIVE_SHRIEKER, DISABLED_SHRIEKER -> block == Blocks.SCULK_SHRIEKER;
+            case SENSOR, ACTIVE_SENSOR -> block == Blocks.SCULK_SENSOR;
+            case CONTAINER -> block == Blocks.CHEST || block == Blocks.TRAPPED_CHEST || block == Blocks.BARREL;
         };
     }
 
     private SettingColor getColor(TargetType type) {
         return switch (type) {
-            case TRIAL_SPAWNER -> trackSpawners.get() ? spawnerColor.get() : null;
-            case ACTIVE_TRIAL_SPAWNER -> trackSpawners.get() ? activeSpawnerColor.get() : null;
-            case EJECTING_TRIAL_SPAWNER -> trackSpawners.get() ? ejectingSpawnerColor.get() : null;
-            case OMINOUS_SPAWNER -> trackSpawners.get() ? ominousSpawnerColor.get() : null;
-            case ACTIVE_OMINOUS_SPAWNER -> trackSpawners.get() ? activeOminousSpawnerColor.get() : null;
-            case EJECTING_OMINOUS_SPAWNER -> trackSpawners.get() ? ejectingSpawnerColor.get() : null;
-            case VAULT -> trackVaults.get() ? vaultColor.get() : null;
-            case EJECTING_VAULT -> trackVaults.get() ? ejectingVaultColor.get() : null;
-            case OMINOUS_VAULT -> trackVaults.get() ? ominousVaultColor.get() : null;
-            case LOOT_POT -> lootPotColor.get();
+            case SHRIEKER -> trackShriekers.get() ? shriekerColor.get() : null;
+            case ACTIVE_SHRIEKER -> trackShriekers.get() ? activeShriekerColor.get() : null;
+            case DISABLED_SHRIEKER -> trackShriekers.get() ? disabledShriekerColor.get() : null;
+            case SENSOR -> trackSensors.get() ? sensorColor.get() : null;
+            case ACTIVE_SENSOR -> trackSensors.get() ? activeSensorColor.get() : null;
             case CONTAINER -> trackContainers.get() ? containerColor.get() : null;
         };
     }
@@ -1125,15 +850,12 @@ public class ChambersAssistant extends Module {
                     toRemove.add(pos);
                 }
             } else {
-                // Chunk is unloaded! Remove the target so the HUD accurately reflects current render distance
                 toRemove.add(pos);
-                scannedChunks.remove(new ChunkPos(chunkX, chunkZ)); // Ensure it gets rescanned if reloaded
+                scannedChunks.remove(new ChunkPos(chunkX, chunkZ));
             }
         }
         for (BlockPos pos : toRemove) {
             targets.remove(pos);
-            notifiedPots.remove(pos);
-            notifiedActiveOminousSpawners.remove(pos);
         }
     }
 
@@ -1148,8 +870,6 @@ public class ChambersAssistant extends Module {
             int dz = (pos.getZ() >> 4) - pChunkZ;
             if (dx * dx + dz * dz > r * r) {
                 scannedChunks.remove(new ChunkPos(pos.getX() >> 4, pos.getZ() >> 4));
-                notifiedPots.remove(pos);
-                notifiedActiveOminousSpawners.remove(pos);
                 return true;
             }
             return false;
@@ -1172,39 +892,46 @@ public class ChambersAssistant extends Module {
         return new SettingColor(color.r, color.g, color.b, Math.min(255, Math.max(0, alpha)));
     }
 
-    private int toArgb(SettingColor c) {
-        return (c.a << 24) | (c.r << 16) | (c.g << 8) | c.b;
-    }
-
     // ═══════════════════════════════════════════════════════════════════════════
     // HUD API
     // ═══════════════════════════════════════════════════════════════════════════
 
-    public record ChamberStat(String name, int count, ItemStack icon, ChambersAssistantHud.StatSeverity severity) {}
-
-    public List<ChambersAssistantHud.ChamberStat> getStats() {
-        List<ChambersAssistantHud.ChamberStat> stats = new ArrayList<>();
-        int normalSpawners = 0, ominousSpawners = 0, normalVaults = 0, ominousVaults = 0, lootPots = 0, containers = 0;
+    public List<CityAssistantHud.CityStat> getStats() {
+        List<CityAssistantHud.CityStat> stats = new ArrayList<>();
+        int activeShriekers = 0, idleShriekers = 0, disabledShriekers = 0;
+        int activeSensors = 0, idleSensors = 0, chestsNearby = 0;
         
         for (TargetType type : targets.values()) {
             switch (type) {
-                case TRIAL_SPAWNER, ACTIVE_TRIAL_SPAWNER, EJECTING_TRIAL_SPAWNER -> normalSpawners++;
-                case ACTIVE_OMINOUS_SPAWNER, EJECTING_OMINOUS_SPAWNER, OMINOUS_SPAWNER -> ominousSpawners++;
-                case VAULT, EJECTING_VAULT -> normalVaults++;
-                case OMINOUS_VAULT -> ominousVaults++;
-                case LOOT_POT -> lootPots++;
-                case CONTAINER -> containers++;
+                case ACTIVE_SHRIEKER -> activeShriekers++;
+                case SHRIEKER -> idleShriekers++;
+                case DISABLED_SHRIEKER -> disabledShriekers++;
+                case ACTIVE_SENSOR -> activeSensors++;
+                case SENSOR -> idleSensors++;
+                case CONTAINER -> chestsNearby++;
             }
         }
         
-        stats.add(new ChambersAssistantHud.ChamberStat("Spawners", normalSpawners, new ItemStack(Items.TRIAL_SPAWNER), ChambersAssistantHud.StatSeverity.Normal));
-        stats.add(new ChambersAssistantHud.ChamberStat("Ominous", ominousSpawners, new ItemStack(Items.TRIAL_SPAWNER), ominousSpawners > 0 ? ChambersAssistantHud.StatSeverity.Warning : ChambersAssistantHud.StatSeverity.Normal));
-        stats.add(new ChambersAssistantHud.ChamberStat("Vaults", normalVaults, new ItemStack(Items.VAULT), ChambersAssistantHud.StatSeverity.Normal));
-        stats.add(new ChambersAssistantHud.ChamberStat("Ominous V", ominousVaults, new ItemStack(Items.VAULT), ChambersAssistantHud.StatSeverity.Normal));
-        stats.add(new ChambersAssistantHud.ChamberStat("Pots", lootPots, new ItemStack(Items.DECORATED_POT), ChambersAssistantHud.StatSeverity.Normal));
-        stats.add(new ChambersAssistantHud.ChamberStat("Chests", containers, new ItemStack(Items.CHEST), ChambersAssistantHud.StatSeverity.Normal));
-        stats.add(new ChambersAssistantHud.ChamberStat("Breezes", breezeTargets.size(), new ItemStack(Items.WIND_CHARGE), breezeTargets.size() > 0 ? ChambersAssistantHud.StatSeverity.Warning : ChambersAssistantHud.StatSeverity.Normal));
-        stats.add(new ChambersAssistantHud.ChamberStat("Keys", trialItemTargets.size(), new ItemStack(Items.TRIAL_KEY), ChambersAssistantHud.StatSeverity.Normal));
+        int wardensNearby = notifiedWardens.size();
+        
+        // Calculate Warden Despawn Timer
+        int wardenTimer = 0;
+        for (long spawnTime : wardenSpawnTimes.values()) {
+            long elapsed = (System.currentTimeMillis() - spawnTime) / 1000;
+            int remaining = (int) (60 - elapsed);
+            if (remaining > wardenTimer) wardenTimer = remaining;
+        }
+        
+        // Order MUST match the HUD's expected indices (0 to 8)
+        stats.add(new CityAssistantHud.CityStat("Warden Timer", wardenTimer, new ItemStack(Items.CLOCK), wardenTimer > 0 ? CityAssistantHud.StatSeverity.Critical : CityAssistantHud.StatSeverity.Normal));
+        stats.add(new CityAssistantHud.CityStat("Warden Spawns", totalWardenSpawns, new ItemStack(Items.SCULK_CATALYST), totalWardenSpawns > 0 ? CityAssistantHud.StatSeverity.Warning : CityAssistantHud.StatSeverity.Normal));
+        stats.add(new CityAssistantHud.CityStat("Wardens Nearby", wardensNearby, new ItemStack(Items.WARDEN_SPAWN_EGG), wardensNearby > 0 ? CityAssistantHud.StatSeverity.Critical : CityAssistantHud.StatSeverity.Normal));
+        stats.add(new CityAssistantHud.CityStat("Chests Nearby", chestsNearby, new ItemStack(Items.CHEST), CityAssistantHud.StatSeverity.Normal));
+        stats.add(new CityAssistantHud.CityStat("Act Shrieks", activeShriekers, new ItemStack(Items.SCULK_SHRIEKER), activeShriekers > 0 ? CityAssistantHud.StatSeverity.Warning : CityAssistantHud.StatSeverity.Normal));
+        stats.add(new CityAssistantHud.CityStat("Shriekers", idleShriekers, new ItemStack(Items.SCULK_SHRIEKER), CityAssistantHud.StatSeverity.Normal));
+        stats.add(new CityAssistantHud.CityStat("Dis Shrieks", disabledShriekers, new ItemStack(Items.SCULK_SHRIEKER), CityAssistantHud.StatSeverity.Normal));
+        stats.add(new CityAssistantHud.CityStat("Act Sensor", activeSensors, new ItemStack(Items.SCULK_SENSOR), activeSensors > 0 ? CityAssistantHud.StatSeverity.Warning : CityAssistantHud.StatSeverity.Normal));
+        stats.add(new CityAssistantHud.CityStat("Sensors", idleSensors, new ItemStack(Items.SCULK_SENSOR), CityAssistantHud.StatSeverity.Normal));
         
         return stats;
     }

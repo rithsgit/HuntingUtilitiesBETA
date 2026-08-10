@@ -19,7 +19,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-import com.example.addon.HuntingUtilities;
+import com.example.addon.Tim;
 
 import meteordevelopment.meteorclient.events.render.Render3DEvent;
 import meteordevelopment.meteorclient.events.world.TickEvent;
@@ -44,13 +44,25 @@ import net.minecraft.world.chunk.WorldChunk;
 
 public class Tunnelers extends Module {
 
-    // ------------------------------------------------------------------ //
-    //  Enums                                                               //
-    // ------------------------------------------------------------------ //
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Constants
+    // ═══════════════════════════════════════════════════════════════════════════
 
-    /**
-     * Controls how tunnel boxes are visually highlighted.
-     */
+    private static final int[][] HORIZONTAL_DIRS = {
+        { 1, 0, 0}, {-1, 0, 0},
+        { 0, 0, 1}, { 0, 0,-1}
+    };
+
+    private static final int  MAX_QUEUE_PER_TICK    = 32;
+    private static final int  MAX_BATCHES_PER_FLUSH = 4;
+    private static final int  MAX_IN_FLIGHT         = 6;
+    private static final int  DRAIN_PER_TICK        = 4;
+    private static final long TIME_BUDGET_NS        = 500_000L;
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Enums
+    // ═══════════════════════════════════════════════════════════════════════════
+
     public enum HighlightStyle {
         GLOW("Glow"),
         SPECTRAL("Spectral"),
@@ -58,9 +70,7 @@ public class Tunnelers extends Module {
 
         private final String displayName;
         HighlightStyle(String name) { this.displayName = name; }
-
-        @Override
-        public String toString() { return displayName; }
+        @Override public String toString() { return displayName; }
     }
 
     public enum TunnelType {
@@ -71,14 +81,12 @@ public class Tunnelers extends Module {
         LADDER_SHAFT
     }
 
-    /** Controls which vertical shaft types are detected and rendered. */
     public enum ShaftMode {
         Holes,
         LadderShafts,
         Both
     }
 
-    /** Controls which 1x1 patterns are detected. */
     public enum Tunnel1x1Mode {
         Tunnels("Tunnels"),
         AllFourWalls("All Four Walls"),
@@ -86,20 +94,12 @@ public class Tunnelers extends Module {
 
         private final String displayName;
         Tunnel1x1Mode(String name) { this.displayName = name; }
-
-        @Override
-        public String toString() { return displayName; }
+        @Override public String toString() { return displayName; }
     }
 
-    // Horizontal-only directions for tunnel BFS connectivity checks.
-    private static final int[][] HORIZONTAL_DIRS = {
-        { 1, 0, 0}, {-1, 0, 0},
-        { 0, 0, 1}, { 0, 0,-1}
-    };
-
-    // ------------------------------------------------------------------ //
-    //  Setting Groups                                                      //
-    // ------------------------------------------------------------------ //
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Settings Groups
+    // ═══════════════════════════════════════════════════════════════════════════
 
     private final SettingGroup sgGeneral  = settings.getDefaultGroup();
     private final SettingGroup sgSpectral = settings.createGroup("Spectral");
@@ -108,9 +108,9 @@ public class Tunnelers extends Module {
     private final SettingGroup sgAbnormal = settings.createGroup("Abnormal Tunnels");
     private final SettingGroup sgShafts   = settings.createGroup("Shafts");
 
-    // ------------------------------------------------------------------ //
-    //  General                                                             //
-    // ------------------------------------------------------------------ //
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Settings — General
+    // ═══════════════════════════════════════════════════════════════════════════
 
     private final Setting<Integer> range = sgGeneral.add(new IntSetting.Builder()
         .name("range")
@@ -123,8 +123,6 @@ public class Tunnelers extends Module {
         .description("Ticks between out-of-range pruning passes.")
         .defaultValue(40).min(10).sliderMax(200)
         .build());
-
-    // ── Render ───────────────────────────────────────────────────────────────
 
     private final Setting<ShapeMode> shapeMode = sgGeneral.add(new EnumSetting.Builder<ShapeMode>()
         .name("shape-mode")
@@ -149,7 +147,7 @@ public class Tunnelers extends Module {
         .defaultValue(2000).min(100).sliderMax(8000)
         .build());
 
-    // ── Glow ─────────────────────────────────────────────────────────────────
+    // ── Glow ───────────────────────────────────────────────────────────────────
 
     private final Setting<Integer> glowLayers = sgGeneral.add(new IntSetting.Builder()
         .name("glow-layers")
@@ -172,7 +170,7 @@ public class Tunnelers extends Module {
         .visible(() -> highlightStyle.get() == HighlightStyle.GLOW)
         .build());
 
-    // ── Pulse ────────────────────────────────────────────────────────────────
+    // ── Pulse ──────────────────────────────────────────────────────────────────
 
     private final Setting<Double> pulseSpeed = sgGeneral.add(new DoubleSetting.Builder()
         .name("pulse-speed")
@@ -195,7 +193,9 @@ public class Tunnelers extends Module {
         .visible(() -> highlightStyle.get() == HighlightStyle.PULSE)
         .build());
 
-    // ── Spectral ─────────────────────────────────────────────────────────────
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Settings — Spectral
+    // ═══════════════════════════════════════════════════════════════════════════
 
     private final Setting<Double> spectralExpand = sgSpectral.add(new DoubleSetting.Builder()
         .name("expand")
@@ -225,9 +225,9 @@ public class Tunnelers extends Module {
         .visible(() -> highlightStyle.get() == HighlightStyle.SPECTRAL)
         .build());
 
-    // ------------------------------------------------------------------ //
-    //  1x1 Tunnels                                                         //
-    // ------------------------------------------------------------------ //
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Settings — 1x1 Tunnels
+    // ═══════════════════════════════════════════════════════════════════════════
 
     private final Setting<Boolean> find1x1 = sg1x1.add(new BoolSetting.Builder()
         .name("find-1x1-tunnels")
@@ -254,9 +254,9 @@ public class Tunnelers extends Module {
         .visible(find1x1::get)
         .build());
 
-    // ------------------------------------------------------------------ //
-    //  1x2 Tunnels                                                         //
-    // ------------------------------------------------------------------ //
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Settings — 1x2 Tunnels
+    // ═══════════════════════════════════════════════════════════════════════════
 
     private final Setting<Boolean> find1x2 = sg1x2.add(new BoolSetting.Builder()
         .name("find-1x2-tunnels")
@@ -276,9 +276,9 @@ public class Tunnelers extends Module {
         .visible(find1x2::get)
         .build());
 
-    // ------------------------------------------------------------------ //
-    //  Abnormal Tunnels (3x3, 4x4, 5x5, and 2x2)                         //
-    // ------------------------------------------------------------------ //
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Settings — Abnormal Tunnels
+    // ═══════════════════════════════════════════════════════════════════════════
 
     private final Setting<Boolean> findAbnormalTunnels = sgAbnormal.add(new BoolSetting.Builder()
         .name("find-abnormal-tunnels")
@@ -300,17 +300,15 @@ public class Tunnelers extends Module {
         .visible(findAbnormalTunnels::get)
         .build());
 
-    // ------------------------------------------------------------------ //
-    //  Shafts (Holes + Ladder Shafts)                                     //
-    // ------------------------------------------------------------------ //
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Settings — Shafts
+    // ═══════════════════════════════════════════════════════════════════════════
 
     private final Setting<ShaftMode> shaftMode = sgShafts.add(new EnumSetting.Builder<ShaftMode>()
         .name("shaft-mode")
         .description("Which vertical shaft types to detect: Holes, LadderShafts, or Both.")
         .defaultValue(ShaftMode.Both)
         .build());
-
-    // ── Holes ─────────────────────────────────────────────────────────────────
 
     private final Setting<Integer> minHoleHeight = sgShafts.add(new IntSetting.Builder()
         .name("min-hole-height")
@@ -325,8 +323,6 @@ public class Tunnelers extends Module {
         .visible(() -> shaftMode.get() == ShaftMode.Holes || shaftMode.get() == ShaftMode.Both)
         .build());
 
-    // ── Ladder Shafts ─────────────────────────────────────────────────────────
-
     private final Setting<Integer> minLadderHeight = sgShafts.add(new IntSetting.Builder()
         .name("min-ladder-height")
         .description("Minimum consecutive ladder blocks to count as a shaft.")
@@ -340,55 +336,41 @@ public class Tunnelers extends Module {
         .visible(() -> shaftMode.get() == ShaftMode.LadderShafts || shaftMode.get() == ShaftMode.Both)
         .build());
 
-    // ------------------------------------------------------------------ //
-    //  State                                                               //
-    // ------------------------------------------------------------------ //
+    // ═══════════════════════════════════════════════════════════════════════════
+    // State & Threading
+    // ═══════════════════════════════════════════════════════════════════════════
 
-    private final ConcurrentHashMap<BlockPos, TunnelType>    locations      = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<ChunkPos, Set<BlockPos>> chunkIndex     = new ConcurrentHashMap<>();
-    private final ConcurrentLinkedQueue<ScanResult>          pendingResults = new ConcurrentLinkedQueue<>();
+    private final ConcurrentHashMap<BlockPos, TunnelType> locations = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<ChunkPos, Set<BlockPos>> chunkIndex = new ConcurrentHashMap<>();
+    private final ConcurrentLinkedQueue<ScanResult> pendingResults = new ConcurrentLinkedQueue<>();
 
     private volatile List<MergedBox> renderSnapshot = Collections.emptyList();
     private final AtomicBoolean mergeScheduled = new AtomicBoolean(false);
     private volatile int snapPX, snapPY, snapPZ;
 
-    private final Set<ChunkPos>          scannedChunks = new HashSet<>();
+    private final Set<ChunkPos> scannedChunks = new HashSet<>();
     private final LinkedHashSet<ChunkPos> snapshotQueue = new LinkedHashSet<>();
-    private final Set<ChunkPos>          inFlight       = ConcurrentHashMap.newKeySet();
+    private final Set<ChunkPos> inFlight = ConcurrentHashMap.newKeySet();
 
     private ExecutorService executor;
 
-    private String lastDimension           = "";
-    private int    dimensionChangeCooldown = 0;
-    private int    pruneTimer              = 0;
+    private String lastDimension = "";
+    private int dimensionChangeCooldown = 0;
+    private int pruneTimer = 0;
 
-    private static final int  MAX_QUEUE_PER_TICK    = 32;
-    private static final int  MAX_BATCHES_PER_FLUSH = 4;
-    private static final int  MAX_IN_FLIGHT         = 6;
-    private static final int  DRAIN_PER_TICK        = 4;
-    private static final long TIME_BUDGET_NS        = 500_000L;
-
-    // ------------------------------------------------------------------ //
-    //  Lifecycle                                                           //
-    // ------------------------------------------------------------------ //
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Lifecycle
+    // ═══════════════════════════════════════════════════════════════════════════
 
     public Tunnelers() {
-        super(HuntingUtilities.CATEGORY, "tunnelers", "Highlights player-made tunnels and holes.");
+        super(Tim.CATEGORY, "tunnelers", "Highlights player-made tunnels and holes.");
     }
 
     @Override
     public void onActivate() {
-        locations.clear();
-        chunkIndex.clear();
-        pendingResults.clear();
-        scannedChunks.clear();
-        snapshotQueue.clear();
-        inFlight.clear();
-        renderSnapshot = Collections.emptyList();
-        mergeScheduled.set(false);
-        pruneTimer = 0;
-        dimensionChangeCooldown = 0;
+        clearState();
         if (mc.world != null) lastDimension = mc.world.getRegistryKey().getValue().toString();
+        
         executor = Executors.newFixedThreadPool(4, r -> {
             Thread t = new Thread(r, "Tunnelers-Worker");
             t.setDaemon(true);
@@ -399,7 +381,14 @@ public class Tunnelers extends Module {
 
     @Override
     public void onDeactivate() {
-        if (executor != null) { executor.shutdownNow(); executor = null; }
+        if (executor != null) { 
+            executor.shutdownNow(); 
+            executor = null; 
+        }
+        clearState();
+    }
+
+    private void clearState() {
         locations.clear();
         chunkIndex.clear();
         pendingResults.clear();
@@ -408,46 +397,163 @@ public class Tunnelers extends Module {
         inFlight.clear();
         renderSnapshot = Collections.emptyList();
         mergeScheduled.set(false);
+        pruneTimer = 0;
+        dimensionChangeCooldown = 0;
     }
 
-    // ------------------------------------------------------------------ //
-    //  Tick                                                                //
-    // ------------------------------------------------------------------ //
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Tick & Queue Management
+    // ═══════════════════════════════════════════════════════════════════════════
 
     @EventHandler
     private void onTick(TickEvent.Post event) {
         if (mc.player == null || mc.world == null) return;
 
-        if (dimensionChangeCooldown > 0) { dimensionChangeCooldown--; return; }
+        if (dimensionChangeCooldown > 0) { 
+            dimensionChangeCooldown--; 
+            return; 
+        }
 
+        // Handle dimension change safely
         String currDim = mc.world.getRegistryKey().getValue().toString();
         if (!currDim.equals(lastDimension)) {
             lastDimension = currDim;
             dimensionChangeCooldown = 40;
-            locations.clear(); chunkIndex.clear(); scannedChunks.clear();
-            inFlight.clear(); snapshotQueue.clear();
-            renderSnapshot = Collections.emptyList();
-            mergeScheduled.set(false);
+            clearState();
             return;
         }
 
-        boolean newData = flushPendingResults();
-        if (newData) scheduleMerge();
+        // Process completed scans and update state
+        if (flushPendingResults()) scheduleMerge();
 
+        // Prune old chunks periodically
         if (++pruneTimer >= scanDelay.get()) {
             pruneTimer = 0;
             if (pruneOutOfRange()) scheduleMerge();
         }
 
+        // Enqueue new chunks around the player
         int playerCX = mc.player.getBlockPos().getX() >> 4;
         int playerCZ = mc.player.getBlockPos().getZ() >> 4;
         enqueueNewChunks(playerCX, playerCZ);
         drainSnapshotQueue();
     }
 
-    // ------------------------------------------------------------------ //
-    //  Merge scheduling                                                    //
-    // ------------------------------------------------------------------ //
+    private void enqueueNewChunks(int centerCX, int centerCZ) {
+        int r = range.get();
+        int rSq = r * r;
+        int added = 0;
+        long startTime = System.nanoTime();
+
+        outer:
+        for (int d = 0; d <= r; d++) {
+            for (int x = -d; x <= d; x++) {
+                if (tryEnqueue(centerCX + x, centerCZ - d, rSq, centerCX, centerCZ)) added++;
+                if (added >= MAX_QUEUE_PER_TICK || System.nanoTime() - startTime > TIME_BUDGET_NS) break outer;
+                
+                if (d != 0) {
+                    if (tryEnqueue(centerCX + x, centerCZ + d, rSq, centerCX, centerCZ)) added++;
+                    if (added >= MAX_QUEUE_PER_TICK || System.nanoTime() - startTime > TIME_BUDGET_NS) break outer;
+                }
+            }
+            for (int z = -d + 1; z < d; z++) {
+                if (tryEnqueue(centerCX - d, centerCZ + z, rSq, centerCX, centerCZ)) added++;
+                if (added >= MAX_QUEUE_PER_TICK || System.nanoTime() - startTime > TIME_BUDGET_NS) break outer;
+                
+                if (d != 0) {
+                    if (tryEnqueue(centerCX + d, centerCZ + z, rSq, centerCX, centerCZ)) added++;
+                    if (added >= MAX_QUEUE_PER_TICK || System.nanoTime() - startTime > TIME_BUDGET_NS) break outer;
+                }
+            }
+        }
+    }
+
+    private boolean tryEnqueue(int cx, int cz, int rSq, int centerCX, int centerCZ) {
+        int dx = cx - centerCX, dz = cz - centerCZ;
+        if (dx * dx + dz * dz > rSq) return false;
+        
+        ChunkPos cp = new ChunkPos(cx, cz);
+        if (scannedChunks.contains(cp) || inFlight.contains(cp) || snapshotQueue.contains(cp)) return false;
+        if (!mc.world.getChunkManager().isChunkLoaded(cx, cz)) return false;
+        
+        return snapshotQueue.add(cp);
+    }
+
+    private void drainSnapshotQueue() {
+        for (int i = 0; i < DRAIN_PER_TICK; i++) {
+            if (inFlight.size() >= MAX_IN_FLIGHT || snapshotQueue.isEmpty()) break;
+
+            Iterator<ChunkPos> it = snapshotQueue.iterator();
+            ChunkPos cp = it.next();
+            it.remove();
+
+            if (!mc.world.getChunkManager().isChunkLoaded(cp.x, cp.z)) continue;
+            WorldChunk chunk = mc.world.getChunk(cp.x, cp.z);
+            if (chunk == null) continue;
+
+            inFlight.add(cp);
+
+            final ScanConfig config = createScanConfig();
+            final int bottomCoord = config.minY >> 4;
+
+            executor.submit(() -> {
+                try {
+                    BlockState[][] snapshot = snapshotChunk(chunk);
+                    Map<BlockPos, TunnelType> results = scanSnapshot(cp, snapshot, bottomCoord, config);
+                    pendingResults.add(new ScanResult(cp, results));
+                } finally {
+                    inFlight.remove(cp);
+                }
+            });
+        }
+    }
+
+    private boolean flushPendingResults() {
+        ScanResult batch;
+        int n = 0;
+        
+        while (n < MAX_BATCHES_PER_FLUSH && (batch = pendingResults.poll()) != null) {
+            scannedChunks.add(batch.chunkPos);
+            Set<BlockPos> index = chunkIndex.computeIfAbsent(batch.chunkPos, k -> ConcurrentHashMap.newKeySet());
+            
+            for (Map.Entry<BlockPos, TunnelType> e : batch.results.entrySet()) {
+                locations.put(e.getKey(), e.getValue());
+                index.add(e.getKey());
+            }
+            n++;
+        }
+        return n > 0;
+    }
+
+    private boolean pruneOutOfRange() {
+        if (mc.player == null) return false;
+        
+        int centerCX = mc.player.getBlockPos().getX() >> 4;
+        int centerCZ = mc.player.getBlockPos().getZ() >> 4;
+        int rSq = range.get() * range.get();
+        boolean evicted = false;
+
+        Iterator<ChunkPos> it = scannedChunks.iterator();
+        while (it.hasNext()) {
+            ChunkPos cp = it.next();
+            int dx = cp.x - centerCX, dz = cp.z - centerCZ;
+            if (dx * dx + dz * dz > rSq) {
+                evictChunk(cp);
+                it.remove();
+                evicted = true;
+            }
+        }
+        return evicted;
+    }
+
+    private void evictChunk(ChunkPos cp) {
+        Set<BlockPos> idx = chunkIndex.remove(cp);
+        if (idx != null) idx.forEach(locations::remove);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Merge Scheduling & Greedy Meshing
+    // ═══════════════════════════════════════════════════════════════════════════
 
     private void scheduleMerge() {
         if (!mergeScheduled.compareAndSet(false, true)) return;
@@ -458,63 +564,54 @@ public class Tunnelers extends Module {
 
         final Map<BlockPos, TunnelType> locSnapshot = new HashMap<>(locations);
         final int px = snapPX, py = snapPY, pz = snapPZ;
-        final double maxDistSq      = (double)(range.get() * 16) * (range.get() * 16);
-        final int minLength1x1      = min1x1Length.get();
-        final int minLength1x2      = min1x2Length.get();
-        final int minLengthAbnormal = minAbnormalLength.get();
+        final double maxDistSq = (double)(range.get() * 16) * (range.get() * 16);
+        
+        final int min1 = min1x1Length.get();
+        final int min2 = min1x2Length.get();
+        final int minA = minAbnormalLength.get();
         final Tunnel1x1Mode mode1x1 = tunnel1x1Mode.get();
 
         executor.submit(() -> {
             try {
-                List<MergedBox> merged = buildMergedBoxes(
-                    locSnapshot, px, py, pz, maxDistSq,
-                    minLength1x1, minLength1x2, minLengthAbnormal, mode1x1);
-                renderSnapshot = merged;
+                renderSnapshot = buildMergedBoxes(locSnapshot, px, py, pz, maxDistSq, min1, min2, minA, mode1x1);
             } finally {
                 mergeScheduled.set(false);
             }
         });
     }
 
-    // ------------------------------------------------------------------ //
-    //  Greedy Mesh                                                         //
-    // ------------------------------------------------------------------ //
-
     private static List<MergedBox> buildMergedBoxes(
-            Map<BlockPos, TunnelType> locs,
-            int px, int py, int pz,
-            double maxDistSq, int minLength1x1,
-            int minLength1x2, int minLengthAbnormal,
-            Tunnel1x1Mode mode1x1
-    ) {
+            Map<BlockPos, TunnelType> locs, int px, int py, int pz, double maxDistSq,
+            int min1, int min2, int minA, Tunnel1x1Mode mode1x1) {
+
         if (locs.isEmpty()) return Collections.emptyList();
 
-        EnumMap<TunnelType, Set<Long>>   remaining    = new EnumMap<>(TunnelType.class);
+        EnumMap<TunnelType, Set<Long>> remaining = new EnumMap<>(TunnelType.class);
         EnumMap<TunnelType, List<int[]>> coordsByType = new EnumMap<>(TunnelType.class);
+
         for (TunnelType t : TunnelType.values()) {
             remaining.put(t, new HashSet<>());
             coordsByType.put(t, new ArrayList<>());
         }
 
         for (Map.Entry<BlockPos, TunnelType> e : locs.entrySet()) {
-            BlockPos   p = e.getKey();
+            BlockPos p = e.getKey();
             TunnelType t = e.getValue();
             remaining.get(t).add(pack(p.getX(), p.getY(), p.getZ()));
             coordsByType.get(t).add(new int[]{ p.getX(), p.getY(), p.getZ() });
         }
 
-        // Only apply length filter to Tunnels mode (not All Four Walls)
-        boolean shouldFilter1x1ByLength = (mode1x1 == Tunnel1x1Mode.Tunnels || mode1x1 == Tunnel1x1Mode.Both);
-        if (shouldFilter1x1ByLength) {
-            filterTunnelTypeByLength(TunnelType.TUNNEL_1x1, minLength1x1, coordsByType, remaining);
-        }
-        filterTunnelTypeByLength(TunnelType.TUNNEL_1x2,      minLength1x2,      coordsByType, remaining);
-        filterTunnelTypeByLength(TunnelType.ABNORMAL_TUNNEL, minLengthAbnormal, coordsByType, remaining);
+        // Filter tunnel lengths
+        boolean filter1x1 = (mode1x1 == Tunnel1x1Mode.Tunnels || mode1x1 == Tunnel1x1Mode.Both);
+        if (filter1x1) filterTunnelTypeByLength(TunnelType.TUNNEL_1x1, min1, coordsByType, remaining);
+        
+        filterTunnelTypeByLength(TunnelType.TUNNEL_1x2, min2, coordsByType, remaining);
+        filterTunnelTypeByLength(TunnelType.ABNORMAL_TUNNEL, minA, coordsByType, remaining);
 
         List<MergedBox> boxes = new ArrayList<>();
 
         for (TunnelType type : TunnelType.values()) {
-            Set<Long>   rem    = remaining.get(type);
+            Set<Long> rem = remaining.get(type);
             List<int[]> coords = coordsByType.get(type);
             if (rem.isEmpty()) continue;
 
@@ -554,7 +651,7 @@ public class Tunnelers extends Module {
     private static void filterTunnelTypeByLength(
             TunnelType type, int minLength,
             EnumMap<TunnelType, List<int[]>> coordsByType,
-            EnumMap<TunnelType, Set<Long>>   remaining) {
+            EnumMap<TunnelType, Set<Long>> remaining) {
 
         if (minLength <= 1) return;
 
@@ -565,17 +662,15 @@ public class Tunnelers extends Module {
         for (int[] c : coords) allBlocks.add(pack(c[0], c[1], c[2]));
 
         Set<Long> blocksToKeep = new HashSet<>();
-        Set<Long> visited      = new HashSet<>();
+        Set<Long> visited = new HashSet<>();
 
         for (int[] startCoord : coords) {
             long startKey = pack(startCoord[0], startCoord[1], startCoord[2]);
             if (visited.contains(startKey)) continue;
 
             List<long[]> component = new ArrayList<>();
-            Queue<long[]> queue    = new LinkedList<>();
-            long[] startEntry      = { startCoord[0], startCoord[1], startCoord[2], startKey };
-
-            queue.add(startEntry);
+            Queue<long[]> queue = new LinkedList<>();
+            queue.add(new long[]{ startCoord[0], startCoord[1], startCoord[2], startKey });
             visited.add(startKey);
 
             while (!queue.isEmpty()) {
@@ -614,152 +709,42 @@ public class Tunnelers extends Module {
         return true;
     }
 
-    // ------------------------------------------------------------------ //
-    //  Coordinate packing                                                  //
-    // ------------------------------------------------------------------ //
-
     private static long pack(int x, int y, int z) {
         return ((long)(x + 33_554_432) << 38) | ((long)(y + 2_048) << 26) | (z + 33_554_432);
     }
 
-    // ------------------------------------------------------------------ //
-    //  Pruning                                                             //
-    // ------------------------------------------------------------------ //
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Scanning Logic
+    // ═══════════════════════════════════════════════════════════════════════════
 
-    private boolean pruneOutOfRange() {
-        if (mc.player == null) return false;
-        int centerCX = mc.player.getBlockPos().getX() >> 4;
-        int centerCZ = mc.player.getBlockPos().getZ() >> 4;
-        int rSq      = range.get() * range.get();
-        boolean evicted = false;
+    private ScanConfig createScanConfig() {
+        boolean doHoles = shaftMode.get() == ShaftMode.Holes || shaftMode.get() == ShaftMode.Both;
+        boolean doLadders = shaftMode.get() == ShaftMode.LadderShafts || shaftMode.get() == ShaftMode.Both;
 
-        Iterator<ChunkPos> it = scannedChunks.iterator();
-        while (it.hasNext()) {
-            ChunkPos cp = it.next();
-            int dx = cp.x - centerCX, dz = cp.z - centerCZ;
-            if (dx * dx + dz * dz > rSq) {
-                evictChunk(cp);
-                it.remove();
-                evicted = true;
-            }
-        }
-        return evicted;
+        Tunnel1x1Mode mode1x1 = tunnel1x1Mode.get();
+        boolean do1x1Tunnels = (mode1x1 == Tunnel1x1Mode.Tunnels || mode1x1 == Tunnel1x1Mode.Both);
+        boolean do1x1AllFourWalls = (mode1x1 == Tunnel1x1Mode.AllFourWalls || mode1x1 == Tunnel1x1Mode.Both);
+
+        return new ScanConfig(
+            find1x1.get() && do1x1Tunnels,
+            find1x1.get() && do1x1AllFourWalls,
+            find1x2.get(),
+            findAbnormalTunnels.get(),
+            findAbnormalTunnels.get(),
+            doHoles, doLadders,
+            minHoleHeight.get(), minLadderHeight.get(),
+            mc.world.getBottomY(), mc.world.getBottomY() + mc.world.getHeight()
+        );
     }
-
-    // ------------------------------------------------------------------ //
-    //  Queue building                                                      //
-    // ------------------------------------------------------------------ //
-
-    private void enqueueNewChunks(int centerCX, int centerCZ) {
-        int r = range.get(), rSq = r * r, added = 0;
-        long t0 = System.nanoTime();
-
-        outer:
-        for (int d = 0; d <= r; d++) {
-            for (int x = -d; x <= d; x++) {
-                if (tryEnqueue(centerCX + x, centerCZ - d, rSq, centerCX, centerCZ)) added++;
-                if (added >= MAX_QUEUE_PER_TICK || System.nanoTime() - t0 > TIME_BUDGET_NS) break outer;
-                if (d != 0) {
-                    if (tryEnqueue(centerCX + x, centerCZ + d, rSq, centerCX, centerCZ)) added++;
-                    if (added >= MAX_QUEUE_PER_TICK || System.nanoTime() - t0 > TIME_BUDGET_NS) break outer;
-                }
-            }
-            for (int z = -d + 1; z < d; z++) {
-                if (tryEnqueue(centerCX - d, centerCZ + z, rSq, centerCX, centerCZ)) added++;
-                if (added >= MAX_QUEUE_PER_TICK || System.nanoTime() - t0 > TIME_BUDGET_NS) break outer;
-                if (d != 0) {
-                    if (tryEnqueue(centerCX + d, centerCZ + z, rSq, centerCX, centerCZ)) added++;
-                    if (added >= MAX_QUEUE_PER_TICK || System.nanoTime() - t0 > TIME_BUDGET_NS) break outer;
-                }
-            }
-        }
-    }
-
-    private boolean tryEnqueue(int cx, int cz, int rSq, int centerCX, int centerCZ) {
-        int dx = cx - centerCX, dz = cz - centerCZ;
-        if (dx * dx + dz * dz > rSq) return false;
-        ChunkPos cp = new ChunkPos(cx, cz);
-        if (scannedChunks.contains(cp) || inFlight.contains(cp)) return false;
-        if (!mc.world.getChunkManager().isChunkLoaded(cx, cz)) return false;
-        return snapshotQueue.add(cp);
-    }
-
-    // ------------------------------------------------------------------ //
-    //  Scan dispatch                                                       //
-    // ------------------------------------------------------------------ //
-
-    private void drainSnapshotQueue() {
-        for (int i = 0; i < DRAIN_PER_TICK; i++) {
-            if (inFlight.size() >= MAX_IN_FLIGHT || snapshotQueue.isEmpty()) break;
-
-            Iterator<ChunkPos> it = snapshotQueue.iterator();
-            ChunkPos cp = it.next(); it.remove();
-
-            if (!mc.world.getChunkManager().isChunkLoaded(cp.x, cp.z)) continue;
-            WorldChunk chunk = mc.world.getChunk(cp.x, cp.z);
-            if (chunk == null) continue;
-
-            inFlight.add(cp);
-
-            boolean doHoles   = shaftMode.get() == ShaftMode.Holes   || shaftMode.get() == ShaftMode.Both;
-            boolean doLadders = shaftMode.get() == ShaftMode.LadderShafts || shaftMode.get() == ShaftMode.Both;
-
-            Tunnel1x1Mode mode1x1 = tunnel1x1Mode.get();
-            boolean do1x1Tunnels    = (mode1x1 == Tunnel1x1Mode.Tunnels || mode1x1 == Tunnel1x1Mode.Both);
-            boolean do1x1AllFourWalls = (mode1x1 == Tunnel1x1Mode.AllFourWalls || mode1x1 == Tunnel1x1Mode.Both);
-
-            ScanConfig config = new ScanConfig(
-                find1x1.get() && do1x1Tunnels,
-                find1x1.get() && do1x1AllFourWalls,
-                find1x2.get(), findAbnormalTunnels.get(), findAbnormalTunnels.get(),
-                doHoles, doLadders,
-                minHoleHeight.get(), minLadderHeight.get(),
-                mc.world.getBottomY(), mc.world.getBottomY() + mc.world.getHeight()
-            );
-            int bottomCoord = config.minY >> 4;
-
-            executor.submit(() -> {
-                try {
-                    BlockState[][] snapshot = snapshotChunk(chunk);
-                    Map<BlockPos, TunnelType> results = scanSnapshot(cp, snapshot, bottomCoord, config);
-                    pendingResults.add(new ScanResult(cp, results));
-                } finally {
-                    inFlight.remove(cp);
-                }
-            });
-        }
-    }
-
-    // ------------------------------------------------------------------ //
-    //  Flush                                                               //
-    // ------------------------------------------------------------------ //
-
-    private boolean flushPendingResults() {
-        ScanResult batch;
-        int n = 0;
-        while (n < MAX_BATCHES_PER_FLUSH && (batch = pendingResults.poll()) != null) {
-            scannedChunks.add(batch.chunkPos);
-            Set<BlockPos> index = chunkIndex.computeIfAbsent(
-                batch.chunkPos, k -> ConcurrentHashMap.newKeySet());
-            for (Map.Entry<BlockPos, TunnelType> e : batch.results.entrySet()) {
-                locations.put(e.getKey(), e.getValue());
-                index.add(e.getKey());
-            }
-            n++;
-        }
-        return n > 0;
-    }
-
-    // ------------------------------------------------------------------ //
-    //  Chunk snapshot (worker thread)                                      //
-    // ------------------------------------------------------------------ //
 
     private BlockState[][] snapshotChunk(WorldChunk chunk) {
         ChunkSection[] sections = chunk.getSectionArray();
         BlockState[][] out = new BlockState[sections.length][];
+        
         for (int si = 0; si < sections.length; si++) {
             ChunkSection sec = sections[si];
             if (sec == null || sec.isEmpty()) continue;
+            
             BlockState[] data = new BlockState[16 * 16 * 16];
             for (int lx = 0; lx < 16; lx++)
                 for (int ly = 0; ly < 16; ly++)
@@ -770,12 +755,7 @@ public class Tunnelers extends Module {
         return out;
     }
 
-    // ------------------------------------------------------------------ //
-    //  Off-thread block scan                                               //
-    // ------------------------------------------------------------------ //
-
-    private Map<BlockPos, TunnelType> scanSnapshot(
-            ChunkPos cp, BlockState[][] snapshot, int bottomCoord, ScanConfig config) {
+    private Map<BlockPos, TunnelType> scanSnapshot(ChunkPos cp, BlockState[][] snapshot, int bottomCoord, ScanConfig config) {
         Map<BlockPos, TunnelType> results = new HashMap<>();
         int baseX = cp.x << 4, baseZ = cp.z << 4;
         ScanContext ctx = new ScanContext(snapshot, bottomCoord, config.minY, config.maxY, baseX, baseZ);
@@ -784,62 +764,85 @@ public class Tunnelers extends Module {
             if (snapshot[si] == null) continue;
             int sMinY = (bottomCoord + si) << 4, sMaxY = sMinY + 16;
             if (sMaxY <= config.minY || sMinY >= config.maxY) continue;
-            for (int lx = 0; lx < 16; lx++)
+            
+            for (int lx = 0; lx < 16; lx++) {
                 for (int ly = 0; ly < 16; ly++) {
                     int wy = sMinY + ly;
                     if (wy < config.minY || wy >= config.maxY) continue;
-                    for (int lz = 0; lz < 16; lz++)
+                    for (int lz = 0; lz < 16; lz++) {
                         classifyBlock(baseX + lx, wy, baseZ + lz, ctx, config, results);
+                    }
                 }
+            }
         }
         return results;
     }
 
-    private void classifyBlock(int wx, int wy, int wz,
-            ScanContext ctx, ScanConfig config, Map<BlockPos, TunnelType> results) {
-
+    private void classifyBlock(int wx, int wy, int wz, ScanContext ctx, ScanConfig config, Map<BlockPos, TunnelType> results) {
+        // Holes
         if (config.doHoles && isHole(wx, wy, wz, ctx, config.holeDepth)) {
-            for (int i = 0; i < config.holeDepth; i++)
-                results.put(new BlockPos(wx, wy - i, wz), TunnelType.HOLE);
+            for (int i = 0; i < config.holeDepth; i++) results.put(new BlockPos(wx, wy - i, wz), TunnelType.HOLE);
             return;
         }
-        if (config.doLadder && isLadderShaft(wx, wy, wz, ctx, config.ladderMin))
-            for (int i = 0; i < config.ladderMin; i++)
-                results.put(new BlockPos(wx, wy + i, wz), TunnelType.LADDER_SHAFT);
+        
+        // Ladders
+        if (config.doLadder && isLadderShaft(wx, wy, wz, ctx, config.ladderMin)) {
+            for (int i = 0; i < config.ladderMin; i++) results.put(new BlockPos(wx, wy + i, wz), TunnelType.LADDER_SHAFT);
+        }
 
-        // 1x1 Tunnels (standard: 3 walls or 2 opposite walls)
-        if (config.do1x1Tunnels && is1x1Tunnel(wx, wy, wz, ctx))
+        // 1x1 Tunnels
+        if (config.do1x1Tunnels && is1x1Tunnel(wx, wy, wz, ctx)) {
             results.put(new BlockPos(wx, wy + 1, wz), TunnelType.TUNNEL_1x1);
+        }
 
-        // 1x1 All Four Walls (room-like: all 4 cardinal blocks solid)
-        if (config.do1x1AllFourWalls && is1x1AllFourWalls(wx, wy, wz, ctx))
+        // 1x1 All Four Walls
+        if (config.do1x1AllFourWalls && is1x1AllFourWalls(wx, wy, wz, ctx)) {
             results.put(new BlockPos(wx, wy + 1, wz), TunnelType.TUNNEL_1x1);
+        }
 
+        // 1x2 Tunnels
         if (config.do1x2 && is1x2Tunnel(wx, wy, wz, ctx)) {
             results.put(new BlockPos(wx, wy + 1, wz), TunnelType.TUNNEL_1x2);
             results.put(new BlockPos(wx, wy + 2, wz), TunnelType.TUNNEL_1x2);
         }
-        if (config.do2x2 && is2x2Tunnel(wx, wy, wz, ctx))
-            for (int dx = 0; dx < 2; dx++) for (int dy = 1; dy <= 2; dy++) for (int dz = 0; dz < 2; dz++)
-                results.put(new BlockPos(wx + dx, wy + dy, wz + dz), TunnelType.ABNORMAL_TUNNEL);
 
+        // 2x2 Tunnels
+        if (config.do2x2 && is2x2Tunnel(wx, wy, wz, ctx)) {
+            for (int dx = 0; dx < 2; dx++) {
+                for (int dy = 1; dy <= 2; dy++) {
+                    for (int dz = 0; dz < 2; dz++) {
+                        results.put(new BlockPos(wx + dx, wy + dy, wz + dz), TunnelType.ABNORMAL_TUNNEL);
+                    }
+                }
+            }
+        }
+
+        // Abnormal Tunnels (3x3, 4x4, 5x5)
         if (config.doAbnormal) {
             int sz = getAbnormalTunnelSize(wx, wy, wz, ctx);
-            if (sz > 0)
-                for (int dx = 0; dx < sz; dx++) for (int dy = 1; dy <= sz; dy++) for (int dz = 0; dz < sz; dz++)
-                    results.put(new BlockPos(wx + dx, wy + dy, wz + dz), TunnelType.ABNORMAL_TUNNEL);
+            if (sz > 0) {
+                for (int dx = 0; dx < sz; dx++) {
+                    for (int dy = 1; dy <= sz; dy++) {
+                        for (int dz = 0; dz < sz; dz++) {
+                            results.put(new BlockPos(wx + dx, wy + dy, wz + dz), TunnelType.ABNORMAL_TUNNEL);
+                        }
+                    }
+                }
+            }
         }
     }
 
-    // ------------------------------------------------------------------ //
-    //  Block tests                                                         //
-    // ------------------------------------------------------------------ //
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Block Tests
+    // ═══════════════════════════════════════════════════════════════════════════
 
     private boolean isHole(int x, int y, int z, ScanContext ctx, int depth) {
         if (!ctx.isAir(x, y, z)) return false;
-        for (int dx = -1; dx <= 1; dx++)
-            for (int dz = -1; dz <= 1; dz++)
+        for (int dx = -1; dx <= 1; dx++) {
+            for (int dz = -1; dz <= 1; dz++) {
                 if ((dx != 0 || dz != 0) && !ctx.isSolid(x + dx, y, z + dz)) return false;
+            }
+        }
         for (int i = 1; i < depth; i++) {
             int sy = y - i;
             if (!ctx.isAir(x,sy,z) || !ctx.isSolid(x-1,sy,z) || !ctx.isSolid(x+1,sy,z)
@@ -861,8 +864,7 @@ public class Tunnelers extends Module {
         boolean seSolid = ctx.isSolid(x + 1, y + 1, z + 1);
         boolean swSolid = ctx.isSolid(x - 1, y + 1, z + 1);
 
-        int solidCardinal = (northSolid ? 1 : 0) + (southSolid ? 1 : 0)
-                          + (eastSolid  ? 1 : 0) + (westSolid  ? 1 : 0);
+        int solidCardinal = (northSolid ? 1 : 0) + (southSolid ? 1 : 0) + (eastSolid ? 1 : 0) + (westSolid ? 1 : 0);
 
         if (solidCardinal == 3) return neSolid && nwSolid && seSolid && swSolid;
         if (solidCardinal == 2) {
@@ -872,20 +874,12 @@ public class Tunnelers extends Module {
         return false;
     }
 
-    /**
-     * Detects a 1x1 space where ALL four cardinal blocks (N, S, E, W) are solid.
-     * This represents a small room or chamber rather than a through-tunnel.
-     */
     private boolean is1x1AllFourWalls(int x, int y, int z, ScanContext ctx) {
-        // Must have solid floor, air in middle, solid ceiling
         if (!ctx.isSolid(x, y, z) || !ctx.isAir(x, y + 1, z) || !ctx.isSolid(x, y + 2, z)) return false;
-
-        // All four cardinal directions must be solid at the air level
         if (!ctx.isSolid(x, y + 1, z - 1)) return false; // North
         if (!ctx.isSolid(x, y + 1, z + 1)) return false; // South
         if (!ctx.isSolid(x + 1, y + 1, z)) return false; // East
         if (!ctx.isSolid(x - 1, y + 1, z)) return false; // West
-
         return true;
     }
 
@@ -898,8 +892,7 @@ public class Tunnelers extends Module {
         boolean eastSolid  = ctx.isSolid(x + 1, y + 1, z) && ctx.isSolid(x + 1, y + 2, z);
         boolean westSolid  = ctx.isSolid(x - 1, y + 1, z) && ctx.isSolid(x - 1, y + 2, z);
 
-        int solidWalls = (northSolid ? 1 : 0) + (southSolid ? 1 : 0)
-                       + (eastSolid  ? 1 : 0) + (westSolid  ? 1 : 0);
+        int solidWalls = (northSolid ? 1 : 0) + (southSolid ? 1 : 0) + (eastSolid ? 1 : 0) + (westSolid ? 1 : 0);
 
         if (solidWalls == 3) return true;
         if (solidWalls == 2) return (northSolid && southSolid) || (eastSolid && westSolid);
@@ -907,47 +900,33 @@ public class Tunnelers extends Module {
     }
 
     private boolean is1x2Slice(int x, int y, int z, ScanContext ctx) {
-        return ctx.isSolid(x, y, z) && ctx.isAir(x, y + 1, z)
-            && ctx.isAir(x, y + 2, z) && ctx.isSolid(x, y + 3, z);
+        return ctx.isSolid(x, y, z) && ctx.isAir(x, y + 1, z) && ctx.isAir(x, y + 2, z) && ctx.isSolid(x, y + 3, z);
     }
 
     private boolean is2x2Tunnel(int x, int y, int z, ScanContext ctx) {
         for (int dx = 0; dx < 2; dx++) {
             for (int dz = 0; dz < 2; dz++) {
-                if (!ctx.isSolid(x + dx, y,     z + dz)) return false;
-                if (!ctx.isSolid(x + dx, y + 3, z + dz)) return false;
-                if (!ctx.isAir  (x + dx, y + 1, z + dz)) return false;
-                if (!ctx.isAir  (x + dx, y + 2, z + dz)) return false;
+                if (!ctx.isSolid(x + dx, y, z + dz) || !ctx.isSolid(x + dx, y + 3, z + dz)) return false;
+                if (!ctx.isAir(x + dx, y + 1, z + dz) || !ctx.isAir(x + dx, y + 2, z + dz)) return false;
             }
         }
 
-        boolean northSolid = true;
-        northCheck:
-        for (int dx = 0; dx < 2; dx++)
-            for (int dy = 1; dy <= 2; dy++)
-                if (!ctx.isSolid(x + dx, y + dy, z - 1)) { northSolid = false; break northCheck; }
+        boolean northSolid = true, southSolid = true, eastSolid = true, westSolid = true;
 
-        boolean southSolid = true;
-        southCheck:
-        for (int dx = 0; dx < 2; dx++)
-            for (int dy = 1; dy <= 2; dy++)
-                if (!ctx.isSolid(x + dx, y + dy, z + 2)) { southSolid = false; break southCheck; }
+        for (int dx = 0; dx < 2; dx++) {
+            for (int dy = 1; dy <= 2; dy++) {
+                if (!ctx.isSolid(x + dx, y + dy, z - 1)) northSolid = false;
+                if (!ctx.isSolid(x + dx, y + dy, z + 2)) southSolid = false;
+            }
+        }
+        for (int dz = 0; dz < 2; dz++) {
+            for (int dy = 1; dy <= 2; dy++) {
+                if (!ctx.isSolid(x + 2, y + dy, z + dz)) eastSolid = false;
+                if (!ctx.isSolid(x - 1, y + dy, z + dz)) westSolid = false;
+            }
+        }
 
-        boolean eastSolid = true;
-        eastCheck:
-        for (int dz = 0; dz < 2; dz++)
-            for (int dy = 1; dy <= 2; dy++)
-                if (!ctx.isSolid(x + 2, y + dy, z + dz)) { eastSolid = false; break eastCheck; }
-
-        boolean westSolid = true;
-        westCheck:
-        for (int dz = 0; dz < 2; dz++)
-            for (int dy = 1; dy <= 2; dy++)
-                if (!ctx.isSolid(x - 1, y + dy, z + dz)) { westSolid = false; break westCheck; }
-
-        int solidWalls = (northSolid ? 1 : 0) + (southSolid ? 1 : 0)
-                       + (eastSolid  ? 1 : 0) + (westSolid  ? 1 : 0);
-
+        int solidWalls = (northSolid ? 1 : 0) + (southSolid ? 1 : 0) + (eastSolid ? 1 : 0) + (westSolid ? 1 : 0);
         if (solidWalls == 3) return true;
         if (solidWalls == 2) return (northSolid && southSolid) || (eastSolid && westSolid);
         return false;
@@ -961,14 +940,28 @@ public class Tunnelers extends Module {
     }
 
     private boolean isTunnelOfSize(int x, int y, int z, ScanContext ctx, int s) {
-        for (int fx = 0; fx < s; fx++) for (int fz = 0; fz < s; fz++)
-            if (!ctx.isSolid(x+fx, y,   z+fz) || !ctx.isSolid(x+fx, y+s+1, z+fz)) return false;
-        for (int fx = 0; fx < s; fx++) for (int fy = 1; fy <= s; fy++) for (int fz = 0; fz < s; fz++)
-            if (!ctx.isAir(x+fx, y+fy, z+fz)) return false;
-        for (int fx = 0; fx < s; fx++) for (int fy = 1; fy <= s; fy++)
-            if (!ctx.isSolid(x+fx, y+fy, z-1) || !ctx.isSolid(x+fx, y+fy, z+s)) return false;
-        for (int fz = 0; fz < s; fz++) for (int fy = 1; fy <= s; fy++)
-            if (!ctx.isSolid(x-1, y+fy, z+fz) || !ctx.isSolid(x+s, y+fy, z+fz)) return false;
+        for (int fx = 0; fx < s; fx++) {
+            for (int fz = 0; fz < s; fz++) {
+                if (!ctx.isSolid(x+fx, y, z+fz) || !ctx.isSolid(x+fx, y+s+1, z+fz)) return false;
+            }
+        }
+        for (int fx = 0; fx < s; fx++) {
+            for (int fy = 1; fy <= s; fy++) {
+                for (int fz = 0; fz < s; fz++) {
+                    if (!ctx.isAir(x+fx, y+fy, z+fz)) return false;
+                }
+            }
+        }
+        for (int fx = 0; fx < s; fx++) {
+            for (int fy = 1; fy <= s; fy++) {
+                if (!ctx.isSolid(x+fx, y+fy, z-1) || !ctx.isSolid(x+fx, y+fy, z+s)) return false;
+            }
+        }
+        for (int fz = 0; fz < s; fz++) {
+            for (int fy = 1; fy <= s; fy++) {
+                if (!ctx.isSolid(x-1, y+fy, z+fz) || !ctx.isSolid(x+s, y+fy, z+fz)) return false;
+            }
+        }
         return true;
     }
 
@@ -985,90 +978,20 @@ public class Tunnelers extends Module {
             if (!ctx.isAir(x, cy, z)) return false;
             if (!ctx.isLadder(x-1, cy, z) && !ctx.isLadder(x+1, cy, z)
                     && !ctx.isLadder(x, cy, z-1) && !ctx.isLadder(x, cy, z+1)) return false;
+            
             int walls = 0;
             if (ctx.isSolid(x-1, cy, z)) walls++;
             if (ctx.isSolid(x+1, cy, z)) walls++;
-            if (ctx.isSolid(x,   cy, z-1)) walls++;
-            if (ctx.isSolid(x,   cy, z+1)) walls++;
+            if (ctx.isSolid(x, cy, z-1)) walls++;
+            if (ctx.isSolid(x, cy, z+1)) walls++;
             if (walls < 3) return false;
         }
         return true;
     }
 
-    // ------------------------------------------------------------------ //
-    //  ScanContext                                                         //
-    // ------------------------------------------------------------------ //
-
-    private static final class ScanContext {
-        private final BlockState[][] snapshot;
-        private final int bottomCoord, minY, maxY, baseX, baseZ;
-
-        ScanContext(BlockState[][] s, int bc, int minY, int maxY, int bx, int bz) {
-            snapshot = s; bottomCoord = bc;
-            this.minY = minY; this.maxY = maxY; baseX = bx; baseZ = bz;
-        }
-
-        BlockState get(int x, int y, int z) {
-            if (y < minY || y >= maxY) return null;
-            int lx = x - baseX, lz = z - baseZ;
-            if (lx < 0 || lx >= 16 || lz < 0 || lz >= 16) return null;
-            int si = (y >> 4) - bottomCoord;
-            if (si < 0 || si >= snapshot.length) return null;
-            BlockState[] sec = snapshot[si];
-            return sec == null ? null : sec[lx + lz * 16 + (y & 15) * 256];
-        }
-
-        boolean isSolid (int x, int y, int z) { BlockState s = get(x,y,z); return s != null && s.isOpaque(); }
-        boolean isAir   (int x, int y, int z) { BlockState s = get(x,y,z); return s == null || s.isAir(); }
-        boolean isLadder(int x, int y, int z) { BlockState s = get(x,y,z); return s != null && s.isOf(Blocks.LADDER); }
-    }
-
-    // ------------------------------------------------------------------ //
-    //  ScanConfig                                                          //
-    // ------------------------------------------------------------------ //
-
-    private static final class ScanConfig {
-        final boolean do1x1Tunnels;
-        final boolean do1x1AllFourWalls;
-        final boolean do1x2;
-        final boolean do2x2;
-        final boolean doAbnormal;
-        final boolean doHoles;
-        final boolean doLadder;
-        final int holeDepth;
-        final int ladderMin;
-        final int minY;
-        final int maxY;
-
-        ScanConfig(boolean do1x1Tunnels, boolean do1x1AllFourWalls, boolean do1x2,
-                   boolean do2x2, boolean doAbnormal, boolean doHoles, boolean doLadder,
-                   int holeDepth, int ladderMin, int minY, int maxY) {
-            this.do1x1Tunnels = do1x1Tunnels;
-            this.do1x1AllFourWalls = do1x1AllFourWalls;
-            this.do1x2 = do1x2;
-            this.do2x2 = do2x2;
-            this.doAbnormal = doAbnormal;
-            this.doHoles = doHoles;
-            this.doLadder = doLadder;
-            this.holeDepth = holeDepth;
-            this.ladderMin = ladderMin;
-            this.minY = minY;
-            this.maxY = maxY;
-        }
-    }
-
-    // ------------------------------------------------------------------ //
-    //  Eviction                                                            //
-    // ------------------------------------------------------------------ //
-
-    private void evictChunk(ChunkPos cp) {
-        Set<BlockPos> idx = chunkIndex.remove(cp);
-        if (idx != null) idx.forEach(locations::remove);
-    }
-
-    // ------------------------------------------------------------------ //
-    //  Render                                                              //
-    // ------------------------------------------------------------------ //
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Rendering
+    // ═══════════════════════════════════════════════════════════════════════════
 
     @EventHandler
     private void onRender(Render3DEvent event) {
@@ -1077,27 +1000,22 @@ public class Tunnelers extends Module {
         List<MergedBox> snapshot = renderSnapshot;
         if (snapshot.isEmpty()) return;
 
-        boolean        doFade    = fadeWithDistance.get();
-        double         maxDistSq = (double)(range.get() * 16) * (range.get() * 16);
-        int            limit     = maxRenderBoxes.get();
-        ShapeMode      sm        = shapeMode.get();
-        HighlightStyle style     = highlightStyle.get();
+        boolean doFade = fadeWithDistance.get();
+        double maxDistSq = (double)(range.get() * 16) * (range.get() * 16);
+        int limit = maxRenderBoxes.get();
+        ShapeMode sm = shapeMode.get();
+        HighlightStyle style = highlightStyle.get();
 
-        double spectralPulseMultiplier = 1.0;
+        double spectralPulseMult = 1.0;
         if (style == HighlightStyle.SPECTRAL && spectralPulse.get()) {
-            spectralPulseMultiplier = 0.6 + 0.4 * (0.5 + 0.5 * Math.sin(System.currentTimeMillis() / 750.0 * Math.PI));
+            spectralPulseMult = 0.6 + 0.4 * (0.5 + 0.5 * Math.sin(System.currentTimeMillis() / 750.0 * Math.PI));
         }
 
-        float pulseFactor = 0f;
-        if (style == HighlightStyle.PULSE) {
-            pulseFactor = getPulseFactor();
-        }
+        float pulseFactor = (style == HighlightStyle.PULSE) ? getPulseFactor() : 0f;
 
         double px = mc.player.getX();
         double py = mc.player.getY();
         double pz = mc.player.getZ();
-
-        SettingColor reusable = new SettingColor(0, 0, 0, 0);
 
         int drawn = 0;
         for (MergedBox box : snapshot) {
@@ -1118,35 +1036,26 @@ public class Tunnelers extends Module {
             }
 
             int fadedA = Math.max(8, (int)(base.a * fadeFrac));
-            reusable.r = base.r; reusable.g = base.g; reusable.b = base.b; reusable.a = fadedA;
+            SettingColor fadedColor = new SettingColor(base.r, base.g, base.b, fadedA);
 
-            if (style == HighlightStyle.GLOW) {
-                renderGlowBox(event, box, reusable, fadeFrac, sm);
-            } else if (style == HighlightStyle.PULSE) {
-                renderPulseBox(event, box, reusable, fadeFrac, pulseFactor, sm);
-            } else {
-                renderSpectralBox(event, box, reusable, fadeFrac, spectralPulseMultiplier, sm);
+            switch (style) {
+                case GLOW     -> renderGlowBox(event, box, fadedColor, fadeFrac, sm);
+                case PULSE    -> renderPulseBox(event, box, fadedColor, fadeFrac, pulseFactor, sm);
+                case SPECTRAL -> renderSpectralBox(event, box, fadedColor, fadeFrac, spectralPulseMult, sm);
             }
-
             drawn++;
         }
     }
 
-    // ------------------------------------------------------------------ //
-    //  Glow rendering                                                      //
-    // ------------------------------------------------------------------ //
-
-    private void renderGlowBox(Render3DEvent event, MergedBox box,
-            SettingColor faded, float fadeFrac, ShapeMode sm) {
-
-        int    layers    = glowLayers.get();
-        double spread    = glowSpread.get();
-        int    baseAlpha = glowBaseAlpha.get();
+    private void renderGlowBox(Render3DEvent event, MergedBox box, SettingColor faded, float fadeFrac, ShapeMode sm) {
+        int layers = glowLayers.get();
+        double spread = glowSpread.get();
+        int baseAlpha = glowBaseAlpha.get();
 
         for (int i = layers; i >= 1; i--) {
-            double expansion  = spread * i;
-            double t          = (double)(i - 1) / layers;
-            int    layerAlpha = Math.max(4, (int)(baseAlpha * (1.0 - t * t)));
+            double expansion = spread * i;
+            double t = (double)(i - 1) / layers;
+            int layerAlpha = Math.max(4, (int)(baseAlpha * (1.0 - t * t)));
             layerAlpha = Math.max(4, (int)(layerAlpha * fadeFrac));
 
             event.renderer.box(
@@ -1156,18 +1065,10 @@ public class Tunnelers extends Module {
                 ShapeMode.Sides, 0
             );
         }
-
-        event.renderer.box(box.x1, box.y1, box.z1, box.x2, box.y2, box.z2,
-            faded, faded, sm, 0);
+        event.renderer.box(box.x1, box.y1, box.z1, box.x2, box.y2, box.z2, faded, faded, sm, 0);
     }
 
-    // ------------------------------------------------------------------ //
-    //  Pulse rendering                                                     //
-    // ------------------------------------------------------------------ //
-
-    private void renderPulseBox(Render3DEvent event, MergedBox box,
-            SettingColor faded, float fadeFrac, float pulseFactor, ShapeMode sm) {
-
+    private void renderPulseBox(Render3DEvent event, MergedBox box, SettingColor faded, float fadeFrac, float pulseFactor, ShapeMode sm) {
         int maxA = (int)(pulseMaxAlpha.get() * fadeFrac);
         int minA = (int)(pulseMinAlpha.get() * fadeFrac);
         int pa = Math.min(255, Math.max(0, (int)(minA + (maxA - minA) * pulseFactor)));
@@ -1187,9 +1088,21 @@ public class Tunnelers extends Module {
                 ShapeMode.Sides, 0
             );
         }
+        event.renderer.box(box.x1, box.y1, box.z1, box.x2, box.y2, box.z2, withAlpha(pColor, pa / 3), pColor, sm, 0);
+    }
 
-        event.renderer.box(box.x1, box.y1, box.z1, box.x2, box.y2, box.z2,
-            withAlpha(pColor, pa / 3), pColor, sm, 0);
+    private void renderSpectralBox(Render3DEvent event, MergedBox box, SettingColor faded, float fadeFrac, double pulseMult, ShapeMode sm) {
+        double expand = spectralExpand.get();
+        double ex1 = box.x1 - expand, ey1 = box.y1 - expand, ez1 = box.z1 - expand;
+        double ex2 = box.x2 + expand, ey2 = box.y2 + expand, ez2 = box.z2 + expand;
+
+        int lineAlpha = Math.max(4, (int)(spectralLineAlpha.get() * fadeFrac * pulseMult));
+        int fillAlpha = Math.max(0, (int)(spectralFillAlpha.get() * fadeFrac * pulseMult));
+
+        if (fillAlpha > 0) {
+            event.renderer.box(ex1, ey1, ez1, ex2, ey2, ez2, withAlpha(faded, fillAlpha), withAlpha(faded, 0), ShapeMode.Sides, 0);
+        }
+        event.renderer.box(ex1, ey1, ez1, ex2, ey2, ez2, withAlpha(faded, 0), withAlpha(faded, lineAlpha), ShapeMode.Lines, 0);
     }
 
     private float getPulseFactor() {
@@ -1199,43 +1112,14 @@ public class Tunnelers extends Module {
         return (float)((Math.sin(phase) + 1.0) * 0.5);
     }
 
-    // ------------------------------------------------------------------ //
-    //  Spectral rendering                                                  //
-    // ------------------------------------------------------------------ //
-
-    private void renderSpectralBox(Render3DEvent event, MergedBox box,
-            SettingColor faded, float fadeFrac, double pulseMult, ShapeMode sm) {
-
-        double expand    = spectralExpand.get();
-        double ex1 = box.x1 - expand, ey1 = box.y1 - expand, ez1 = box.z1 - expand;
-        double ex2 = box.x2 + expand, ey2 = box.y2 + expand, ez2 = box.z2 + expand;
-
-        int lineAlpha = Math.max(4, (int)(spectralLineAlpha.get() * fadeFrac * pulseMult));
-        int fillAlpha = Math.max(0, (int)(spectralFillAlpha.get() * fadeFrac * pulseMult));
-
-        if (fillAlpha > 0) {
-            event.renderer.box(ex1, ey1, ez1, ex2, ey2, ez2,
-                withAlpha(faded, fillAlpha), withAlpha(faded, 0),
-                ShapeMode.Sides, 0);
-        }
-
-        event.renderer.box(ex1, ey1, ez1, ex2, ey2, ez2,
-            withAlpha(faded, 0), withAlpha(faded, lineAlpha),
-            ShapeMode.Lines, 0);
-    }
-
-    // ------------------------------------------------------------------ //
-    //  Color helpers                                                       //
-    // ------------------------------------------------------------------ //
-
     private SettingColor getColor(TunnelType type) {
         if (type == null) return null;
         ShaftMode sm = shaftMode.get();
         return switch (type) {
-            case TUNNEL_1x1      -> find1x1.get()            ? color1x1.get()             : null;
-            case TUNNEL_1x2      -> find1x2.get()            ? color1x2.get()             : null;
-            case ABNORMAL_TUNNEL -> findAbnormalTunnels.get() ? colorAbnormalTunnels.get() : null;
-            case HOLE            -> (sm == ShaftMode.Holes   || sm == ShaftMode.Both) ? colorHoles.get()        : null;
+            case TUNNEL_1x1      -> find1x1.get()               ? color1x1.get()             : null;
+            case TUNNEL_1x2      -> find1x2.get()               ? color1x2.get()             : null;
+            case ABNORMAL_TUNNEL -> findAbnormalTunnels.get()   ? colorAbnormalTunnels.get() : null;
+            case HOLE            -> (sm == ShaftMode.Holes || sm == ShaftMode.Both) ? colorHoles.get() : null;
             case LADDER_SHAFT    -> (sm == ShaftMode.LadderShafts || sm == ShaftMode.Both) ? colorLadderShafts.get() : null;
         };
     }
@@ -1244,26 +1128,83 @@ public class Tunnelers extends Module {
         return new SettingColor(color.r, color.g, color.b, Math.min(255, Math.max(0, alpha)));
     }
 
-    // ------------------------------------------------------------------ //
-    //  MergedBox                                                           //
-    // ------------------------------------------------------------------ //
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Helper Classes
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    private static final class ScanContext {
+        private final BlockState[][] snapshot;
+        private final int bottomCoord, minY, maxY, baseX, baseZ;
+
+        ScanContext(BlockState[][] s, int bc, int minY, int maxY, int bx, int bz) {
+            this.snapshot = s; 
+            this.bottomCoord = bc;
+            this.minY = minY; 
+            this.maxY = maxY; 
+            this.baseX = bx; 
+            this.baseZ = bz;
+        }
+
+        BlockState get(int x, int y, int z) {
+            if (y < minY || y >= maxY) return null;
+            int lx = x - baseX, lz = z - baseZ;
+            if (lx < 0 || lx >= 16 || lz < 0 || lz >= 16) return null;
+            
+            int si = (y >> 4) - bottomCoord;
+            if (si < 0 || si >= snapshot.length) return null;
+            
+            BlockState[] sec = snapshot[si];
+            return sec == null ? null : sec[lx + lz * 16 + (y & 15) * 256];
+        }
+
+        boolean isSolid(int x, int y, int z) { 
+            BlockState s = get(x, y, z); 
+            return s != null && s.isOpaque(); 
+        }
+
+        boolean isAir(int x, int y, int z) { 
+            BlockState s = get(x, y, z); 
+            return s == null || s.isAir(); 
+        }
+
+        boolean isLadder(int x, int y, int z) { 
+            BlockState s = get(x, y, z); 
+            return s != null && s.isOf(Blocks.LADDER); 
+        }
+    }
+
+    private static final class ScanConfig {
+        final boolean do1x1Tunnels, do1x1AllFourWalls, do1x2, do2x2, doAbnormal, doHoles, doLadder;
+        final int holeDepth, ladderMin, minY, maxY;
+
+        ScanConfig(boolean do1x1Tunnels, boolean do1x1AllFourWalls, boolean do1x2, boolean do2x2, 
+                   boolean doAbnormal, boolean doHoles, boolean doLadder, int holeDepth, 
+                   int ladderMin, int minY, int maxY) {
+            this.do1x1Tunnels = do1x1Tunnels;
+            this.do1x1AllFourWalls = do1x1AllFourWalls;
+            this.do1x2 = do1x2;
+            this.do2x2 = do2x2;
+            this.doAbnormal = doAbnormal;
+            this.doHoles = doHoles;
+            this.doLadder = doLadder;
+            this.holeDepth = holeDepth;
+            this.ladderMin = ladderMin;
+            this.minY = minY;
+            this.maxY = maxY;
+        }
+    }
 
     private static final class MergedBox {
         final double x1, y1, z1, x2, y2, z2;
         final TunnelType type;
         final double distSq;
 
-        MergedBox(double x1, double y1, double z1, double x2, double y2, double z2,
-                  TunnelType type, double distSq) {
+        MergedBox(double x1, double y1, double z1, double x2, double y2, double z2, TunnelType type, double distSq) {
             this.x1 = x1; this.y1 = y1; this.z1 = z1;
             this.x2 = x2; this.y2 = y2; this.z2 = z2;
             this.type = type; this.distSq = distSq;
         }
     }
-
-    // ------------------------------------------------------------------ //
-    //  ScanResult                                                          //
-    // ------------------------------------------------------------------ //
 
     private static final class ScanResult {
         final ChunkPos chunkPos;

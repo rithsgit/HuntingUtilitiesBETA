@@ -9,7 +9,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
-import com.example.addon.HuntingUtilities;
+import com.example.addon.Tim;
 import com.example.addon.utils.GlowingRegistry;
 
 import meteordevelopment.meteorclient.events.game.OpenScreenEvent;
@@ -510,7 +510,7 @@ public class DungeonAssistant extends Module {
     // ═══════════════════════════════════════════════════════════════════════════
 
     public DungeonAssistant() {
-        super(HuntingUtilities.CATEGORY, "dungeon-assistant",
+        super(Tim.CATEGORY, "dungeon-assistant",
             "Highlights dungeon elements: spawners, chests, and dungeon blocks.");
     }
 

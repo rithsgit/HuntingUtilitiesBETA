@@ -1,6 +1,7 @@
 package com.example.addon.modules;
 
-import com.example.addon.HuntingUtilities;
+import com.example.addon.Tim;
+
 import meteordevelopment.meteorclient.events.game.GameLeftEvent;
 import meteordevelopment.meteorclient.events.world.TickEvent;
 import meteordevelopment.meteorclient.settings.*;
@@ -603,7 +604,7 @@ public class Baromine extends Module {
     private int spaceClearMinWait = 0;
 
     public Baromine() {
-        super(HuntingUtilities.CATEGORY, "baromine", "Automated Baritone miner for targeted ores or blocks with heavy safety protocols.");
+        super(Tim.CATEGORY, "baromine", "Automated Baritone miner for targeted ores or blocks with heavy safety protocols.");
     }
 
     @Override

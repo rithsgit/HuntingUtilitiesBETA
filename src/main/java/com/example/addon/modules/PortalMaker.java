@@ -5,7 +5,7 @@ import java.util.List;
 
 import org.lwjgl.glfw.GLFW;
 
-import com.example.addon.HuntingUtilities;
+import com.example.addon.Tim;
 
 import meteordevelopment.meteorclient.events.render.Render3DEvent;
 import meteordevelopment.meteorclient.events.world.TickEvent;
@@ -82,14 +82,6 @@ public class PortalMaker extends Module {
         .name("air-place")
         .description("Lets you place obsidian in mid-air without needing a solid block to click against.")
         .defaultValue(true)
-        .build()
-    );
-
-    private final Setting<Keybind> disableKey = sgGeneral.add(new KeybindSetting.Builder()
-        .name("disable-key")
-        .description("Hotkey to quickly disable the module.")
-        .defaultValue(Keybind.none())
-        .action(() -> { if (isActive()) toggle(); })
         .build()
     );
 
@@ -265,7 +257,7 @@ public class PortalMaker extends Module {
     private boolean originalAllowParkourPlace = true;
 
     public PortalMaker() {
-        super(HuntingUtilities.CATEGORY, "portal-maker", "Builds and lights a minimal Nether portal (10 obsidian).");
+        super(Tim.CATEGORY, "portal-maker", "Builds and lights a minimal Nether portal (10 obsidian).");
     }
 
     // ── Safe Block State Helper ────────────────────────────────────

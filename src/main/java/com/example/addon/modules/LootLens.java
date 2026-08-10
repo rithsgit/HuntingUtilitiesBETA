@@ -9,7 +9,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
-import com.example.addon.HuntingUtilities;
+import com.example.addon.Tim;
 import com.mojang.blaze3d.systems.RenderSystem;
 
 import meteordevelopment.meteorclient.events.game.OpenScreenEvent;
@@ -393,7 +393,7 @@ public class LootLens extends Module {
     // ─────────────────────────── Constructor ───────────────────────────
 
     public LootLens() {
-        super(HuntingUtilities.CATEGORY, "loot-lens", "Highlights storage containers confirmed to hold shulkers or custom items.");
+        super(Tim.CATEGORY, "loot-lens", "Highlights storage containers confirmed to hold shulkers or custom items.");
     }
 
     // ─────────────────────────── Lifecycle ───────────────────────────

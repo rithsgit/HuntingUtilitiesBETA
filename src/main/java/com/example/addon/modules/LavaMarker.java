@@ -10,7 +10,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
-import com.example.addon.HuntingUtilities;
+import com.example.addon.Tim;
 
 import meteordevelopment.meteorclient.events.render.Render3DEvent;
 import meteordevelopment.meteorclient.events.world.BlockUpdateEvent;
@@ -52,21 +52,6 @@ public class LavaMarker extends Module {
     // Enum
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /**
-     * Controls how tracked lava-fall blocks are rendered.
-     *
-     * GLOW     – The original layered bloom-box renderer. Draws expanding
-     *            transparent boxes around every target with configurable
-     *            layers, spread, and alpha.
-     *
-     * SPECTRAL – Because lava blocks are not entities, Minecraft's outline
-     *            shader cannot be applied. Instead a subtle filled box is drawn
-     *            using {@code spectralFillAlpha} so the position is still visible
-     *            without the bloom overhead.
-     *
-     * PULSE    – Similar to GLOW, but the alpha values smoothly oscillate
-     *            using a sine wave to create a "breathing" effect.
-     */
     public enum RenderMode {
         GLOW,
         SPECTRAL,
@@ -100,7 +85,7 @@ public class LavaMarker extends Module {
 
     private final Setting<SettingColor> color = sgGeneral.add(new ColorSetting.Builder()
         .name("flowing-lava")
-        .description("Color for fully-flowed lava falls.")
+        .description("Color for fully-flowed lava falls. (Alpha is used for GLOW and SPECTRAL outlines).")
         .defaultValue(new SettingColor(255, 100, 0, 200))
         .build()
     );
@@ -123,14 +108,6 @@ public class LavaMarker extends Module {
     // Settings — Render
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /**
-     * Top-level render mode selector.
-     *
-     * GLOW     – Layered bloom boxes (original behaviour).
-     * SPECTRAL – Subtle filled box only (outline shader is entity-only;
-     *            lava blocks cannot use it directly).
-     * PULSE    – Layered bloom boxes that fade in and out.
-     */
     private final Setting<RenderMode> renderMode = sgRender.add(new EnumSetting.Builder<RenderMode>()
         .name("render-mode")
         .description("GLOW = layered bloom boxes. SPECTRAL = subtle fill box. PULSE = fading in/out highlight.")
@@ -158,7 +135,7 @@ public class LavaMarker extends Module {
 
     private final Setting<Integer> glowBaseAlpha = sgRender.add(new IntSetting.Builder()
         .name("glow-base-alpha")
-        .description("Alpha of the innermost glow layer (0-255).")
+        .description("Opacity of the outer glow layers in GLOW mode (0-255).")
         .defaultValue(40).min(4).sliderMax(120)
         .visible(() -> renderMode.get() == RenderMode.GLOW)
         .build()
@@ -166,13 +143,9 @@ public class LavaMarker extends Module {
 
     // ── Spectral-only settings ────────────────────────────────────────────────
 
-    /**
-     * Fill alpha used in SPECTRAL mode. Since the outline shader only applies
-     * to entities, lava blocks are drawn as a solid-ish fill box instead.
-     */
     private final Setting<Integer> spectralFillAlpha = sgRender.add(new IntSetting.Builder()
         .name("spectral-fill-alpha")
-        .description("Fill alpha for lava blocks in SPECTRAL mode (0 = invisible, 80 = subtle).")
+        .description("Opacity of the fill box in SPECTRAL mode (0 = invisible, 80 = subtle).")
         .defaultValue(40).min(0).max(200).sliderMax(120)
         .visible(() -> renderMode.get() == RenderMode.SPECTRAL)
         .build()
@@ -198,7 +171,7 @@ public class LavaMarker extends Module {
 
     private final Setting<Integer> pulseMinAlpha = sgRender.add(new IntSetting.Builder()
         .name("pulse-min-alpha")
-        .description("Lowest alpha reached during the pulse (0 = invisible).")
+        .description("Lowest opacity reached during the pulse (0 = invisible).")
         .defaultValue(15).min(0).max(255).sliderMax(100)
         .visible(() -> renderMode.get() == RenderMode.PULSE)
         .build()
@@ -206,7 +179,7 @@ public class LavaMarker extends Module {
 
     private final Setting<Integer> pulseMaxAlpha = sgRender.add(new IntSetting.Builder()
         .name("pulse-max-alpha")
-        .description("Peak alpha reached during the pulse.")
+        .description("Peak opacity reached during the pulse.")
         .defaultValue(220).min(50).max(255).sliderMax(255)
         .visible(() -> renderMode.get() == RenderMode.PULSE)
         .build()
@@ -227,7 +200,7 @@ public class LavaMarker extends Module {
     // ═══════════════════════════════════════════════════════════════════════════
 
     public LavaMarker() {
-        super(HuntingUtilities.CATEGORY, "lava-marker", "Highlights fully-flowed lava falls in the Nether.");
+        super(Tim.CATEGORY, "lava-marker", "Highlights fully-flowed lava falls in the Nether.");
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -478,7 +451,6 @@ public class LavaMarker extends Module {
                 Box box = new Box(pos);
 
                 if (isSpectral) {
-                    // Outline shader is entity-only — draw a configurable fill + optional outline.
                     int fillAlpha = spectralFillAlpha.get();
                     ShapeMode mode = spectralOutline.get() ? ShapeMode.Both : ShapeMode.Sides;
                     SettingColor outlineColor = spectralOutline.get() ? color.get() : withAlpha(color.get(), 0);
@@ -523,19 +495,15 @@ public class LavaMarker extends Module {
         return (float)((Math.sin(phase) + 1.0) * 0.5);
     }
 
-    private int applyPulse(int baseAlpha) {
+    private int applyPulse() {
         float f = getPulseFactor();
         int min = pulseMinAlpha.get();
         int max = pulseMaxAlpha.get();
         return Math.min(255, Math.max(0, (int)(min + (max - min) * f)));
     }
 
-    private SettingColor pulseColor(SettingColor base) {
-        return withAlpha(base, applyPulse(base.a));
-    }
-
     private void renderPulseBox(Render3DEvent event, Box box, SettingColor base) {
-        int pa = applyPulse(base.a);
+        int pa = applyPulse();
         SettingColor pColor = withAlpha(base, pa);
         int layers = glowLayers.get();
         double spread = glowSpread.get();

@@ -1,7 +1,7 @@
 package com.example.addon.hud;
 
-import com.example.addon.HuntingUtilities;
 
+import com.example.addon.Tim;
 import meteordevelopment.meteorclient.settings.BoolSetting;
 import meteordevelopment.meteorclient.settings.ColorSetting;
 import meteordevelopment.meteorclient.settings.DoubleSetting;
@@ -20,7 +20,7 @@ import net.minecraft.world.World;
 public class PositionHud extends HudElement {
 
     public static final HudElementInfo<PositionHud> INFO = new HudElementInfo<>(
-        HuntingUtilities.HUD_GROUP,
+        Tim.HUD_GROUP,
         "position",
         "Displays your current coordinates, dimension, biome, and Nether/Overworld equivalents.",
         PositionHud::new

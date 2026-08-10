@@ -8,8 +8,9 @@ import java.util.Queue;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
-import com.example.addon.HuntingUtilities;
+import com.example.addon.Tim;
 
+import meteordevelopment.meteorclient.events.game.GameLeftEvent;
 import meteordevelopment.meteorclient.events.render.Render3DEvent;
 import meteordevelopment.meteorclient.events.world.BlockUpdateEvent;
 import meteordevelopment.meteorclient.events.world.TickEvent;
@@ -212,15 +213,16 @@ public class EightToOne extends Module {
     private int dimensionChangeCooldown = 0;
     private int totalCreated = 0;
     private boolean portalsDirty = false;
-    private boolean framesDirty = false;  // NEW: Track when frames need recalculation
+    private boolean framesDirty = false;
     private BlockPos entryPortalPos = null;
     private int exclusionTimer = 0;
     private int cleanupTimer = 0;
+    private boolean isDisconnecting = false; // Tracks if we are leaving a server
 
     private final Map<String, Boolean> crossDimensionSizeCache = new ConcurrentHashMap<>();
 
     public EightToOne() {
-        super(HuntingUtilities.CATEGORY, "eight-to-one", "Tracks Nether portals and Respawn Anchors with 8:1 conversion awareness.");
+        super(Tim.CATEGORY, "eight-to-one", "Tracks Nether portals and Respawn Anchors with 8:1 conversion awareness.");
     }
 
     @Override
@@ -232,18 +234,30 @@ public class EightToOne extends Module {
     @Override
     public void onDeactivate() {
         clearAllState();
+        // Only reset totalCreated on manual disable, NOT on disconnect
+        if (!isDisconnecting) {
+            totalCreated = 0;
+        }
+        isDisconnecting = false;
+    }
+
+    @EventHandler
+    private void onGameLeft(GameLeftEvent event) {
+        // Mark that we're disconnecting so onDeactivate doesn't wipe the counter
+        isDisconnecting = true;
     }
 
     private void clearAllState() {
         portals.clear(); createdPortals.clear(); portalStructureMap.clear();
         anchorChargeMap.clear(); scannedChunks.clear(); dirtyChunks.clear();
         crossDimensionSizeCache.clear();
-        portalsDirty = false; framesDirty = false; totalCreated = 0;
+        portalsDirty = false; framesDirty = false;
     }
 
     @EventHandler
     private void onTick(TickEvent.Post event) {
         if (mc.player == null || mc.world == null) return;
+        if (isDisconnecting) isDisconnecting = false; // We're back in-game, clear disconnect flag
         if (dimensionChangeCooldown > 0) { dimensionChangeCooldown--; return; }
         if (exclusionTimer > 0) exclusionTimer--;
 
@@ -262,7 +276,6 @@ public class EightToOne extends Module {
             groupPortals();
         }
 
-        // NEW: Pre-compute frame boxes during tick, NOT during render
         if (framesDirty) {
             framesDirty = false;
             precomputeFrameBoxes();
@@ -292,7 +305,6 @@ public class EightToOne extends Module {
         }
     }
 
-    // NEW: Pre-compute frame boxes safely during tick phase
     private void precomputeFrameBoxes() {
         for (PortalStructure structure : portalStructureMap.values()) {
             if (structure.type != PortalType.NETHER) continue;
@@ -303,7 +315,6 @@ public class EightToOne extends Module {
                     for (Direction d : Direction.values()) {
                         BlockPos n = p.offset(d);
                         if (!structure.portalBlocks.contains(n)) {
-                            // Safe: This is called during tick, not render
                             if (isChunkLoaded(n) && mc.world.getBlockState(n).isOf(Blocks.OBSIDIAN)) {
                                 Box nb = new Box(n);
                                 frameBox = (frameBox == null) ? nb : frameBox.union(nb);
@@ -312,7 +323,6 @@ public class EightToOne extends Module {
                     }
                 }
             } catch (Exception e) {
-                // Ignore any issues during frame computation
                 frameBox = null;
             }
             
@@ -370,7 +380,6 @@ public class EightToOne extends Module {
             boolean hasNether = false;
             boolean hasAnchor = false;
             
-            // Safe iteration without lambda to avoid potential issues
             if (scanNetherPortals.get()) {
                 try {
                     hasNether = section.hasAny(state -> state.isOf(Blocks.NETHER_PORTAL));
@@ -427,7 +436,6 @@ public class EightToOne extends Module {
         Set<BlockPos> visited = new HashSet<>();
         Set<BlockPos> active = new HashSet<>();
 
-        // Use a snapshot of keys to avoid concurrent modification issues
         List<BlockPos> portalKeys = List.copyOf(portals.keySet());
         
         for (BlockPos startPos : portalKeys) {
@@ -472,7 +480,6 @@ public class EightToOne extends Module {
             if (crossCached != null) {
                 sizeState = crossCached ? SizeState.EXIT : SizeState.CUSTOM;
             } else if (dimensionChangeCooldown <= 0) {
-                // Safe: Called during tick phase
                 boolean allCorners = hasObsidianOnAllCorners(component);
                 sizeState = allCorners ? SizeState.EXIT : SizeState.CUSTOM;
                 crossDimensionSizeCache.put(crossKey, allCorners);
@@ -488,7 +495,7 @@ public class EightToOne extends Module {
         }
 
         portalStructureMap.keySet().retainAll(active);
-        framesDirty = true;  // NEW: Mark frames as needing recomputation
+        framesDirty = true;
     }
 
     private boolean hasObsidianOnAllCorners(Set<BlockPos> component) {
@@ -518,7 +525,7 @@ public class EightToOne extends Module {
                     return false;
                 }
             } catch (Exception e) {
-                return false;  // Safe fallback
+                return false;
             }
         }
         return true;
@@ -574,7 +581,7 @@ public class EightToOne extends Module {
         if (event.newState.isOf(Blocks.OBSIDIAN) || event.oldState.isOf(Blocks.OBSIDIAN)) {
             crossDimensionSizeCache.clear(); 
             portalsDirty = true;
-            framesDirty = true;  // NEW: Frames need recomputation when obsidian changes
+            framesDirty = true;
         }
     }
 
@@ -593,11 +600,9 @@ public class EightToOne extends Module {
             }
         }
 
-        // Use snapshot to avoid concurrent modification during render
         List<PortalStructure> structuresToRender = List.copyOf(portalStructureMap.values());
         
         for (PortalStructure structure : structuresToRender) {
-            // Skip rendering if chunk is unloaded - NO world state access here!
             BlockPos center = BlockPos.ofFloored(structure.boundingBox.getCenter());
             if (!isChunkLoaded(center)) continue;
 
@@ -612,7 +617,6 @@ public class EightToOne extends Module {
                 }
                 renderPulseBox(event, structure.boundingBox, color);
             } else {
-                // FIXED: Use pre-computed frame box instead of accessing world state
                 if (highlightFrame.get() && structure.type == PortalType.NETHER && structure.cachedFrameBox != null) {
                     renderGlowLayers(event, structure.cachedFrameBox, color);
                     event.renderer.box(structure.cachedFrameBox, withAlpha(color, 0), color, shapeMode.get(), 0);
@@ -628,8 +632,6 @@ public class EightToOne extends Module {
             }
         }
     }
-
-    // REMOVED: renderNetherFrame() - no longer needed, frames are pre-computed
 
     private void renderSpectral(Render3DEvent event, PortalStructure structure, SettingColor color) {
         double expand = spectralExpand.get();
@@ -648,9 +650,6 @@ public class EightToOne extends Module {
         }
     }
 
-    // ─────────────────────────── Pulse Rendering Helper ───────────────────────────
-
-    /** Returns a smooth 0..1 factor driven by a sine wave. */
     private float getPulseFactor() {
         double speed = pulseSpeed.get();
         double t = System.currentTimeMillis() / 1000.0;
@@ -658,7 +657,6 @@ public class EightToOne extends Module {
         return (float)((Math.sin(phase) + 1.0) * 0.5);
     }
 
-    /** Map a base alpha through the pulse min/max range. */
     private int applyPulse(int baseAlpha) {
         float f = getPulseFactor();
         int min = pulseMinAlpha.get();
@@ -666,12 +664,10 @@ public class EightToOne extends Module {
         return Math.min(255, Math.max(0, (int)(min + (max - min) * f)));
     }
 
-    /** Convenience: clone a colour with its alpha pulsed. */
     private SettingColor pulseColor(SettingColor base) {
         return withAlpha(base, applyPulse(base.a));
     }
 
-    /** Renders a box with pulsing glow layers and outline. */
     private void renderPulseBox(Render3DEvent event, Box box, SettingColor base) {
         int pa = applyPulse(base.a);
         SettingColor pColor = withAlpha(base, pa);
@@ -768,7 +764,7 @@ public class EightToOne extends Module {
         final boolean isCreated; 
         final SizeState sizeState; 
         final PortalType type;
-        Box cachedFrameBox;  // NEW: Pre-computed frame box, safe for render
+        Box cachedFrameBox;
         
         PortalStructure(Box bb, Set<BlockPos> pb, boolean ic, SizeState ss, PortalType t) {
             this.boundingBox = bb; 

@@ -3,7 +3,7 @@ package com.example.addon.modules;
 import java.util.ArrayList;
 import java.util.List;
 
-import com.example.addon.HuntingUtilities;
+import com.example.addon.Tim;
 
 import meteordevelopment.meteorclient.events.world.TickEvent;
 import meteordevelopment.meteorclient.settings.BoolSetting;
@@ -241,7 +241,7 @@ public class Mendbot extends Module {
     private boolean startCommandSent = false;
 
     public Mendbot() {
-        super(HuntingUtilities.CATEGORY, "mendbot", "Automatically mends items using XP bottles or Mining.");
+        super(Tim.CATEGORY, "mendbot", "Automatically mends items using XP bottles or Mining.");
     }
 
     @Override

@@ -6,7 +6,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-import com.example.addon.HuntingUtilities;
+import com.example.addon.Tim;
 import com.example.addon.modules.NeighbourhoodWatch;
 import com.example.addon.modules.NeighbourhoodWatch.PlayerStatus;
 
@@ -44,7 +44,7 @@ import net.minecraft.util.math.Box;
 public class NeighbourhoodWatchHUD extends HudElement {
 
     public static final HudElementInfo<NeighbourhoodWatchHUD> INFO = new HudElementInfo<>(
-        HuntingUtilities.HUD_GROUP,
+        Tim.HUD_GROUP,
         "neighbourhood-watch",
         "Displays nearby players, items, entities, and server tab-list with friend/enemy/proxy classifications.",
         NeighbourhoodWatchHUD::new
@@ -82,7 +82,7 @@ public class NeighbourhoodWatchHUD extends HudElement {
     private final Setting<Integer> maxNearbyRows = sgGeneral.add(new IntSetting.Builder()
         .name("max-nearby-rows")
         .description("Maximum number of nearby players to list.")
-        .defaultValue(5).min(1).sliderMax(20)
+        .defaultValue(5).min(1).sliderMax(64)
         .visible(showNearby::get)
         .build()
     );
@@ -123,6 +123,29 @@ public class NeighbourhoodWatchHUD extends HudElement {
         .name("scale")
         .description("Scale of the HUD element.")
         .defaultValue(1.0).min(0.25).sliderRange(0.25, 4.0)
+        .build()
+    );
+
+    private final Setting<Boolean> showPlayerIcons = sgGeneral.add(new BoolSetting.Builder()
+        .name("player-icons")
+        .description("Shows the player's face next to their name in lists.")
+        .defaultValue(true)
+        .build()
+    );
+
+    private final Setting<Double> iconScale = sgGeneral.add(new DoubleSetting.Builder()
+        .name("icon-scale")
+        .description("Scale of the player icons.")
+        .defaultValue(1.0).min(0.5).sliderRange(0.5, 4.0)
+        .visible(showPlayerIcons::get)
+        .build()
+    );
+
+    private final Setting<Double> iconGap = sgGeneral.add(new DoubleSetting.Builder()
+        .name("icon-gap")
+        .description("Gap in pixels between the icon and the text.")
+        .defaultValue(4.0).min(0).sliderRange(0, 16)
+        .visible(showPlayerIcons::get)
         .build()
     );
 
@@ -565,6 +588,9 @@ public class NeighbourhoodWatchHUD extends HudElement {
 
     private record FireworkEntry(String shooterName, int count, float nearestDist) {}
 
+    private record NearbyPlayer(String name, float dist, PlayerStatus status, ItemStack head) {}
+    private record OnlinePlayer(String name, ItemStack head) {}
+
     // ─────────────────────────────────────────────────────────────────────────
     // Helper: position-based search box clamped to valid world height
     // ─────────────────────────────────────────────────────────────────────────
@@ -605,9 +631,13 @@ public class NeighbourhoodWatchHUD extends HudElement {
         double lineHeight = renderer.textHeight(false, s);
         Alignment align   = alignment.get();
 
+        boolean drawIcons = showPlayerIcons.get();
+        double iconSize   = drawIcons ? 16.0 * iconScale.get() : 0;
+        double iconGapVal = drawIcons ? iconGap.get() * s : 0;
+        double iconTotalW = iconSize + iconGapVal;
+
         // ── Gather nearby players ─────────────────────────────────────────────
 
-        record NearbyPlayer(String name, float dist, PlayerStatus status) {}
         List<NearbyPlayer> nearbyList = new ArrayList<>();
 
         if (showNearby.get()) {
@@ -618,7 +648,10 @@ public class NeighbourhoodWatchHUD extends HudElement {
                 PlayerStatus status = moduleActive
                     ? module.getPlayerStatusPublic(name)
                     : PlayerStatus.Other;
-                nearbyList.add(new NearbyPlayer(name, dist, status));
+
+                ItemStack headStack = drawIcons ? LastSeenPlayerHud.getPlayerHead(player.getGameProfile()) : ItemStack.EMPTY;
+
+                nearbyList.add(new NearbyPlayer(name, dist, status, headStack));
             }
             nearbyList.sort(Comparator.comparingDouble(NearbyPlayer::dist));
         }
@@ -635,24 +668,27 @@ public class NeighbourhoodWatchHUD extends HudElement {
 
         // ── Gather tab-list names by category ─────────────────────────────────
 
-        List<String> onlineFriendNames = new ArrayList<>();
-        List<String> onlineEnemyNames  = new ArrayList<>();
-        List<String> onlineProxyNames  = new ArrayList<>();
+        List<OnlinePlayer> onlineFriendNames = new ArrayList<>();
+        List<OnlinePlayer> onlineEnemyNames  = new ArrayList<>();
+        List<OnlinePlayer> onlineProxyNames  = new ArrayList<>();
 
         if (moduleActive && showOnline.get() && mc.getNetworkHandler() != null) {
             for (PlayerListEntry entry : mc.getNetworkHandler().getPlayerList()) {
                 String name = entry.getProfile().getName();
                 if (name == null || name.isEmpty()) continue;
+
+                ItemStack head = drawIcons ? LastSeenPlayerHud.getPlayerHead(entry.getProfile()) : ItemStack.EMPTY;
+
                 switch (module.getPlayerStatusPublic(name)) {
-                    case Friend -> onlineFriendNames.add(name);
-                    case Enemy  -> onlineEnemyNames.add(name);
-                    case Proxy  -> onlineProxyNames.add(name);
+                    case Friend -> onlineFriendNames.add(new OnlinePlayer(name, head));
+                    case Enemy  -> onlineEnemyNames.add(new OnlinePlayer(name, head));
+                    case Proxy  -> onlineProxyNames.add(new OnlinePlayer(name, head));
                     default     -> {}
                 }
             }
-            onlineFriendNames.sort(Comparator.naturalOrder());
-            onlineEnemyNames.sort(Comparator.naturalOrder());
-            onlineProxyNames.sort(Comparator.naturalOrder());
+            onlineFriendNames.sort(Comparator.comparing(OnlinePlayer::name));
+            onlineEnemyNames.sort(Comparator.comparing(OnlinePlayer::name));
+            onlineProxyNames.sort(Comparator.comparing(OnlinePlayer::name));
         }
 
         // ── Gather nearby fireworks ───────────────────────────────────────────
@@ -919,7 +955,8 @@ public class NeighbourhoodWatchHUD extends HudElement {
             for (int i = 0; i < nearbyEntries.size(); i++) {
                 TrackedEntry e  = nearbyEntries.get(i);
                 String distStr  = showDistance.get() ? String.format(" %.0fm", e.nearestDist()) : "";
-                double w = renderer.textWidth(e.typeName(), false, s)
+                double w = iconTotalW 
+                         + renderer.textWidth(e.typeName(), false, s)
                          + renderer.textWidth(distStr, false, s);
                 nearbyRowWidths[i] = w;
                 maxW = Math.max(maxW, w);
@@ -935,7 +972,7 @@ public class NeighbourhoodWatchHUD extends HudElement {
             if (!onlineFriendNames.isEmpty()) {
                 onlineFriendNameWidths = new double[onlineFriendNames.size()];
                 for (int i = 0; i < onlineFriendNames.size(); i++) {
-                    double w = renderer.textWidth(onlineFriendNames.get(i), false, s);
+                    double w = iconTotalW + renderer.textWidth(onlineFriendNames.get(i).name(), false, s);
                     onlineFriendNameWidths[i] = w;
                     maxW = Math.max(maxW, w);
                 }
@@ -943,7 +980,7 @@ public class NeighbourhoodWatchHUD extends HudElement {
             if (!onlineEnemyNames.isEmpty()) {
                 onlineEnemyNameWidths = new double[onlineEnemyNames.size()];
                 for (int i = 0; i < onlineEnemyNames.size(); i++) {
-                    double w = renderer.textWidth(onlineEnemyNames.get(i), false, s);
+                    double w = iconTotalW + renderer.textWidth(onlineEnemyNames.get(i).name(), false, s);
                     onlineEnemyNameWidths[i] = w;
                     maxW = Math.max(maxW, w);
                 }
@@ -951,7 +988,7 @@ public class NeighbourhoodWatchHUD extends HudElement {
             if (!onlineProxyNames.isEmpty()) {
                 onlineProxyNameWidths = new double[onlineProxyNames.size()];
                 for (int i = 0; i < onlineProxyNames.size(); i++) {
-                    double w = renderer.textWidth(onlineProxyNames.get(i), false, s);
+                    double w = iconTotalW + renderer.textWidth(onlineProxyNames.get(i).name(), false, s);
                     onlineProxyNameWidths[i] = w;
                     maxW = Math.max(maxW, w);
                 }
@@ -1098,7 +1135,7 @@ public class NeighbourhoodWatchHUD extends HudElement {
             if (nDMode == EntityDisplayMode.Category) {
                 String hdr = "Nearby: " + nearbyTotal + (nearbyTotal == 1 ? " player" : " players");
                 lineIdx = drawSingleText(renderer, s, padH, padV, rowGap, lineHeight,
-                    align, totalW, nearbyHeaderW, lineIdx, hdr, headerColor.get());
+                    align, totalW, nearbyHeaderW, lineIdx, hdr, headerColor.get(), ItemStack.EMPTY);
             }
 
             for (int i = 0; i < nearbyEntries.size(); i++) {
@@ -1112,15 +1149,15 @@ public class NeighbourhoodWatchHUD extends HudElement {
                 if (!distStr.isEmpty() && !cntStr.isEmpty()) {
                     lineIdx = drawTripleText(renderer, s, padH, padV, rowGap, lineHeight,
                         align, totalW, nearbyRowWidths[i], lineIdx,
-                        e.typeName(), cntStr, distStr, nameCol, metaCol, metaCol);
+                        e.typeName(), cntStr, distStr, nameCol, metaCol, metaCol, np.head());
                 } else if (!distStr.isEmpty()) {
                     lineIdx = drawPairedText(renderer, s, padH, padV, rowGap, lineHeight,
                         align, totalW, nearbyRowWidths[i], lineIdx,
-                        e.typeName(), distStr, nameCol, metaCol);
+                        e.typeName(), distStr, nameCol, metaCol, np.head());
                 } else {
                     lineIdx = drawSingleText(renderer, s, padH, padV, rowGap, lineHeight,
                         align, totalW, nearbyRowWidths[i], lineIdx,
-                        e.typeName(), nameCol);
+                        e.typeName(), nameCol, np.head());
                 }
             }
         }
@@ -1129,19 +1166,22 @@ public class NeighbourhoodWatchHUD extends HudElement {
 
         if (hasOnlineSection) {
             for (int i = 0; i < onlineFriendNames.size(); i++) {
+                OnlinePlayer op = onlineFriendNames.get(i);
                 lineIdx = drawSingleText(renderer, s, padH, padV, rowGap, lineHeight,
                     align, totalW, onlineFriendNameWidths[i], lineIdx,
-                    onlineFriendNames.get(i), friendColor.get());
+                    op.name(), friendColor.get(), op.head());
             }
             for (int i = 0; i < onlineEnemyNames.size(); i++) {
+                OnlinePlayer op = onlineEnemyNames.get(i);
                 lineIdx = drawSingleText(renderer, s, padH, padV, rowGap, lineHeight,
                     align, totalW, onlineEnemyNameWidths[i], lineIdx,
-                    onlineEnemyNames.get(i), enemyColor.get());
+                    op.name(), enemyColor.get(), op.head());
             }
             for (int i = 0; i < onlineProxyNames.size(); i++) {
+                OnlinePlayer op = onlineProxyNames.get(i);
                 lineIdx = drawSingleText(renderer, s, padH, padV, rowGap, lineHeight,
                     align, totalW, onlineProxyNameWidths[i], lineIdx,
-                    onlineProxyNames.get(i), proxyColor.get());
+                    op.name(), proxyColor.get(), op.head());
             }
         }
 
@@ -1152,7 +1192,7 @@ public class NeighbourhoodWatchHUD extends HudElement {
                 String fwHdr = "Fireworks: " + fireworkTotal
                     + (fireworkTotal == 1 ? " rocket" : " rockets");
                 lineIdx = drawSingleText(renderer, s, padH, padV, rowGap, lineHeight,
-                    align, totalW, fwHeaderW, lineIdx, fwHdr, headerColor.get());
+                    align, totalW, fwHeaderW, lineIdx, fwHdr, headerColor.get(), ItemStack.EMPTY);
             }
 
             for (int i = 0; i < fireworksShown.size(); i++) {
@@ -1164,21 +1204,21 @@ public class NeighbourhoodWatchHUD extends HudElement {
                     lineIdx = drawTripleText(renderer, s, padH, padV, rowGap, lineHeight,
                         align, totalW, fwRowWidths[i], lineIdx,
                         fe.shooterName(), cntStr, distStr,
-                        fireworkColor.get(), fireworkMetaColor.get(), fireworkMetaColor.get());
+                        fireworkColor.get(), fireworkMetaColor.get(), fireworkMetaColor.get(), ItemStack.EMPTY);
                 } else if (!distStr.isEmpty()) {
                     lineIdx = drawPairedText(renderer, s, padH, padV, rowGap, lineHeight,
                         align, totalW, fwRowWidths[i], lineIdx,
                         fe.shooterName(), distStr,
-                        fireworkColor.get(), fireworkMetaColor.get());
+                        fireworkColor.get(), fireworkMetaColor.get(), ItemStack.EMPTY);
                 } else if (!cntStr.isEmpty()) {
                     lineIdx = drawPairedText(renderer, s, padH, padV, rowGap, lineHeight,
                         align, totalW, fwRowWidths[i], lineIdx,
                         fe.shooterName(), cntStr,
-                        fireworkColor.get(), fireworkMetaColor.get());
+                        fireworkColor.get(), fireworkMetaColor.get(), ItemStack.EMPTY);
                 } else {
                     lineIdx = drawSingleText(renderer, s, padH, padV, rowGap, lineHeight,
                         align, totalW, fwRowWidths[i], lineIdx,
-                        fe.shooterName(), fireworkColor.get());
+                        fe.shooterName(), fireworkColor.get(), ItemStack.EMPTY);
                 }
             }
         }
@@ -1189,7 +1229,7 @@ public class NeighbourhoodWatchHUD extends HudElement {
             if (pDMode == EntityDisplayMode.Category) {
                 String pHdr = "Pearls: " + pearlCount + (pearlCount == 1 ? " pearl" : " pearls");
                 lineIdx = drawSingleText(renderer, s, padH, padV, rowGap, lineHeight,
-                    align, totalW, pearlHeaderW, lineIdx, pHdr, headerColor.get());
+                    align, totalW, pearlHeaderW, lineIdx, pHdr, headerColor.get(), ItemStack.EMPTY);
             }
 
             String cntStr  = " x" + pearlCount;
@@ -1199,12 +1239,12 @@ public class NeighbourhoodWatchHUD extends HudElement {
                 lineIdx = drawTripleText(renderer, s, padH, padV, rowGap, lineHeight,
                     align, totalW, pearlRowW, lineIdx,
                     "Nearby Pearls", cntStr, distStr,
-                    pearlColor.get(), pearlMetaColor.get(), pearlMetaColor.get());
+                    pearlColor.get(), pearlMetaColor.get(), pearlMetaColor.get(), ItemStack.EMPTY);
             } else {
                 lineIdx = drawPairedText(renderer, s, padH, padV, rowGap, lineHeight,
                     align, totalW, pearlRowW, lineIdx,
                     "Nearby Pearls", cntStr,
-                    pearlColor.get(), pearlMetaColor.get());
+                    pearlColor.get(), pearlMetaColor.get(), ItemStack.EMPTY);
             }
         }
 
@@ -1214,7 +1254,7 @@ public class NeighbourhoodWatchHUD extends HudElement {
             if (iDMode == EntityDisplayMode.Category) {
                 lineIdx = drawSingleText(renderer, s, padH, padV, rowGap, lineHeight,
                     align, totalW, itemHeaderW, lineIdx,
-                    itemCategory.header(), headerColor.get());
+                    itemCategory.header(), headerColor.get(), ItemStack.EMPTY);
             }
 
             for (int i = 0; i < itemsShown.size(); i++) {
@@ -1226,21 +1266,21 @@ public class NeighbourhoodWatchHUD extends HudElement {
                     lineIdx = drawTripleText(renderer, s, padH, padV, rowGap, lineHeight,
                         align, totalW, itemRowWidths[i], lineIdx,
                         e.typeName(), cntStr, distStr,
-                        itemColor.get(), itemCountColor.get(), itemCountColor.get());
+                        itemColor.get(), itemCountColor.get(), itemCountColor.get(), ItemStack.EMPTY);
                 } else if (!distStr.isEmpty()) {
                     lineIdx = drawPairedText(renderer, s, padH, padV, rowGap, lineHeight,
                         align, totalW, itemRowWidths[i], lineIdx,
                         e.typeName(), distStr,
-                        itemColor.get(), itemCountColor.get());
+                        itemColor.get(), itemCountColor.get(), ItemStack.EMPTY);
                 } else if (!cntStr.isEmpty()) {
                     lineIdx = drawPairedText(renderer, s, padH, padV, rowGap, lineHeight,
                         align, totalW, itemRowWidths[i], lineIdx,
                         e.typeName(), cntStr,
-                        itemColor.get(), itemCountColor.get());
+                        itemColor.get(), itemCountColor.get(), ItemStack.EMPTY);
                 } else {
                     lineIdx = drawSingleText(renderer, s, padH, padV, rowGap, lineHeight,
                         align, totalW, itemRowWidths[i], lineIdx,
-                        e.typeName(), itemColor.get());
+                        e.typeName(), itemColor.get(), ItemStack.EMPTY);
                 }
             }
         }
@@ -1253,7 +1293,7 @@ public class NeighbourhoodWatchHUD extends HudElement {
             if (eDMode == EntityDisplayMode.Category) {
                 lineIdx = drawSingleText(renderer, s, padH, padV, rowGap, lineHeight,
                     align, totalW, entityCatHeaderW[ci], lineIdx,
-                    cat.header(), headerColor.get());
+                    cat.header(), headerColor.get(), ItemStack.EMPTY);
             }
 
             int shown = Math.min(cat.entries().size(), maxEntityRows.get());
@@ -1266,21 +1306,21 @@ public class NeighbourhoodWatchHUD extends HudElement {
                     lineIdx = drawTripleText(renderer, s, padH, padV, rowGap, lineHeight,
                         align, totalW, entityEntryW[ci][ei], lineIdx,
                         ee.typeName(), cntStr, distStr,
-                        cat.nameColor(), entityMetaColor.get(), entityMetaColor.get());
+                        cat.nameColor(), entityMetaColor.get(), entityMetaColor.get(), ItemStack.EMPTY);
                 } else if (!distStr.isEmpty()) {
                     lineIdx = drawPairedText(renderer, s, padH, padV, rowGap, lineHeight,
                         align, totalW, entityEntryW[ci][ei], lineIdx,
                         ee.typeName(), distStr,
-                        cat.nameColor(), entityMetaColor.get());
+                        cat.nameColor(), entityMetaColor.get(), ItemStack.EMPTY);
                 } else if (!cntStr.isEmpty()) {
                     lineIdx = drawPairedText(renderer, s, padH, padV, rowGap, lineHeight,
                         align, totalW, entityEntryW[ci][ei], lineIdx,
                         ee.typeName(), cntStr,
-                        cat.nameColor(), entityMetaColor.get());
+                        cat.nameColor(), entityMetaColor.get(), ItemStack.EMPTY);
                 } else {
                     lineIdx = drawSingleText(renderer, s, padH, padV, rowGap, lineHeight,
                         align, totalW, entityEntryW[ci][ei], lineIdx,
-                        ee.typeName(), cat.nameColor());
+                        ee.typeName(), cat.nameColor(), ItemStack.EMPTY);
                 }
             }
         }
@@ -1289,7 +1329,7 @@ public class NeighbourhoodWatchHUD extends HudElement {
 
         if (hasSafetyLine) {
             lineIdx = drawSingleText(renderer, s, padH, padV, rowGap, lineHeight,
-                align, totalW, safetyW, lineIdx, "! Safety Armed", safetyColor.get());
+                align, totalW, safetyW, lineIdx, "! Safety Armed", safetyColor.get(), ItemStack.EMPTY);
         }
 
         setSize(totalW, totalH);
@@ -1302,12 +1342,21 @@ public class NeighbourhoodWatchHUD extends HudElement {
     private int drawSingleText(HudRenderer renderer, double s, double padH, double padV,
                                double rowGap, double lineHeight, Alignment align,
                                double totalW, double rowW, int lineIdx,
-                               String text, SettingColor color) {
+                               String text, SettingColor color, ItemStack icon) {
         double textX = x + padH + alignOffset(align, totalW - padH * 2, rowW);
         double textY = y + padV + lineIdx * (lineHeight + rowGap);
 
         if (showBackground.get()) {
-            Renderer2D.COLOR.quad(x, textY, totalW, lineHeight, backgroundColor.get());
+            double bgH = Math.max(lineHeight, icon != null && !icon.isEmpty() ? 16.0 * iconScale.get() : 0);
+            double bgY = textY - (bgH - lineHeight) / 2.0;
+            Renderer2D.COLOR.quad(x, bgY, totalW, bgH, backgroundColor.get());
+        }
+
+        if (icon != null && !icon.isEmpty()) {
+            double iconSize = 16.0 * iconScale.get();
+            double iconY = textY + (lineHeight - iconSize) / 2.0;
+            renderer.item(icon, (int) textX, (int) iconY, iconScale.get().floatValue(), false);
+            textX += iconSize + (iconGap.get() * s);
         }
 
         renderer.text(text, textX, textY, color, false, s);
@@ -1318,14 +1367,23 @@ public class NeighbourhoodWatchHUD extends HudElement {
                                double rowGap, double lineHeight, Alignment align,
                                double totalW, double rowW, int lineIdx,
                                String left, String right,
-                               SettingColor leftColor, SettingColor rightColor) {
+                               SettingColor leftColor, SettingColor rightColor, ItemStack icon) {
         double leftW  = renderer.textWidth(left, false, s);
         double sepW   = renderer.textWidth(" ", false, s);
         double textX  = x + padH + alignOffset(align, totalW - padH * 2, rowW);
         double textY  = y + padV + lineIdx * (lineHeight + rowGap);
 
         if (showBackground.get()) {
-            Renderer2D.COLOR.quad(x, textY, totalW, lineHeight, backgroundColor.get());
+            double bgH = Math.max(lineHeight, icon != null && !icon.isEmpty() ? 16.0 * iconScale.get() : 0);
+            double bgY = textY - (bgH - lineHeight) / 2.0;
+            Renderer2D.COLOR.quad(x, bgY, totalW, bgH, backgroundColor.get());
+        }
+
+        if (icon != null && !icon.isEmpty()) {
+            double iconSize = 16.0 * iconScale.get();
+            double iconY = textY + (lineHeight - iconSize) / 2.0;
+            renderer.item(icon, (int) textX, (int) iconY, iconScale.get().floatValue(), false);
+            textX += iconSize + (iconGap.get() * s);
         }
 
         renderer.text(left, textX, textY, leftColor, false, s);
@@ -1337,7 +1395,7 @@ public class NeighbourhoodWatchHUD extends HudElement {
                                double rowGap, double lineHeight, Alignment align,
                                double totalW, double rowW, int lineIdx,
                                String first, String second, String third,
-                               SettingColor firstColor, SettingColor secondColor, SettingColor thirdColor) {
+                               SettingColor firstColor, SettingColor secondColor, SettingColor thirdColor, ItemStack icon) {
         double firstW  = renderer.textWidth(first, false, s);
         double sepW    = renderer.textWidth(" ", false, s);
         double secondW = renderer.textWidth(second, false, s);
@@ -1345,7 +1403,16 @@ public class NeighbourhoodWatchHUD extends HudElement {
         double textY   = y + padV + lineIdx * (lineHeight + rowGap);
 
         if (showBackground.get()) {
-            Renderer2D.COLOR.quad(x, textY, totalW, lineHeight, backgroundColor.get());
+            double bgH = Math.max(lineHeight, icon != null && !icon.isEmpty() ? 16.0 * iconScale.get() : 0);
+            double bgY = textY - (bgH - lineHeight) / 2.0;
+            Renderer2D.COLOR.quad(x, bgY, totalW, bgH, backgroundColor.get());
+        }
+
+        if (icon != null && !icon.isEmpty()) {
+            double iconSize = 16.0 * iconScale.get();
+            double iconY = textY + (lineHeight - iconSize) / 2.0;
+            renderer.item(icon, (int) textX, (int) iconY, iconScale.get().floatValue(), false);
+            textX += iconSize + (iconGap.get() * s);
         }
 
         renderer.text(first, textX, textY, firstColor, false, s);

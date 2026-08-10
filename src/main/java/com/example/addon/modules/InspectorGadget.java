@@ -6,7 +6,8 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
-import com.example.addon.HuntingUtilities;
+import com.example.addon.Tim;
+
 import meteordevelopment.meteorclient.events.render.Render3DEvent;
 import meteordevelopment.meteorclient.events.world.TickEvent;
 import meteordevelopment.meteorclient.renderer.ShapeMode;
@@ -273,7 +274,7 @@ public class InspectorGadget extends Module {
     private int shulkerCount = 0;
 
     public InspectorGadget() {
-        super(HuntingUtilities.CATEGORY, "inspector-gadget", "Walks a custom path of tiles to scan nearby storage blocks using Baritone.");
+        super(Tim.CATEGORY, "inspector-gadget", "Walks a custom path of tiles to scan nearby storage blocks using Baritone.");
     }
 
     @Override

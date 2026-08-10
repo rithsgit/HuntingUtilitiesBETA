@@ -1,7 +1,7 @@
 package com.example.addon.hud;
 
 import com.example.addon.Tim;
-import com.example.addon.modules.EightToOne;
+import com.example.addon.modules.Gatekeeper;
 
 import meteordevelopment.meteorclient.settings.*;
 import meteordevelopment.meteorclient.systems.hud.HudElement;
@@ -10,20 +10,26 @@ import meteordevelopment.meteorclient.systems.hud.HudRenderer;
 import meteordevelopment.meteorclient.systems.modules.Modules;
 import meteordevelopment.meteorclient.utils.render.color.SettingColor;
 import net.minecraft.item.ItemStack;
-import net.minecraft.item.Items;
 
-public class EightToOneHUD extends HudElement {
+import java.util.ArrayList;
+import java.util.List;
 
-    public static final HudElementInfo<EightToOneHUD> INFO = new HudElementInfo<>(
+public class EndAssistantHud extends HudElement {
+
+    public static final HudElementInfo<EndAssistantHud> INFO = new HudElementInfo<>(
         Tim.HUD_GROUP,
-        "eight-to-one",
-        "Displays portals and respawn anchors in the area, and total portals created this session.",
-        EightToOneHUD::new
+        "end-assistant",
+        "Displays End Assistant stats like nearby elytras, shulkers, and chests.",
+        EndAssistantHud::new
     );
 
-    private final SettingGroup sgGeneral = settings.getDefaultGroup();
+    // ── Data Models required by Gatekeeper ─────────────────────────────────────
+    public record EndStat(String label, int value, ItemStack icon, StatSeverity severity) {}
+    public enum StatSeverity { Normal, Warning, Critical }
 
-    // ── Layout ────────────────────────────────────────────────────────────────
+    // ── Settings ──────────────────────────────────────────────────────────────
+    private final SettingGroup sgGeneral = settings.getDefaultGroup();
+    private final SettingGroup sgFilters = settings.createGroup("Filters");
 
     public enum Layout { Inline, Stacked, StackedIcons }
 
@@ -34,30 +40,12 @@ public class EightToOneHUD extends HudElement {
         .build()
     );
 
-    // ── Feature toggles ───────────────────────────────────────────────────────
-
-    private final Setting<Boolean> showPortalsInArea = sgGeneral.add(new BoolSetting.Builder()
-        .name("show-portals-in-area")
-        .description("Show the portals in area count.")
+    private final Setting<Boolean> hideEmptyStats = sgGeneral.add(new BoolSetting.Builder()
+        .name("hide-empty")
+        .description("Hides stats that have a value of 0. Disabled while in the HUD Editor.")
         .defaultValue(true)
         .build()
     );
-
-    private final Setting<Boolean> showAnchorsInArea = sgGeneral.add(new BoolSetting.Builder()
-        .name("show-anchors-in-area")
-        .description("Show the respawn anchors in area count.")
-        .defaultValue(true)
-        .build()
-    );
-
-    private final Setting<Boolean> showPortalsCreated = sgGeneral.add(new BoolSetting.Builder()
-        .name("show-portals-created")
-        .description("Show the total portals created this session.")
-        .defaultValue(true)
-        .build()
-    );
-
-    // ── Visual settings ───────────────────────────────────────────────────────
 
     private final Setting<Double> scale = sgGeneral.add(new DoubleSetting.Builder()
         .name("scale")
@@ -125,10 +113,24 @@ public class EightToOneHUD extends HudElement {
         .build()
     );
 
-    private final Setting<SettingColor> valueColor = sgGeneral.add(new ColorSetting.Builder()
-        .name("value-color")
-        .description("Color for values.")
+    private final Setting<SettingColor> normalColor = sgGeneral.add(new ColorSetting.Builder()
+        .name("normal-color")
+        .description("Color for normal severity values.")
         .defaultValue(new SettingColor(255, 255, 255, 255))
+        .build()
+    );
+
+    private final Setting<SettingColor> warningColor = sgGeneral.add(new ColorSetting.Builder()
+        .name("warning-color")
+        .description("Color for warning severity values.")
+        .defaultValue(new SettingColor(255, 255, 0, 255))
+        .build()
+    );
+
+    private final Setting<SettingColor> criticalColor = sgGeneral.add(new ColorSetting.Builder()
+        .name("critical-color")
+        .description("Color for critical severity values.")
+        .defaultValue(new SettingColor(255, 0, 0, 255))
         .build()
     );
 
@@ -154,28 +156,100 @@ public class EightToOneHUD extends HudElement {
         .build()
     );
 
+    // ── Filter Settings ───────────────────────────────────────────────────────
+
+    private final Setting<Boolean> showElytrasFound = sgFilters.add(new BoolSetting.Builder()
+        .name("elytras-found")
+        .description("Show the total elytras found this session.")
+        .defaultValue(true)
+        .build()
+    );
+
+    private final Setting<Boolean> showElytrasNearby = sgFilters.add(new BoolSetting.Builder()
+        .name("elytras-nearby")
+        .description("Show the elytras currently nearby.")
+        .defaultValue(true)
+        .build()
+    );
+
+    private final Setting<Boolean> showChestsNearby = sgFilters.add(new BoolSetting.Builder()
+        .name("chests-nearby")
+        .description("Show the chests currently nearby.")
+        .defaultValue(true)
+        .build()
+    );
+
+    private final Setting<Boolean> showShulkers = sgFilters.add(new BoolSetting.Builder()
+        .name("shulkers")
+        .description("Show the shulkers currently nearby.")
+        .defaultValue(true)
+        .build()
+    );
+
     // ── Constructor ───────────────────────────────────────────────────────────
 
-    public EightToOneHUD() { super(INFO); }
+    public EndAssistantHud() { super(INFO); }
+
+    private SettingColor getColorForSeverity(StatSeverity severity) {
+        return switch (severity) {
+            case Normal -> normalColor.get();
+            case Warning -> warningColor.get();
+            case Critical -> criticalColor.get();
+        };
+    }
+
+    private boolean shouldShowStat(String label) {
+        return switch (label) {
+            case "Elytras Found" -> showElytrasFound.get();
+            case "Elytras Nearby" -> showElytrasNearby.get();
+            case "Chests Nearby" -> showChestsNearby.get();
+            case "Shulkers" -> showShulkers.get();
+            default -> true;
+        };
+    }
 
     // ── Render ────────────────────────────────────────────────────────────────
 
     @Override
     public void render(HudRenderer renderer) {
-        EightToOne tracker = Modules.get().get(EightToOne.class);
-        if (tracker == null || !tracker.isActive()) { setSize(0, 0); return; }
-        if (!showPortalsInArea.get() && !showAnchorsInArea.get() && !showPortalsCreated.get()) { setSize(0, 0); return; }
+        boolean inEditor = isInEditor();
+        Gatekeeper tracker = Modules.get().get(Gatekeeper.class);
+        
+        if (tracker == null || !tracker.isActive()) {
+            if (!inEditor) { 
+                setSize(0, 0); 
+                return; 
+            }
+        }
+
+        List<EndStat> rawStats = tracker != null ? tracker.getEndAssistantStats() : new ArrayList<>();
+        List<EndStat> stats = new ArrayList<>();
+
+        // Filter stats based on user toggles
+        for (EndStat es : rawStats) {
+            if (shouldShowStat(es.label())) {
+                stats.add(es);
+            }
+        }
+        
+        // Provide dummy stats in the editor so the HUD can be moved around
+        if (inEditor && stats.isEmpty()) {
+            if (showElytrasFound.get()) stats.add(new EndStat("Elytras Found", 0, new ItemStack(net.minecraft.item.Items.ELYTRA), StatSeverity.Normal));
+            if (showElytrasNearby.get()) stats.add(new EndStat("Elytras Nearby", 0, new ItemStack(net.minecraft.item.Items.ELYTRA), StatSeverity.Normal));
+            if (showChestsNearby.get()) stats.add(new EndStat("Chests Nearby", 0, new ItemStack(net.minecraft.item.Items.CHEST), StatSeverity.Normal));
+            if (showShulkers.get()) stats.add(new EndStat("Shulkers", 0, new ItemStack(net.minecraft.item.Items.SHULKER_SHELL), StatSeverity.Normal));
+        }
 
         switch (layout.get()) {
-            case Inline       -> renderInline(renderer, tracker);
-            case Stacked      -> renderStacked(renderer, tracker, false);
-            case StackedIcons -> renderStacked(renderer, tracker, true);
+            case Inline       -> renderInline(renderer, stats, inEditor);
+            case Stacked      -> renderStacked(renderer, stats, false, inEditor);
+            case StackedIcons -> renderStacked(renderer, stats, true, inEditor);
         }
     }
 
     // ── Inline layout ─────────────────────────────────────────────────────────
 
-    private void renderInline(HudRenderer renderer, EightToOne tracker) {
+    private void renderInline(HudRenderer renderer, List<EndStat> stats, boolean inEditor) {
         double s          = scale.get();
         double padH       = 4 * s;
         double padV       = 2 * s;
@@ -190,16 +264,13 @@ public class EightToOneHUD extends HudElement {
         IconPosition iconPos = iconPosition.get();
         double effIconGap = showIcon ? iconGap : 0;
 
-        boolean showArea    = showPortalsInArea.get();
-        boolean showAnchors = showAnchorsInArea.get();
-        boolean showCreated = showPortalsCreated.get();
-
-        // Build segments dynamically so separators always sit between active ones
-        record Stat(String label, String value, ItemStack icon) {}
+        record Stat(String label, String value, ItemStack icon, StatSeverity severity) {}
         java.util.List<Stat> segments = new java.util.ArrayList<>();
-        if (showAnchors) segments.add(new Stat("Anchors: ",         String.valueOf(tracker.getTotalAnchors()), new ItemStack(Items.RESPAWN_ANCHOR)));
-        if (showArea)    segments.add(new Stat("Portals in Area: ", String.valueOf(tracker.getTotalPortals()), new ItemStack(Items.OBSIDIAN)));
-        if (showCreated) segments.add(new Stat("Portals Created: ", String.valueOf(tracker.getTotalCreated()), new ItemStack(Items.FLINT_AND_STEEL)));
+        for (EndStat es : stats) {
+            // Bypass hide-empty while in the HUD editor
+            if (!inEditor && hideEmptyStats.get() && es.value() == 0) continue;
+            segments.add(new Stat(es.label() + ": ", String.valueOf(es.value()), es.icon(), es.severity()));
+        }
         if (segments.isEmpty()) { setSize(0, 0); return; }
 
         double totalW = 0;
@@ -225,6 +296,8 @@ public class EightToOneHUD extends HudElement {
 
         for (int i = 0; i < segments.size(); i++) {
             Stat st = segments.get(i);
+            SettingColor valColor = getColorForSeverity(st.severity());
+
             if (showIcon && iconPos == IconPosition.Left) {
                 renderer.item(st.icon(), (int) cx, (int) (rowY + (rowH - iconSz) / 2.0), iconScale.get().floatValue(), false);
                 cx += iconSz + effIconGap;
@@ -233,7 +306,7 @@ public class EightToOneHUD extends HudElement {
                 renderer.text(st.label(), cx, rowY + (rowH - lineHeight) / 2.0, labelColor.get(), false, s);
                 cx += renderer.textWidth(st.label(), false, s);
             }
-            renderer.text(st.value(), cx, rowY + (rowH - lineHeight) / 2.0, valueColor.get(), false, s);
+            renderer.text(st.value(), cx, rowY + (rowH - lineHeight) / 2.0, valColor, false, s);
             cx += renderer.textWidth(st.value(), false, s);
 
             if (showIcon && iconPos != IconPosition.Left) {
@@ -250,7 +323,7 @@ public class EightToOneHUD extends HudElement {
 
     // ── Stacked layout (with optional icons) ─────────────────────────────────
 
-    private void renderStacked(HudRenderer renderer, EightToOne tracker, boolean withIcons) {
+    private void renderStacked(HudRenderer renderer, List<EndStat> stats, boolean withIcons, boolean inEditor) {
         double s          = scale.get();
         double padH       = 4 * s;
         double padV       = 2 * s;
@@ -275,94 +348,62 @@ public class EightToOneHUD extends HudElement {
             statRowH = Math.max(lineHeight, iconSz);
         }
 
-        // ── Gather data ───────────────────────────────────────────────────────
+        record Stat(String label, String value, ItemStack icon, StatSeverity severity) {}
+        java.util.List<Stat> segments = new java.util.ArrayList<>();
+        for (EndStat es : stats) {
+            // Bypass hide-empty while in the HUD editor
+            if (!inEditor && hideEmptyStats.get() && es.value() == 0) continue;
+            segments.add(new Stat(showText ? es.label() + ": " : "", String.valueOf(es.value()), showIcon ? es.icon() : ItemStack.EMPTY, es.severity()));
+        }
+        if (segments.isEmpty()) { setSize(0, 0); return; }
 
-        String    anchorLabel = null, anchorValue = null;
-        ItemStack anchorIcon  = ItemStack.EMPTY;
-        if (showAnchorsInArea.get()) {
-            anchorLabel = showText ? "Anchors: " : "";
-            anchorValue = String.valueOf(tracker.getTotalAnchors());
-            anchorIcon  = showIcon ? new ItemStack(Items.RESPAWN_ANCHOR) : ItemStack.EMPTY;
+        double maxTextW = 0;
+        double maxIconW = 0;
+
+        for (Stat st : segments) {
+            double textW = renderer.textWidth(st.label(), false, s) + renderer.textWidth(st.value(), false, s);
+            maxTextW = Math.max(maxTextW, textW);
+            if (showIcon && !st.icon().isEmpty()) {
+                maxIconW = Math.max(maxIconW, iconSz + effectiveIconGap);
+            }
         }
 
-        String    areaLabel = null, areaValue = null;
-        ItemStack areaIcon  = ItemStack.EMPTY;
-        if (showPortalsInArea.get()) {
-            areaLabel = showText ? "Portals in Area: " : "";
-            areaValue = String.valueOf(tracker.getTotalPortals());
-            areaIcon  = showIcon ? new ItemStack(Items.OBSIDIAN) : ItemStack.EMPTY;
-        }
-
-        String    createdLabel = null, createdValue = null;
-        ItemStack createdIcon  = ItemStack.EMPTY;
-        if (showPortalsCreated.get()) {
-            createdLabel = showText ? "Portals Created: " : "";
-            createdValue = String.valueOf(tracker.getTotalCreated());
-            createdIcon  = showIcon ? new ItemStack(Items.FLINT_AND_STEEL) : ItemStack.EMPTY;
-        }
-
-        boolean hasArea    = areaLabel    != null;
-        boolean hasAnchor  = anchorLabel  != null;
-        boolean hasCreated = createdLabel != null;
-        if (!hasArea && !hasAnchor && !hasCreated) { setSize(0, 0); return; }
-
-        // ── Measure widths ────────────────────────────────────────────────────
-
-        double anchorTextW  = hasAnchor  ? renderer.textWidth(anchorLabel,  false, s) + renderer.textWidth(anchorValue,  false, s) : 0;
-        double areaTextW    = hasArea    ? renderer.textWidth(areaLabel,    false, s) + renderer.textWidth(areaValue,    false, s) : 0;
-        double createdTextW = hasCreated ? renderer.textWidth(createdLabel, false, s) + renderer.textWidth(createdValue, false, s) : 0;
-
-        double anchorW, areaW, createdW;
+        double contentW;
         if (!showIcon || iconVertical) {
-            anchorW  = hasAnchor  ? (showIcon && !anchorIcon.isEmpty()  ? Math.max(iconSz, anchorTextW)  : anchorTextW)  : 0;
-            areaW    = hasArea    ? (showIcon && !areaIcon.isEmpty()    ? Math.max(iconSz, areaTextW)    : areaTextW)    : 0;
-            createdW = hasCreated ? (showIcon && !createdIcon.isEmpty() ? Math.max(iconSz, createdTextW) : createdTextW) : 0;
+            contentW = Math.max(maxTextW, showIcon ? iconSz : 0);
         } else {
-            double anchorIconW  = (showIcon && !anchorIcon.isEmpty())  ? iconSz + effectiveIconGap : 0;
-            double areaIconW    = (showIcon && !areaIcon.isEmpty())    ? iconSz + effectiveIconGap : 0;
-            double createdIconW = (showIcon && !createdIcon.isEmpty()) ? iconSz + effectiveIconGap : 0;
-            anchorW  = hasAnchor  ? anchorIconW  + anchorTextW  : 0;
-            areaW    = hasArea    ? areaIconW    + areaTextW    : 0;
-            createdW = hasCreated ? createdIconW + createdTextW : 0;
+            contentW = maxTextW + maxIconW;
         }
-
-        double contentW = Math.max(anchorW, Math.max(areaW, createdW));
         if (showIcon && !showText) contentW = Math.max(contentW, iconSz);
         double totalW = contentW + padH * 2;
 
         double totalH = padV;
-        if (hasAnchor)  totalH += statRowH + rowGap;
-        if (hasArea)    totalH += statRowH + rowGap;
-        if (hasCreated) totalH += statRowH + rowGap;
-        totalH -= rowGap;
+        for (int i = 0; i < segments.size(); i++) {
+            totalH += statRowH;
+            if (i < segments.size() - 1) totalH += rowGap;
+        }
         totalH += padV;
-
-        // ── Draw ──────────────────────────────────────────────────────────────
 
         Alignment align       = alignment.get();
         boolean   rightAlign  = align == Alignment.Right;
         boolean   centerAlign = align == Alignment.Center;
         double    curY        = y + padV;
 
-        if (hasAnchor) {
+        for (Stat st : segments) {
+            SettingColor valColor = getColorForSeverity(st.severity());
+            double textW = renderer.textWidth(st.label(), false, s) + renderer.textWidth(st.value(), false, s);
+            double lineW = textW;
+            if (showIcon && !iconVertical) {
+                lineW += iconSz + effectiveIconGap;
+            } else if (showIcon && iconVertical) {
+                lineW = Math.max(textW, iconSz);
+            }
+
             drawStatRow(renderer, s, x, curY, totalW, padH, statRowH, lineHeight,
-                rightAlign, centerAlign, anchorW, anchorTextW,
-                anchorIcon, iconSz, effectiveIconGap, iconPos,
-                anchorLabel, anchorValue, labelColor.get(), valueColor.get());
+                rightAlign, centerAlign, lineW, textW,
+                st.icon(), iconSz, effectiveIconGap, iconPos,
+                st.label(), st.value(), labelColor.get(), valColor);
             curY += statRowH + rowGap;
-        }
-        if (hasArea) {
-            drawStatRow(renderer, s, x, curY, totalW, padH, statRowH, lineHeight,
-                rightAlign, centerAlign, areaW, areaTextW,
-                areaIcon, iconSz, effectiveIconGap, iconPos,
-                areaLabel, areaValue, labelColor.get(), valueColor.get());
-            curY += statRowH + rowGap;
-        }
-        if (hasCreated) {
-            drawStatRow(renderer, s, x, curY, totalW, padH, statRowH, lineHeight,
-                rightAlign, centerAlign, createdW, createdTextW,
-                createdIcon, iconSz, effectiveIconGap, iconPos,
-                createdLabel, createdValue, labelColor.get(), valueColor.get());
         }
 
         setSize(totalW, totalH);

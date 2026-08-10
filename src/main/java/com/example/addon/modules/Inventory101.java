@@ -11,7 +11,7 @@ import java.util.Set;
 
 import org.lwjgl.glfw.GLFW;
 
-import com.example.addon.HuntingUtilities;
+import com.example.addon.Tim;
 
 import meteordevelopment.meteorclient.events.world.TickEvent;
 import meteordevelopment.meteorclient.settings.BoolSetting;
@@ -484,7 +484,7 @@ public class Inventory101 extends Module {
     private int     prevSlotAutoTool    = -1;
 
     public Inventory101() {
-        super(HuntingUtilities.CATEGORY, "inventory-101", "Manages inventory layouts with shulker boxes.");
+        super(Tim.CATEGORY, "inventory-101", "Manages inventory layouts with shulker boxes.");
     }
 
     @Override

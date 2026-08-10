@@ -4,7 +4,7 @@ import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.Set;
 
-import com.example.addon.HuntingUtilities;
+import com.example.addon.Tim;
 
 import meteordevelopment.meteorclient.events.world.TickEvent;
 import meteordevelopment.meteorclient.settings.BoolSetting;
@@ -44,12 +44,16 @@ public class RocketPilot extends Module {
         Drunk,
         Grid,
         Circle,
+        Hexagon,
+        Triangle,
         ZigZag,
         FigureEight,
         Sweep
     }
 
     public enum DrunkBias { None, North, South, East, West, PositiveOnly, NegativeOnly, NegPos, PosNeg }
+
+    public enum DrunkSpiralMode { None, Grid, Circle, Hexagon, Triangle }
 
     // ─── Constants ───────────────────────────────────────────────────────────────
     private static final int   TAKEOFF_GRACE_TICKS       = 40;
@@ -226,7 +230,11 @@ public class RocketPilot extends Module {
         .name("flight-pattern")
         .description("The flight pattern to follow. Manual allows free mouse look.")
         .defaultValue(FlightPattern.Manual)
-        .onChanged(v -> { if (isActive()) resetPatternState(); })
+        .onChanged(v -> { 
+            // Reset state immediately if pattern changes, regardless of active status
+            resetPatternState();
+            resetDrunkSpiralState();
+        })
         .build()
     );
 
@@ -329,7 +337,7 @@ public class RocketPilot extends Module {
     // ─── Pattern Settings ─────────────────────────────────────────────────────────
     private final Setting<Keybind> pauseKey = sgPatterns.add(new KeybindSetting.Builder()
         .name("pause-key")
-        .description("Pauses/resumes the current flight pattern.")
+        .description("Pauses/resumes the current flight pattern or drunk spiral.")
         .defaultValue(Keybind.none())
         .action(this::togglePause)
         .visible(() -> isPatternMode())
@@ -386,6 +394,38 @@ public class RocketPilot extends Module {
         .build()
     );
 
+    private final Setting<Integer> hexagonSideLength = sgPatterns.add(new IntSetting.Builder()
+        .name("hexagon-side-length")
+        .description("Side length of the hexagon in chunks.")
+        .defaultValue(4).min(1).sliderRange(1, 32)
+        .visible(() -> flightPattern.get() == FlightPattern.Hexagon)
+        .build()
+    );
+
+    private final Setting<Integer> hexagonExpansion = sgPatterns.add(new IntSetting.Builder()
+        .name("hexagon-expansion")
+        .description("Chunks the hexagon side length grows per full rotation.")
+        .defaultValue(2).min(1).sliderRange(1, 16)
+        .visible(() -> flightPattern.get() == FlightPattern.Hexagon)
+        .build()
+    );
+
+    private final Setting<Integer> triangleSideLength = sgPatterns.add(new IntSetting.Builder()
+        .name("triangle-side-length")
+        .description("Side length of the triangle in chunks.")
+        .defaultValue(6).min(1).sliderRange(1, 32)
+        .visible(() -> flightPattern.get() == FlightPattern.Triangle)
+        .build()
+    );
+
+    private final Setting<Integer> triangleExpansion = sgPatterns.add(new IntSetting.Builder()
+        .name("triangle-expansion")
+        .description("Chunks the triangle side length grows per full rotation.")
+        .defaultValue(3).min(1).sliderRange(1, 16)
+        .visible(() -> flightPattern.get() == FlightPattern.Triangle)
+        .build()
+    );
+
     private final Setting<Integer> zigzagLegLength = sgPatterns.add(new IntSetting.Builder()
         .name("zigzag-leg-length")
         .description("Length of each zigzag leg in chunks.")
@@ -417,6 +457,15 @@ public class RocketPilot extends Module {
     );
 
     // ─── DrunkPilot Settings ──────────────────────────────────────────────────────
+    private final Setting<DrunkSpiralMode> drunkSpiralMode = sgDrunk.add(new EnumSetting.Builder<DrunkSpiralMode>()
+        .name("spiral-mode")
+        .description("Constrains drunk wandering to follow an expanding grid or circular spiral outward.")
+        .defaultValue(DrunkSpiralMode.None)
+        .visible(() -> flightPattern.get() == FlightPattern.Drunk)
+        .onChanged(v -> { resetDrunkSpiralState(); })
+        .build()
+    );
+
     private final Setting<Integer> drunkInterval = sgDrunk.add(new IntSetting.Builder()
         .name("change-interval")
         .description("Ticks between direction changes.")
@@ -433,7 +482,7 @@ public class RocketPilot extends Module {
         .defaultValue(120.0)
         .min(1.0).max(180.0)
         .sliderRange(50.0, 180.0)
-        .visible(() -> flightPattern.get() == FlightPattern.Drunk)
+        .visible(() -> flightPattern.get() == FlightPattern.Drunk && drunkSpiralMode.get() == DrunkSpiralMode.None)
         .build()
     );
 
@@ -441,7 +490,7 @@ public class RocketPilot extends Module {
         .name("coordinate-bias")
         .description("Constrains drunk-pilot heading. None = fully random.")
         .defaultValue(DrunkBias.None)
-        .visible(() -> flightPattern.get() == FlightPattern.Drunk)
+        .visible(() -> flightPattern.get() == FlightPattern.Drunk && drunkSpiralMode.get() == DrunkSpiralMode.None)
         .build()
     );
 
@@ -449,7 +498,7 @@ public class RocketPilot extends Module {
         .name("avoid-visited")
         .description("Attempts to steer the Drunk Pilot away from chunks it has already flown over.")
         .defaultValue(true)
-        .visible(() -> flightPattern.get() == FlightPattern.Drunk)
+        .visible(() -> flightPattern.get() == FlightPattern.Drunk && drunkSpiralMode.get() == DrunkSpiralMode.None)
         .build()
     );
 
@@ -459,6 +508,87 @@ public class RocketPilot extends Module {
         .defaultValue(0.05)
         .min(0.01).max(1.0)
         .visible(() -> flightPattern.get() == FlightPattern.Drunk)
+        .build()
+    );
+
+    private final Setting<Integer> drunkGridSpacing = sgDrunk.add(new IntSetting.Builder()
+        .name("drunk-grid-spacing")
+        .description("Distance (chunks) between grid legs when spiral-mode is Grid.")
+        .defaultValue(4).min(1).sliderRange(1, 16)
+        .visible(() -> flightPattern.get() == FlightPattern.Drunk
+                    && drunkSpiralMode.get() == DrunkSpiralMode.Grid)
+        .build()
+    );
+
+    private final Setting<Integer> drunkCircleSegments = sgDrunk.add(new IntSetting.Builder()
+        .name("drunk-circle-segments")
+        .description("Waypoints per full rotation when spiral-mode is Circle.")
+        .defaultValue(24).min(4).sliderRange(8, 64)
+        .visible(() -> flightPattern.get() == FlightPattern.Drunk
+                    && drunkSpiralMode.get() == DrunkSpiralMode.Circle)
+        .build()
+    );
+
+    private final Setting<Integer> drunkCircleExpansion = sgDrunk.add(new IntSetting.Builder()
+        .name("drunk-circle-expansion")
+        .description("Chunks the circle radius grows per full rotation.")
+        .defaultValue(2).min(1).sliderRange(1, 8)
+        .visible(() -> flightPattern.get() == FlightPattern.Drunk
+                    && drunkSpiralMode.get() == DrunkSpiralMode.Circle)
+        .build()
+    );
+
+    private final Setting<Integer> drunkHexagonSideLength = sgDrunk.add(new IntSetting.Builder()
+        .name("drunk-hexagon-side-length")
+        .description("Side length (chunks) of each hexagon edge when spiral-mode is Hexagon.")
+        .defaultValue(4).min(1).sliderRange(1, 32)
+        .visible(() -> flightPattern.get() == FlightPattern.Drunk
+                    && drunkSpiralMode.get() == DrunkSpiralMode.Hexagon)
+        .build()
+    );
+
+    private final Setting<Integer> drunkHexagonExpansion = sgDrunk.add(new IntSetting.Builder()
+        .name("drunk-hexagon-expansion")
+        .description("Chunks the hexagon side length grows per full rotation.")
+        .defaultValue(2).min(1).sliderRange(1, 16)
+        .visible(() -> flightPattern.get() == FlightPattern.Drunk
+                    && drunkSpiralMode.get() == DrunkSpiralMode.Hexagon)
+        .build()
+    );
+
+    private final Setting<Integer> drunkTriangleSideLength = sgDrunk.add(new IntSetting.Builder()
+        .name("drunk-triangle-side-length")
+        .description("Side length (chunks) of each triangle edge when spiral-mode is Triangle.")
+        .defaultValue(6).min(1).sliderRange(1, 32)
+        .visible(() -> flightPattern.get() == FlightPattern.Drunk
+                    && drunkSpiralMode.get() == DrunkSpiralMode.Triangle)
+        .build()
+    );
+
+    private final Setting<Integer> drunkTriangleExpansion = sgDrunk.add(new IntSetting.Builder()
+        .name("drunk-triangle-expansion")
+        .description("Chunks the triangle side length grows per full rotation.")
+        .defaultValue(3).min(1).sliderRange(1, 16)
+        .visible(() -> flightPattern.get() == FlightPattern.Drunk
+                    && drunkSpiralMode.get() == DrunkSpiralMode.Triangle)
+        .build()
+    );
+
+    private final Setting<Double> drunkSpiralNoise = sgDrunk.add(new DoubleSetting.Builder()
+        .name("spiral-noise")
+        .description("Random yaw offset (degrees) added to the spiral heading for the drunk feel.")
+        .defaultValue(30.0).min(0.0).max(180.0).sliderRange(0.0, 90.0)
+        .visible(() -> flightPattern.get() == FlightPattern.Drunk
+                    && drunkSpiralMode.get() != DrunkSpiralMode.None)
+        .build()
+    );
+
+    private final Setting<Integer> drunkSpiralReach = sgDrunk.add(new IntSetting.Builder()
+        .name("spiral-waypoint-reach")
+        .description("Horizontal distance (blocks) to a spiral waypoint before advancing.")
+        .defaultValue(20).min(5).sliderRange(5, 80)
+        .visible(() -> flightPattern.get() == FlightPattern.Drunk
+                    && drunkSpiralMode.get() != DrunkSpiralMode.None)
         .build()
     );
 
@@ -477,34 +607,6 @@ public class RocketPilot extends Module {
         .min(3)
         .sliderRange(5, 20)
         .visible(collisionAvoidance::get)
-        .build()
-    );
-
-    private final Setting<Boolean> netherCeilingSafety = sgFlightSafety.add(new BoolSetting.Builder()
-        .name("nether-ceiling-safety")
-        .description("Automatically pitches down when approaching the nether bedrock ceiling to prevent death.")
-        .defaultValue(true)
-        .build()
-    );
-
-    private final Setting<Integer> netherCeilingY = sgFlightSafety.add(new IntSetting.Builder()
-        .name("nether-ceiling-y")
-        .description("The Y-level of the nether bedrock ceiling.")
-        .defaultValue(127)
-        .min(64)
-        .max(256)
-        .sliderRange(100, 200)
-        .visible(netherCeilingSafety::get)
-        .build()
-    );
-
-    private final Setting<Integer> netherCeilingBuffer = sgFlightSafety.add(new IntSetting.Builder()
-        .name("nether-ceiling-buffer")
-        .description("How many blocks below the ceiling to start diving.")
-        .defaultValue(15)
-        .min(3)
-        .sliderRange(5, 30)
-        .visible(netherCeilingSafety::get)
         .build()
     );
 
@@ -558,6 +660,23 @@ public class RocketPilot extends Module {
         .build()
     );
 
+    private final Setting<Boolean> disconnectOnLowRockets = sgPlayerSafety.add(new BoolSetting.Builder()
+        .name("disconnect-on-low-rockets")
+        .description("Disconnect from the server when your firework rocket count drops below the minimum.")
+        .defaultValue(false)
+        .build()
+    );
+
+    private final Setting<Integer> minRockets = sgPlayerSafety.add(new IntSetting.Builder()
+        .name("min-rockets")
+        .description("Minimum number of firework rockets to keep before disconnecting.")
+        .defaultValue(5)
+        .min(1)
+        .sliderRange(1, 64)
+        .visible(disconnectOnLowRockets::get)
+        .build()
+    );
+
     // ─── Internal State ───────────────────────────────────────────────────────────
     public  long    lastRocketTime           = 0;
     private boolean needsTakeoffRocket       = false;
@@ -573,7 +692,6 @@ public class RocketPilot extends Module {
     private int     drunkTimer               = 0;
     private float   targetDrunkYaw           = 0;
     private int     currentDrunkDuration     = 0;
-    private boolean ceilingWarningSent       = false;
     private int     totemPops                = 0;
     private int     takeoffTimer             = 0;
     private int     takeoffWaitTicks         = 0;
@@ -593,21 +711,35 @@ public class RocketPilot extends Module {
     private double  currentSweepFactor  = 1.0;
     private float   sweepInitialYaw     = 0;
     private int     figureEightWaypoint = 0;
+    private int     polygonSide         = 0;
+    private int     polygonRotation     = 0;
+
+    // Drunk Spiral state
+    private Vec3d  drunkSpiralOrigin    = null;
+    private Vec3d  drunkSpiralTarget    = null;
+    private int    drunkGridStep        = 1;
+    private int    drunkGridStepsInLeg  = 0;
+    private int    drunkGridDirection   = 0;
+    private double drunkCircleAngle     = 0;
+    private int    drunkPolygonSide     = 0;
+    private int    drunkPolygonRotation = 0;
 
     // ─── Constructor ─────────────────────────────────────────────────────────────
     public RocketPilot() {
-        super(HuntingUtilities.CATEGORY, "rocket-pilot",
+        super(Tim.CATEGORY, "rocket-pilot",
             "Automatic elytra + rocket flight with height maintenance, auto-takeoff, and pattern flight.");
     }
 
     // ─── Utilities ───────────────────────────────────────────────────────────────
     private boolean isPatternMode() {
-        return flightPattern.get() != FlightPattern.Manual && flightPattern.get() != FlightPattern.Drunk;
+        if (flightPattern.get() == FlightPattern.Manual) return false;
+        if (flightPattern.get() == FlightPattern.Drunk && drunkSpiralMode.get() == DrunkSpiralMode.None) return false;
+        return true;
     }
 
     private void togglePause() {
         if (mc.currentScreen != null) return;
-        if (flightPattern.get() == FlightPattern.Manual || flightPattern.get() == FlightPattern.Drunk) return;
+        if (!isPatternMode()) return;
         paused = !paused;
         info("Pattern flight %s.", paused ? "paused" : "resumed");
     }
@@ -635,6 +767,19 @@ public class RocketPilot extends Module {
         sweepInitialYaw     = 0;
         drunkVisitedChunks.clear();
         figureEightWaypoint = 0;
+        polygonSide         = 0;
+        polygonRotation     = 0;
+    }
+
+    private void resetDrunkSpiralState() {
+        drunkSpiralOrigin    = null;
+        drunkSpiralTarget    = null;
+        drunkGridStep        = 1;
+        drunkGridStepsInLeg  = 0;
+        drunkGridDirection   = 0;
+        drunkCircleAngle     = 0;
+        drunkPolygonSide     = 0;
+        drunkPolygonRotation = 0;
     }
 
     // ─── Lifecycle ────────────────────────────────────────────────────────────────
@@ -650,14 +795,20 @@ public class RocketPilot extends Module {
         pitch40BelowMinStartTime = -1;
         bounceClimbing           = true;
         lastLagbackTime          = 0;
-        ceilingWarningSent       = false;
         takeoffTimer             = 0;
         takeoffWaitTicks         = 0;
-        drunkVisitedChunks.clear();
-
-        resetPatternState();
 
         if (mc.player == null || mc.world == null) { toggle(); return; }
+
+        // Reset standard pattern state if player has moved too far from the origin since last time
+        if (origin != null && mc.player.getPos().distanceTo(origin) > 100) {
+            resetPatternState();
+        }
+
+        // Reset drunk spiral state if player has moved too far from the origin since last time
+        if (drunkSpiralOrigin != null && mc.player.getPos().distanceTo(drunkSpiralOrigin) > 100) {
+            resetDrunkSpiralState();
+        }
 
         totemPops      = mc.player.getStatHandler().getStat(Stats.USED, Items.TOTEM_OF_UNDYING);
         targetPitch    = mc.player.getPitch();
@@ -693,7 +844,9 @@ public class RocketPilot extends Module {
     public void onDeactivate() {
         needsTakeoffRocket = false;
         takeoffWaitTicks   = 0;
-        resetPatternState();
+        paused             = false; // Unpause on disable
+        drunkVisitedChunks.clear(); // Free memory
+        // Deliberately NOT resetting origin/currentTarget here so it can resume after restocking
     }
 
     // ─── Main Tick ────────────────────────────────────────────────────────────────
@@ -711,6 +864,12 @@ public class RocketPilot extends Module {
                 disconnect("[RocketPilot] Disconnected on totem pop.");
                 return;
             }
+        }
+
+        if (disconnectOnLowRockets.get() && countFireworks() < minRockets.get()) {
+            error("Low on rockets (%d < %d)! Disconnecting...", countFireworks(), minRockets.get());
+            disconnect("[RocketPilot] Disconnected due to low rocket count.");
+            return;
         }
 
         if (autoDisableOnLowHealth.get()) {
@@ -761,26 +920,16 @@ public class RocketPilot extends Module {
 
         handleElytraHealth();
 
-        if (ceilingWarningSent && mc.player.getY() < netherCeilingY.get() - netherCeilingBuffer.get() - 5) {
-            ceilingWarningSent = false;
-        }
-
         Float desiredPitch  = null;
         boolean safetyOverride = false;
 
-        // Priority 1: Nether ceiling avoidance
-        if (desiredPitch == null && netherCeilingSafety.get()) {
-            desiredPitch = handleNetherCeiling();
-            if (desiredPitch != null) safetyOverride = true;
-        }
-
-        // Priority 2: Collision avoidance
+        // Priority 1: Collision avoidance
         if (desiredPitch == null && collisionAvoidance.get()) {
             desiredPitch = handleCollisionAvoidance();
             if (desiredPitch != null) safetyOverride = true;
         }
 
-        // Priority 3: Normal flight modes
+        // Priority 2: Normal flight modes
         if (desiredPitch == null) {
             desiredPitch = switch (flightMode.get()) {
                 case Pitch40        -> handlePitch40Mode();
@@ -932,29 +1081,6 @@ public class RocketPilot extends Module {
             }
         }
         return MathHelper.lerp(0.3f, currentPitch, -pullUpStr);
-    }
-
-    // ─── Nether Ceiling Safety ────────────────────────────────────────────────────
-    private Float handleNetherCeiling() {
-        if (mc.world == null || mc.player == null) return null;
-        if (!mc.world.getRegistryKey().getValue().getPath().equals("the_nether")) return null;
-
-        double currentY   = mc.player.getY();
-        double netherRoof = netherCeilingY.get().doubleValue();
-        int    buffer     = netherCeilingBuffer.get();
-        double triggerY   = netherRoof - buffer;
-
-        if (currentY < triggerY) return null;
-
-        double danger = MathHelper.clamp((currentY - triggerY) / buffer, 0.0, 1.0);
-        float targetDivePitch = (float) MathHelper.lerp(danger, 10.0, 60.0);
-        float lerpSpeed       = (float) MathHelper.lerp(danger, 0.08, 0.35);
-
-        if (danger > 0.1 && !ceilingWarningSent) {
-            warning("Nether ceiling! Diving to avoid bedrock.");
-            ceilingWarningSent = true;
-        }
-        return MathHelper.lerp(lerpSpeed, mc.player.getPitch(), targetDivePitch);
     }
 
     // ─── Normal Mode ─────────────────────────────────────────────────────────────
@@ -1174,6 +1300,28 @@ public class RocketPilot extends Module {
             nextX = origin.x + radius * Math.cos(circleAngle);
             nextZ = origin.z + radius * Math.sin(circleAngle);
             circleAngle += angleStep;
+        } else if (currentPattern == FlightPattern.Hexagon || currentPattern == FlightPattern.Triangle) {
+            int    sides      = currentPattern == FlightPattern.Hexagon ? 6 : 3;
+            double extAngle   = 2.0 * Math.PI / sides; // 60° for hex, 120° for tri
+            int    baseSide   = currentPattern == FlightPattern.Hexagon
+                                ? hexagonSideLength.get() : triangleSideLength.get();
+            int    expansion  = currentPattern == FlightPattern.Hexagon
+                                ? hexagonExpansion.get() : triangleExpansion.get();
+
+            int    totalSteps  = polygonRotation * sides + polygonSide;
+            double growPerSide = (expansion * 16.0) / sides;
+            double sideLen     = (baseSide * 16.0) + totalSteps * growPerSide;
+
+            double heading = polygonSide * extAngle;
+            Vec3d start    = (currentTarget != null) ? currentTarget : origin;
+            nextX = start.x + Math.cos(heading) * sideLen;
+            nextZ = start.z + Math.sin(heading) * sideLen;
+
+            polygonSide++;
+            if (polygonSide >= sides) {
+                polygonSide = 0;
+                polygonRotation++;
+            }
         } else if (currentPattern == FlightPattern.Sweep) {
             if (currentTarget == null) {
                 sweepInitialYaw = mc.player.getYaw();
@@ -1225,6 +1373,12 @@ public class RocketPilot extends Module {
 
     // ─── Drunk Mode ──────────────────────────────────────────────────────────────
     private void handleDrunkMode() {
+        if (drunkSpiralMode.get() != DrunkSpiralMode.None) {
+            if (paused) return; // Skip spiral updates if paused
+            handleDrunkSpiralMode();
+            return;
+        }
+
         if (drunkTimer++ >= currentDrunkDuration) {
             float intensity = drunkIntensity.get().floatValue();
             DrunkBias bias  = drunkBias.get();
@@ -1295,6 +1449,109 @@ public class RocketPilot extends Module {
         mc.player.setYaw(currentYaw + change);
     }
 
+    // ─── Drunk Spiral Mode ───────────────────────────────────────────────────────
+    private void handleDrunkSpiralMode() {
+        if (mc.player == null) return;
+        if (drunkSpiralOrigin == null) drunkSpiralOrigin = mc.player.getPos();
+
+        // Advance the spiral waypoint when we get close (or on first call)
+        if (drunkSpiralTarget == null) {
+            calculateDrunkSpiralTarget();
+        } else {
+            double dx = drunkSpiralTarget.x - mc.player.getX();
+            double dz = drunkSpiralTarget.z - mc.player.getZ();
+            int    r  = drunkSpiralReach.get();
+            if (dx * dx + dz * dz < (double)(r * r)) calculateDrunkSpiralTarget();
+        }
+        if (drunkSpiralTarget == null) return;
+
+        // Re-roll the drunk heading on the existing interval timer.
+        if (drunkTimer++ >= currentDrunkDuration) {
+            double dx = drunkSpiralTarget.x - mc.player.getX();
+            double dz = drunkSpiralTarget.z - mc.player.getZ();
+            float baseYaw = (float) Math.toDegrees(Math.atan2(-dx, dz));
+            float noise   = (float)((Math.random() - 0.5) * 2.0 * drunkSpiralNoise.get());
+            targetDrunkYaw = MathHelper.wrapDegrees(baseYaw + noise);
+
+            drunkTimer           = 0;
+            currentDrunkDuration = drunkInterval.get() + (int)(Math.random() * 10);
+        }
+
+        // Smoothly rotate toward the drunk yaw (same as classic drunk mode)
+        float currentYaw = mc.player.getYaw();
+        float diffYaw    = MathHelper.wrapDegrees(targetDrunkYaw - currentYaw);
+        float change     = diffYaw * drunkSmoothing.get().floatValue();
+
+        if (limitRotationSpeed.get()) {
+            float max = maxRotationPerTick.get().floatValue();
+            change = MathHelper.clamp(change, -max, max);
+        }
+        mc.player.setYaw(currentYaw + change);
+    }
+
+    private void calculateDrunkSpiralTarget() {
+        if (drunkSpiralOrigin == null) drunkSpiralOrigin = mc.player.getPos();
+
+        double targetYValue = useTargetY.get() ? targetY.get() : mc.player.getY();
+        double nextX, nextZ;
+
+        if (drunkSpiralMode.get() == DrunkSpiralMode.Grid) {
+            int spacing = drunkGridSpacing.get() * 16;
+            if (drunkSpiralTarget == null) {
+                drunkGridDirection  = 3;
+                drunkGridStepsInLeg = 0;
+                Vec3d off = getGridDirectionOffset(drunkGridDirection, spacing);
+                nextX = drunkSpiralOrigin.x + off.x;
+                nextZ = drunkSpiralOrigin.z + off.z;
+                drunkGridStepsInLeg = 1;
+            } else {
+                if (drunkGridStepsInLeg >= drunkGridStep) {
+                    drunkGridDirection  = (drunkGridDirection + 1) % 4;
+                    drunkGridStepsInLeg = 0;
+                    if (drunkGridDirection == 0 || drunkGridDirection == 2) drunkGridStep++;
+                }
+                Vec3d off = getGridDirectionOffset(drunkGridDirection, spacing);
+                nextX = drunkSpiralTarget.x + off.x;
+                nextZ = drunkSpiralTarget.z + off.z;
+                drunkGridStepsInLeg++;
+            }
+        } else if (drunkSpiralMode.get() == DrunkSpiralMode.Hexagon || drunkSpiralMode.get() == DrunkSpiralMode.Triangle) {
+            int    sides      = drunkSpiralMode.get() == DrunkSpiralMode.Hexagon ? 6 : 3;
+            double extAngle   = 2.0 * Math.PI / sides;  // 60° hex, 120° tri
+            int    baseSide   = drunkSpiralMode.get() == DrunkSpiralMode.Hexagon
+                                ? drunkHexagonSideLength.get() : drunkTriangleSideLength.get();
+            int    expansion  = drunkSpiralMode.get() == DrunkSpiralMode.Hexagon
+                                ? drunkHexagonExpansion.get() : drunkTriangleExpansion.get();
+
+            // Continuous growth distributed across sides so the polygon doesn't
+            // re-trace over itself — creates a true outward spiral.
+            int    totalSteps  = drunkPolygonRotation * sides + drunkPolygonSide;
+            double growPerSide = (expansion * 16.0) / sides;
+            double sideLen     = (baseSide * 16.0) + totalSteps * growPerSide;
+
+            double heading = drunkPolygonSide * extAngle;   // 0, 60°, 120°, …  /  0, 120°, 240°, …
+            Vec3d start    = (drunkSpiralTarget != null) ? drunkSpiralTarget : drunkSpiralOrigin;
+            nextX = start.x + Math.cos(heading) * sideLen;
+            nextZ = start.z + Math.sin(heading) * sideLen;
+
+            drunkPolygonSide++;
+            if (drunkPolygonSide >= sides) {
+                drunkPolygonSide = 0;
+                drunkPolygonRotation++;
+            }
+        } else { // Circle
+            double angleStep       = 2.0 * Math.PI / drunkCircleSegments.get();
+            double expansionBlocks = drunkCircleExpansion.get() * 16.0;
+            double b               = expansionBlocks / (2.0 * Math.PI);
+            double radius          = b * drunkCircleAngle;          // Archimedean spiral
+            nextX = drunkSpiralOrigin.x + radius * Math.cos(drunkCircleAngle);
+            nextZ = drunkSpiralOrigin.z + radius * Math.sin(drunkCircleAngle);
+            drunkCircleAngle += angleStep;
+        }
+
+        drunkSpiralTarget = new Vec3d(nextX, targetYValue, nextZ);
+    }
+
     // ─── Apply Pitch ─────────────────────────────────────────────────────────────
     private void applyPitch(Float desiredPitch) {
         if (desiredPitch == null) return;
@@ -1314,7 +1571,6 @@ public class RocketPilot extends Module {
         ItemStack elytra = mc.player.getEquippedStack(EquipmentSlot.CHEST);
         if (elytra.isEmpty() || !elytra.isOf(Items.ELYTRA)) return false;
         if (Math.abs(mc.player.getPitch()) > 70) return false;
-        if (ceilingWarningSent) return false;
         if (!needsTakeoffRocket && mc.player.getVelocity().horizontalLength() < 0.3) return false;
         return elytra.getDamage() < elytra.getMaxDamage() - 1;
     }

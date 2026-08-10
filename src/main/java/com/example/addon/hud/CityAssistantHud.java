@@ -4,7 +4,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import com.example.addon.Tim;
-import com.example.addon.modules.ChambersAssistant;
+import com.example.addon.modules.CityAssistant;
 
 import meteordevelopment.meteorclient.settings.BoolSetting;
 import meteordevelopment.meteorclient.settings.ColorSetting;
@@ -20,13 +20,13 @@ import meteordevelopment.meteorclient.utils.render.color.SettingColor;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.item.ItemStack;
 
-public class ChambersAssistantHud extends HudElement {
+public class CityAssistantHud extends HudElement {
 
-    public static final HudElementInfo<ChambersAssistantHud> INFO = new HudElementInfo<>(
+    public static final HudElementInfo<CityAssistantHud> INFO = new HudElementInfo<>(
         Tim.HUD_GROUP,
-        "chambers-assistant",
-        "Displays counts of Trial Chamber elements (spawners, vaults, entities) with warning colors.",
-        ChambersAssistantHud::new
+        "city-assistant",
+        "Displays counts of Ancient City elements (shriekers, chests, wardens) with warning colors.",
+        CityAssistantHud::new
     );
 
     private static final MinecraftClient mc = MinecraftClient.getInstance();
@@ -51,7 +51,7 @@ public class ChambersAssistantHud extends HudElement {
 
     public enum StatSeverity { Normal, Warning, Critical }
 
-    public record ChamberStat(String name, int count, ItemStack icon, StatSeverity severity) {}
+    public record CityStat(String name, int count, ItemStack icon, StatSeverity severity) {}
 
     // ═══════════════════════════════════════════════════════════════════════════
     // General Settings
@@ -166,36 +166,44 @@ public class ChambersAssistantHud extends HudElement {
     // Category Toggles
     // ═══════════════════════════════════════════════════════════════════════════
 
-    private final Setting<Boolean> showSpawners = sgCategories.add(new BoolSetting.Builder()
-        .name("show-spawners").description("Track normal Trial Spawners.").defaultValue(true).build()
+    private final Setting<Boolean> showWardenTimer = sgCategories.add(new BoolSetting.Builder()
+        .name("show-warden-timer").description("Track seconds until Warden despawns.").defaultValue(true).build()
     );
 
-    private final Setting<Boolean> showOminousSpawners = sgCategories.add(new BoolSetting.Builder()
-        .name("show-ominous-spawners").description("Track Ominous Spawners.").defaultValue(true).build()
+    private final Setting<Boolean> showWardenSpawns = sgCategories.add(new BoolSetting.Builder()
+        .name("show-warden-spawns").description("Track total Wardens spawned this session.").defaultValue(true).build()
     );
 
-    private final Setting<Boolean> showVaults = sgCategories.add(new BoolSetting.Builder()
-        .name("show-vaults").description("Track normal Vaults.").defaultValue(true).build()
-    );
-
-    private final Setting<Boolean> showOminousVaults = sgCategories.add(new BoolSetting.Builder()
-        .name("show-ominous-vaults").description("Track Ominous Vaults.").defaultValue(true).build()
-    );
-
-    private final Setting<Boolean> showPots = sgCategories.add(new BoolSetting.Builder()
-        .name("show-pots").description("Track Loot Pots.").defaultValue(true).build()
+    private final Setting<Boolean> showWardensNearby = sgCategories.add(new BoolSetting.Builder()
+        .name("show-wardens-nearby").description("Track Wardens currently in render distance.").defaultValue(true).build()
     );
 
     private final Setting<Boolean> showChests = sgCategories.add(new BoolSetting.Builder()
         .name("show-chests").description("Track standard chests/containers.").defaultValue(true).build()
     );
 
-    private final Setting<Boolean> showBreezes = sgCategories.add(new BoolSetting.Builder()
-        .name("show-breezes").description("Track Breezes.").defaultValue(true).build()
+    private final Setting<Boolean> showActiveShriekers = sgCategories.add(new BoolSetting.Builder()
+        .name("show-active-shriekers").description("Track currently shrieking blocks.").defaultValue(true).build()
     );
 
-    private final Setting<Boolean> showKeys = sgCategories.add(new BoolSetting.Builder()
-        .name("show-keys").description("Track dropped Trial Keys/Bottles.").defaultValue(true).build()
+    private final Setting<Boolean> showShriekers = sgCategories.add(new BoolSetting.Builder()
+        .name("show-shriekers").description("Track idle Sculk Shriekers.").defaultValue(true).build()
+    );
+
+    private final Setting<Boolean> showDisabledShriekers = sgCategories.add(new BoolSetting.Builder()
+        .name("show-disabled-shriekers").description("Track disabled Shriekers.").defaultValue(true).build()
+    );
+
+    private final Setting<Boolean> showActiveSensors = sgCategories.add(new BoolSetting.Builder()
+        .name("show-active-sensors").description("Track actively listening/triggered Sculk Sensors.").defaultValue(true).build()
+    );
+
+    private final Setting<Boolean> showSensors = sgCategories.add(new BoolSetting.Builder()
+        .name("show-sensors").description("Track idle Sculk Sensors.").defaultValue(true).build()
+    );
+
+    private final Setting<Boolean> showPortals = sgCategories.add(new BoolSetting.Builder()
+        .name("show-portals").description("Track Reinforced Deepslate portal frames.").defaultValue(true).build()
     );
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -204,21 +212,21 @@ public class ChambersAssistantHud extends HudElement {
 
     private final Setting<SettingColor> warningColor = sgWarnings.add(new ColorSetting.Builder()
         .name("warning-color")
-        .description("Color shown when a dangerous stat (e.g. Ominous Spawners, Breezes) is > 0.")
+        .description("Color shown when a dangerous stat (e.g. Active Shriekers) is > 0.")
         .defaultValue(new SettingColor(255, 165, 0, 255))
         .build()
     );
 
     private final Setting<SettingColor> criticalColor = sgWarnings.add(new ColorSetting.Builder()
         .name("critical-color")
-        .description("Color shown when an extremely dangerous stat is active.")
+        .description("Color shown when an extremely dangerous stat (e.g. Wardens Nearby) is active.")
         .defaultValue(new SettingColor(255, 40, 40, 255))
         .build()
     );
 
     // ── Constructor ───────────────────────────────────────────────────────────
 
-    public ChambersAssistantHud() {
+    public CityAssistantHud() {
         super(INFO);
     }
 
@@ -241,22 +249,25 @@ public class ChambersAssistantHud extends HudElement {
     public void render(HudRenderer renderer) {
         if (mc.player == null) { setSize(0, 0); return; }
 
-        ChambersAssistant module = Modules.get().get(ChambersAssistant.class);
+        CityAssistant module = Modules.get().get(CityAssistant.class);
         if (module == null || !module.isActive()) { setSize(0, 0); return; }
 
-        List<ChamberStat> stats = module.getStats();
+        List<CityStat> stats = module.getStats();
         boolean showText = displayMode.get() == DisplayMode.Vertical && labelMode.get() != LabelMode.Icon;
 
         List<StatRow> rows = new ArrayList<>();
         
-        if (showSpawners.get())         addStat(rows, stats.get(0), showText);
-        if (showOminousSpawners.get())  addStat(rows, stats.get(1), showText);
-        if (showVaults.get())           addStat(rows, stats.get(2), showText);
-        if (showOminousVaults.get())    addStat(rows, stats.get(3), showText);
-        if (showPots.get())             addStat(rows, stats.get(4), showText);
-        if (showChests.get())           addStat(rows, stats.get(5), showText);
-        if (showBreezes.get())          addStat(rows, stats.get(6), showText);
-        if (showKeys.get())             addStat(rows, stats.get(7), showText);
+        // Must match the order of stats added in CityAssistant.getStats()
+        if (showWardenTimer.get())           addStat(rows, stats.get(0), showText);
+        if (showWardenSpawns.get())          addStat(rows, stats.get(1), showText);
+        if (showWardensNearby.get())         addStat(rows, stats.get(2), showText);
+        if (showChests.get())                addStat(rows, stats.get(3), showText);
+        if (showActiveShriekers.get())       addStat(rows, stats.get(4), showText);
+        if (showShriekers.get())             addStat(rows, stats.get(5), showText);
+        if (showDisabledShriekers.get())     addStat(rows, stats.get(6), showText);
+        if (showActiveSensors.get())         addStat(rows, stats.get(7), showText);
+        if (showSensors.get())               addStat(rows, stats.get(8), showText);
+        if (showPortals.get())               addStat(rows, stats.get(9), showText);
 
         if (rows.isEmpty()) { setSize(0, 0); return; }
 
@@ -267,7 +278,7 @@ public class ChambersAssistantHud extends HudElement {
         }
     }
 
-    private void addStat(List<StatRow> rows, ChamberStat stat, boolean showText) {
+    private void addStat(List<StatRow> rows, CityStat stat, boolean showText) {
         if (stat.count() == 0 && hideEmpty.get()) return;
 
         SettingColor col = switch (stat.severity()) {

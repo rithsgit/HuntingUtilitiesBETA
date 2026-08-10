@@ -1,7 +1,5 @@
 package com.example.addon.hud;
-
-import com.example.addon.HuntingUtilities;
-
+import com.example.addon.Tim;
 import meteordevelopment.meteorclient.events.game.GameJoinedEvent;
 import meteordevelopment.meteorclient.events.packets.PacketEvent;
 import meteordevelopment.meteorclient.settings.BoolSetting;
@@ -25,7 +23,7 @@ import net.minecraft.network.packet.s2c.play.EntityStatusS2CPacket;
 public class SecondLifeHUD extends HudElement {
 
     public static final HudElementInfo<SecondLifeHUD> INFO = new HudElementInfo<>(
-        HuntingUtilities.HUD_GROUP,
+        Tim.HUD_GROUP,
         "second-life",
         "Displays the total number of Totems of Undying across your entire inventory, with warning and critical colour thresholds.",
         SecondLifeHUD::new

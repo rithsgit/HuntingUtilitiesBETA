@@ -3,7 +3,7 @@ package com.example.addon.hud;
 import java.util.ArrayList;
 import java.util.List;
 
-import com.example.addon.HuntingUtilities;
+import com.example.addon.Tim;
 
 import meteordevelopment.meteorclient.settings.BoolSetting;
 import meteordevelopment.meteorclient.settings.ColorSetting;
@@ -22,7 +22,7 @@ import net.minecraft.item.ItemStack;
 public class DuraPanelHUD extends HudElement {
 
     public static final HudElementInfo<DuraPanelHUD> INFO = new HudElementInfo<>(
-        HuntingUtilities.HUD_GROUP,
+        Tim.HUD_GROUP,
         "dura-panel",
         "Displays durability of equipped armour and held tools with warning/critical colour thresholds.",
         DuraPanelHUD::new

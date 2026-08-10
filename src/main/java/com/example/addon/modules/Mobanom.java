@@ -5,7 +5,7 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 
-import com.example.addon.HuntingUtilities;
+import com.example.addon.Tim;
 import com.example.addon.utils.GlowingRegistry;
 
 import meteordevelopment.meteorclient.events.render.Render3DEvent;
@@ -333,7 +333,7 @@ public class Mobanom extends Module {
     // ═══════════════════════════════════════════════════════════════════════════
 
     public Mobanom() {
-        super(HuntingUtilities.CATEGORY, "mobanom", "Detects and highlights mobs in the wrong dimension or with unnatural items.");
+        super(Tim.CATEGORY, "mobanom", "Detects and highlights mobs in the wrong dimension or with unnatural items.");
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

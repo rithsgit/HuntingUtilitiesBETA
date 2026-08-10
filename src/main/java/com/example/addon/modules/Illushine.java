@@ -5,7 +5,7 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 
-import com.example.addon.HuntingUtilities;
+import com.example.addon.Tim;
 import com.example.addon.utils.GlowingRegistry;
 
 import meteordevelopment.meteorclient.events.render.Render3DEvent;
@@ -236,13 +236,6 @@ public class Illushine extends Module {
         .build()
     );
 
-    private final Setting<Boolean> debugPlayerScale = sgPlayer.add(new BoolSetting.Builder()
-        .name("debug-player-scale")
-        .description("Spams console logs to figure out why scaling isn't working.")
-        .defaultValue(false)
-        .build()
-    );
-
     // ═══════════════════════════════════════════════════════════════════════════
     // State
     // ═══════════════════════════════════════════════════════════════════════════
@@ -254,7 +247,7 @@ public class Illushine extends Module {
     // ═══════════════════════════════════════════════════════════════════════════
 
     public Illushine() {
-        super(HuntingUtilities.CATEGORY, "illushine",
+        super(Tim.CATEGORY, "illushine",
             "Highlights mobs with a wireframe or spectral outline by hostility type.");
     }
 
@@ -266,7 +259,6 @@ public class Illushine extends Module {
     public double getPlayerScale() { return playerScale.get(); }
     public boolean getScaleOtherPlayers() { return scaleOtherPlayers.get(); }
     public double getOtherPlayerScale() { return otherPlayerScale.get(); }
-    public boolean isDebugPlayerScale() { return debugPlayerScale.get(); }
 
     public double getMobScale(MobEntity mob) {
         MobCategory cat = categorise(mob);

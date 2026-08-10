@@ -84,15 +84,13 @@ public abstract class HandmoldMixin {
             if (isFood || isDrinkable) {
                 isCentering = true;
                 switch (mod.getEatPosition()) {
-                    case Center ->
-                        // Lerp from configured X toward 0 (center) as equipProgress goes 0→1
-                        extraOffset = (float)(tx * (1.0f - equipProgress));
                     case StayInPlace ->
                         // No movement — stay at configured X the whole time
                         extraOffset = (float) tx;
                     case Custom -> {
                         // Lerp from the custom target X toward the configured X
-                        // as equipProgress goes 0→1, so the hand always moves inward
+                        // as equipProgress goes 0→1, so the hand always moves inward.
+                        // Defaults to 0.0 (center) unless changed by the user.
                         double target = mod.getEatTargetX();
                         extraOffset = (float)(target + (tx - target) * equipProgress);
                     }

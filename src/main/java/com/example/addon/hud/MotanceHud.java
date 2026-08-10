@@ -3,7 +3,7 @@ package com.example.addon.hud;
 import java.util.ArrayList;
 import java.util.List;
 
-import com.example.addon.HuntingUtilities;
+import com.example.addon.Tim;
 import com.mojang.blaze3d.systems.RenderSystem;
 
 import meteordevelopment.meteorclient.settings.BoolSetting;
@@ -23,7 +23,7 @@ import net.minecraft.util.Identifier;
 
 public class MotanceHud extends HudElement {
     public static final HudElementInfo<MotanceHud> INFO = new HudElementInfo<>(
-        HuntingUtilities.HUD_GROUP, "Motance", 
+        Tim.HUD_GROUP, "Motance", 
         "Motance",
         "Shows icons for sneaking, jumping, and sprinting.",
         MotanceHud::new

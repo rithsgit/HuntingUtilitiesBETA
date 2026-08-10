@@ -2,7 +2,7 @@ package com.example.addon.modules;
 
 import java.util.Set;
 
-import com.example.addon.HuntingUtilities;
+import com.example.addon.Tim;
 
 import meteordevelopment.meteorclient.events.game.GameJoinedEvent;
 import meteordevelopment.meteorclient.events.packets.PacketEvent;
@@ -94,10 +94,10 @@ public class ServerHealthcareSystem extends Module {
         .build()
     );
 
-    private final Setting<Boolean> ignoreHelmet = sgAutoArmor.add(new BoolSetting.Builder()
-        .name("ignore-helmet")
-        .description("Ignores the helmet slot when Auto Armor is enabled.")
-        .defaultValue(false)
+    private final Setting<IgnoredArmorSlot> ignoredArmorSlot = sgAutoArmor.add(new EnumSetting.Builder<IgnoredArmorSlot>()
+        .name("ignored-armor-slot")
+        .description("Ignores the selected armor slot when Auto Armor is enabled.")
+        .defaultValue(IgnoredArmorSlot.None)
         .visible(() -> mode.get() == OperationMode.Default && autoArmor.get())
         .build()
     );
@@ -117,25 +117,11 @@ public class ServerHealthcareSystem extends Module {
         .action(() -> {
             if (mc.currentScreen != null) return;
             ChestplateMode current = chestplateMode.get();
-            ChestplateMode next;
-            switch (current) {
-                case Chestplate: next = ChestplateMode.Elytra; break;
-                case Elytra:     next = ChestplateMode.Smart; break;
-                default:         next = ChestplateMode.Chestplate; break;
-            }
+            ChestplateMode next = (current == ChestplateMode.Chestplate) ? ChestplateMode.Elytra : ChestplateMode.Chestplate;
             chestplateMode.set(next);
             info("Chestplate mode set to: %s", next.name());
         })
         .visible(() -> mode.get() == OperationMode.Default && autoArmor.get())
-        .build()
-    );
-
-    private final Setting<Integer> swapDelay = sgAutoArmor.add(new IntSetting.Builder()
-        .name("swap-delay")
-        .description("Ticks to wait after performing a chest/elytra swap.")
-        .defaultValue(10)
-        .min(0)
-        .visible(() -> mode.get() == OperationMode.Default && autoArmor.get() && chestplateMode.get() == ChestplateMode.Smart)
         .build()
     );
 
@@ -167,7 +153,7 @@ public class ServerHealthcareSystem extends Module {
     private final Setting<Integer> healthThreshold = sgAutoEat.add(new IntSetting.Builder()
         .name("health-threshold")
         .description("Health at which auto-eat triggers (out of 20). Set to 0 to disable health-based eating.")
-        .defaultValue(10) // 5 hearts
+        .defaultValue(10)
         .min(0)
         .max(19)
         .sliderRange(0, 19)
@@ -293,10 +279,7 @@ public class ServerHealthcareSystem extends Module {
     private int     eatCooldownTimer      = 0;
     private boolean tookDamageRecently    = false;
     private int     damageTimer           = 0;
-    private int     moveWaitTicks         = 0; // Fixes the race condition
-
-    // Auto Armor
-    private int swapTimer = 0;
+    private int     moveWaitTicks         = 0;
 
     // Auto Break Bed
     private BlockPos bedToBreak = null;
@@ -306,7 +289,7 @@ public class ServerHealthcareSystem extends Module {
     // ── Constructor ───────────────────────────────────────────────────────────
 
     public ServerHealthcareSystem() {
-        super(HuntingUtilities.CATEGORY, "server-healthcare-system",
+        super(Tim.CATEGORY, "server-healthcare-system",
             "SHS — Manages health, safety, tracking, and server monitoring.");
         
         // Register Baritone pause process safely
@@ -353,7 +336,7 @@ public class ServerHealthcareSystem extends Module {
 
     public boolean isAutoTotemEnabled() { return isActive() && autoTotem.get(); }
     public void setAutoTotem(boolean enabled) { autoTotem.set(enabled); }
-    public boolean isEating() { return isEating || moveWaitTicks > 0; } // Account for move delay
+    public boolean isEating() { return isEating || moveWaitTicks > 0; }
 
     // ── State Helpers ─────────────────────────────────────────────────────────
 
@@ -369,7 +352,6 @@ public class ServerHealthcareSystem extends Module {
         eatCooldownTimer      = 0;
         tookDamageRecently    = false;
         damageTimer           = 0;
-        swapTimer             = 0;
         bedOriginalHotbarSlot = -1;
         highestHungerSeen     = -1;
         moveWaitTicks         = 0;
@@ -421,8 +403,6 @@ public class ServerHealthcareSystem extends Module {
     @EventHandler
     private void onTick(TickEvent.Pre event) {
         if (mc.player == null || mc.world == null) return;
-
-        if (swapTimer > 0) swapTimer--;
 
         switch (mode.get()) {
             case Default -> {
@@ -531,15 +511,17 @@ public class ServerHealthcareSystem extends Module {
     }
 
     private void tickAutoArmor() {
-        if (!autoArmor.get() || swapTimer > 0) return;
-
-        if (chestplateMode.get() == ChestplateMode.Smart) handleChestplateElytraSwitch();
+        if (!autoArmor.get()) return;
 
         EquipmentSlot[] slots = { EquipmentSlot.FEET, EquipmentSlot.LEGS, EquipmentSlot.CHEST, EquipmentSlot.HEAD };
         for (int i = 0; i < 4; i++) {
             EquipmentSlot slot = slots[i];
-            if (slot == EquipmentSlot.CHEST && chestplateMode.get() == ChestplateMode.Smart) continue;
-            if (slot == EquipmentSlot.HEAD && ignoreHelmet.get()) continue;
+            
+            if (ignoredArmorSlot.get() == IgnoredArmorSlot.All) continue;
+            if (slot == EquipmentSlot.HEAD && ignoredArmorSlot.get() == IgnoredArmorSlot.Helmet) continue;
+            if (slot == EquipmentSlot.CHEST && ignoredArmorSlot.get() == IgnoredArmorSlot.Chestplate) continue;
+            if (slot == EquipmentSlot.LEGS && ignoredArmorSlot.get() == IgnoredArmorSlot.Leggings) continue;
+            if (slot == EquipmentSlot.FEET && ignoredArmorSlot.get() == IgnoredArmorSlot.Boots) continue;
 
             ItemStack current   = mc.player.getEquippedStack(slot);
             int       bestValue = getArmorValue(current);
@@ -578,7 +560,6 @@ public class ServerHealthcareSystem extends Module {
             return;
         }
 
-        // FIX: Wait for server to move item from inventory to hotbar before attempting to eat
         if (moveWaitTicks > 0) {
             moveWaitTicks--;
             if (moveWaitTicks == 0) {
@@ -591,7 +572,7 @@ public class ServerHealthcareSystem extends Module {
                     sendUseItemPacket();
                     isEating = true;
                 } else {
-                    stopEating(); // Item didn't move properly
+                    stopEating();
                 }
             }
             return;
@@ -608,7 +589,6 @@ public class ServerHealthcareSystem extends Module {
             
             boolean needsHunger = highestHungerSeen != -1 && (highestHungerSeen - currentHunger) >= hungerLoss.get();
             
-            // FIX: Fire damage correctly acts as an emergency trigger for Gapples (for Fire Resistance)
             boolean needsFireEat = eatOnFire.get() && mc.player.isOnFire() && tookDamageWhileOnFire && !ateForFire;
             boolean isHealthEmergency = needsHealth || needsFireEat;
 
@@ -618,14 +598,12 @@ public class ServerHealthcareSystem extends Module {
 
             if (!needsHealth && !needsHunger && !needsFireEat) return;
 
-            // FIX: Unified food finder. Emergency guarantees gapples (with fallbacks). Hunger guarantees normal food.
             int foodSlot = findBestFood(isHealthEmergency);
             if (foodSlot == -1) return;
 
             ItemStack foodStack = mc.player.getInventory().getStack(foodSlot);
             eatTargetItem = foodStack.getItem();
 
-            // Skip if we already have regeneration and the toggle is on (Except during health emergencies)
             if (skipIfRegen.get() && !isHealthEmergency && (foodStack.isOf(Items.GOLDEN_APPLE) || foodStack.isOf(Items.ENCHANTED_GOLDEN_APPLE))) {
                 if (mc.player.hasStatusEffect(StatusEffects.REGENERATION)) {
                     return; 
@@ -635,7 +613,6 @@ public class ServerHealthcareSystem extends Module {
             eatOriginalHotbarSlot = mc.player.getInventory().selectedSlot;
 
             if (foodSlot < 9) {
-                // Already in hotbar, start eating immediately
                 eatHotbarSlot = foodSlot;
                 mc.player.getInventory().selectedSlot = eatHotbarSlot;
                 eatTicksRemaining = foodStack.getItem().getMaxUseTime(foodStack, mc.player);
@@ -644,11 +621,10 @@ public class ServerHealthcareSystem extends Module {
                 sendUseItemPacket();
                 isEating = true;
             } else {
-                // In inventory, trigger move and wait to prevent race condition
                 eatHotbarSlot = findEmptyHotbarSlot();
                 if (eatHotbarSlot == -1) eatHotbarSlot = eatOriginalHotbarSlot;
                 InvUtils.move().from(foodSlot).toHotbar(eatHotbarSlot);
-                moveWaitTicks = 2; // Pause for 2 ticks to let the server sync the inventory
+                moveWaitTicks = 2;
             }
 
             if (needsFireEat) {
@@ -681,7 +657,6 @@ public class ServerHealthcareSystem extends Module {
             mc.player.getInventory().selectedSlot = eatHotbarSlot;
             mc.options.useKey.setPressed(true);
 
-            // ANTI-INTERRUPT: If we get hit, vanilla server cancels the eat.
             if (!mc.player.isUsingItem() && hotbarHasFood) {
                 sendUseItemPacket();
                 eatTicksRemaining = hotbarStack.getItem().getMaxUseTime(hotbarStack, mc.player);
@@ -718,13 +693,6 @@ public class ServerHealthcareSystem extends Module {
         this.toggle();
     }
 
-    private boolean isEdible(ItemStack stack) {
-        if (stack == null || stack.isEmpty()) return false;
-        return stack.isOf(Items.GOLDEN_APPLE)
-            || stack.isOf(Items.ENCHANTED_GOLDEN_APPLE)
-            || stack.get(DataComponentTypes.FOOD) != null;
-    }
-
     private int findEmptyHotbarSlot() {
         for (int i = 0; i < 9; i++) {
             if (mc.player.getInventory().getStack(i).isEmpty()) return i;
@@ -732,10 +700,8 @@ public class ServerHealthcareSystem extends Module {
         return -1;
     }
 
-    // FIX: Completely rewritten priority system
     private int findBestFood(boolean isHealthEmergency) {
         if (isHealthEmergency) {
-            // Low HP or On Fire -> Priority: Enchanted Gapple -> Normal Gapple -> Best Normal Food
             int egapple = findBestEnchantedGapple();
             if (egapple != -1) return egapple;
             
@@ -745,7 +711,6 @@ public class ServerHealthcareSystem extends Module {
             return findBestNormalFood();
         }
 
-        // Just Hunger Loss -> Priority: Best Normal Food -> Gapples (Fallback)
         int food = findBestNormalFood();
         if (food != -1) return food;
         
@@ -833,39 +798,6 @@ public class ServerHealthcareSystem extends Module {
             if (hotbarEgapple != -1) return hotbarEgapple;
             return inventoryEgapple;
         }
-    }
-
-    private void handleChestplateElytraSwitch() {
-        if (Modules.get().get(RocketPilot.class).isActive()) return;
-
-        ItemStack chest = mc.player.getEquippedStack(EquipmentSlot.CHEST);
-        if (mc.player.isOnGround()) {
-            if (chest.isOf(Items.ELYTRA)) {
-                FindItemResult cp = findBestChestplate();
-                if (cp.found()) { InvUtils.move().from(cp.slot()).toArmor(2); swapTimer = swapDelay.get(); }
-            }
-        } else {
-            if (!chest.isOf(Items.ELYTRA)) {
-                FindItemResult elytra = InvUtils.find(Items.ELYTRA);
-                if (elytra.found()) { InvUtils.move().from(elytra.slot()).toArmor(2); swapTimer = swapDelay.get(); }
-            }
-        }
-    }
-
-    private FindItemResult findBestChestplate() {
-        int bestValue = -1, bestSlot = -1;
-        for (int i = 0; i < 36; i++) {
-            ItemStack stack = mc.player.getInventory().getStack(i);
-            if (stack.isEmpty()) continue;
-            var equippable = stack.get(DataComponentTypes.EQUIPPABLE);
-            if (equippable == null || equippable.slot() != EquipmentSlot.CHEST) continue;
-            if (stack.isOf(Items.ELYTRA)) continue;
-            int value = getArmorValue(stack);
-            if (value > bestValue) { bestValue = value; bestSlot = i; }
-        }
-        return bestSlot != -1
-            ? new FindItemResult(bestSlot, mc.player.getInventory().getStack(bestSlot).getCount())
-            : new FindItemResult(-1, 0);
     }
 
     private boolean hasIgnoredEnchantment(ItemStack stack) {
@@ -976,8 +908,16 @@ public class ServerHealthcareSystem extends Module {
 
     public enum ChestplateMode {
         Chestplate,
-        Elytra,
-        Smart
+        Elytra
+    }
+
+    public enum IgnoredArmorSlot {
+        None,
+        Helmet,
+        Chestplate,
+        Leggings,
+        Boots,
+        All
     }
 
     // ── Baritone Pause Process ───────────────────────────────────────────────
@@ -998,14 +938,14 @@ public class ServerHealthcareSystem extends Module {
 
         @Override
         public boolean isTemporary() {
-            return true;
+            return false; // Set to false to ensure it overrides active pathing commands like 'goto'
         }
 
         @Override
         public void onLostControl() {}
 
         @Override
-        public String displayName0() {
+        public String displayName0() { // Restored to displayName0 to match your Baritone version
             return "SHS Auto Eat";
         }
     }

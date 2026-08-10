@@ -2,9 +2,7 @@ package com.example.addon.hud;
 
 import java.util.ArrayList;
 import java.util.List;
-
-import com.example.addon.HuntingUtilities;
-
+import com.example.addon.Tim;
 import meteordevelopment.meteorclient.settings.BoolSetting;
 import meteordevelopment.meteorclient.settings.ColorSetting;
 import meteordevelopment.meteorclient.settings.DoubleSetting;
@@ -25,7 +23,7 @@ import net.minecraft.world.biome.Biome;
 public class ServerReportHUD extends HudElement {
 
     public static final HudElementInfo<ServerReportHUD> INFO = new HudElementInfo<>(
-        HuntingUtilities.HUD_GROUP,
+        Tim.HUD_GROUP,
         "server-report",
         "Displays current weather, biome, and active potion effects.",
         ServerReportHUD::new

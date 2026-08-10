@@ -9,6 +9,6 @@ import org.spongepowered.asm.mixin.gen.Invoker;
 @Mixin(ClientPlayerInteractionManager.class)
 public interface InteractionAccessor {
     @Invoker("sendSequencedPacket")
-    void huntingUtilities$sendSequencedPacket(
+    void Tim$sendSequencedPacket(
         ClientWorld world, SequencedPacketCreator creator);
 }

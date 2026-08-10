@@ -1,6 +1,6 @@
 package com.example.addon.modules;
 
-import com.example.addon.HuntingUtilities;
+import com.example.addon.Tim;
 
 import meteordevelopment.meteorclient.settings.BoolSetting;
 import meteordevelopment.meteorclient.settings.DoubleSetting;
@@ -35,12 +35,12 @@ public class Handmold extends Module {
         .defaultValue(false).build()
     );
 
-    public enum EatPosition { Center, StayInPlace, Custom }
+    public enum EatPosition { StayInPlace, Custom }
 
     private final Setting<EatPosition> eatPosition = sgGeneral.add(new EnumSetting.Builder<EatPosition>()
         .name("eat-position")
-        .description("Where the hand moves to while eating or drinking.")
-        .defaultValue(EatPosition.Center)
+        .description("Where the hand moves to while eating or drinking. Custom defaults to 0 (center) unless changed.")
+        .defaultValue(EatPosition.Custom)
         .build()
     );
 
@@ -117,7 +117,7 @@ public class Handmold extends Module {
     // ── Constructor ───────────────────────────────────────────────────────────
 
     public Handmold() {
-        super(HuntingUtilities.CATEGORY, "handmold",
+        super(Tim.CATEGORY, "handmold",
             "Adjusts the position, scale, and rotation of each hand independently.");
     }
 

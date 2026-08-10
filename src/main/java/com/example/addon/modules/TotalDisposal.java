@@ -1,9 +1,12 @@
 package com.example.addon.modules;
 
-import com.example.addon.HuntingUtilities;
+import org.lwjgl.glfw.GLFW;
+
+import com.example.addon.Tim;
+
 import meteordevelopment.meteorclient.events.world.TickEvent;
-import meteordevelopment.meteorclient.settings.EnumSetting;
 import meteordevelopment.meteorclient.settings.BoolSetting;
+import meteordevelopment.meteorclient.settings.EnumSetting;
 import meteordevelopment.meteorclient.settings.KeybindSetting;
 import meteordevelopment.meteorclient.settings.Setting;
 import meteordevelopment.meteorclient.settings.SettingGroup;
@@ -12,7 +15,6 @@ import meteordevelopment.meteorclient.utils.misc.Keybind;
 import meteordevelopment.meteorclient.utils.misc.input.Input;
 import meteordevelopment.meteorclient.utils.player.InvUtils;
 import meteordevelopment.orbit.EventHandler;
-import org.lwjgl.glfw.GLFW;
 
 public class TotalDisposal extends Module {
     public enum ModifierKey {
@@ -55,7 +57,7 @@ public class TotalDisposal extends Module {
     private boolean wasKillPressed = false;
 
     public TotalDisposal() {
-        super(HuntingUtilities.CATEGORY, "total-disposal", "Drop items and /kill via dedicated key combinations.");
+        super(Tim.CATEGORY, "total-disposal", "Drop items and /kill via dedicated key combinations.");
     }
 
     @EventHandler

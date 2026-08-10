@@ -1,12 +1,11 @@
 package com.example.addon.modules;
 
-import com.example.addon.HuntingUtilities;
+import com.example.addon.Tim;
 
 import meteordevelopment.meteorclient.events.render.Render3DEvent;
 import meteordevelopment.meteorclient.events.world.TickEvent;
 import meteordevelopment.meteorclient.settings.BoolSetting;
 import meteordevelopment.meteorclient.settings.DoubleSetting;
-import meteordevelopment.meteorclient.settings.EnumSetting;
 import meteordevelopment.meteorclient.settings.KeybindSetting;
 import meteordevelopment.meteorclient.settings.Setting;
 import meteordevelopment.meteorclient.settings.SettingGroup;
@@ -15,12 +14,10 @@ import meteordevelopment.meteorclient.utils.misc.Keybind;
 import meteordevelopment.orbit.EventHandler;
 import net.minecraft.client.option.Perspective;
 
-
 public class ThirdSight extends Module {
 
     private final SettingGroup sgGeneral = settings.getDefaultGroup();
     private final SettingGroup sgZoom    = settings.createGroup("Zoom");
-    private final SettingGroup sgATW     = settings.createGroup("Around the World");
 
     // ── General ──────────────────────────────────────────────────────────────
 
@@ -48,6 +45,24 @@ public class ThirdSight extends Module {
         .min(0.01)
         .max(1.0)
         .sliderRange(0.05, 0.5)
+        .build()
+    );
+
+    public final Setting<Boolean> customFov = sgGeneral.add(new BoolSetting.Builder()
+        .name("custom-first-person-fov")
+        .description("Overrides your FOV while in First Person, allowing you to push past the vanilla limit of 115.")
+        .defaultValue(false)
+        .build()
+    );
+
+    public final Setting<Double> targetFov = sgGeneral.add(new DoubleSetting.Builder()
+        .name("target-fov")
+        .description("The FOV to use while in First Person. Can be pushed past vanilla limits.")
+        .defaultValue(110.0)
+        .min(1.0)
+        .max(200.0)
+        .sliderRange(30.0, 200.0)
+        .visible(customFov::get)
         .build()
     );
 
@@ -116,50 +131,6 @@ public class ThirdSight extends Module {
         .build()
     );
 
-    // ── Around the World ──────────────────────────────────────────────────────
-
-    private final Setting<Keybind> atwKey = sgATW.add(new KeybindSetting.Builder()
-        .name("key")
-        .description("Press to toggle the Around the World spin. Module must already be active.")
-        .defaultValue(Keybind.none())
-        .build()
-    );
-
-    public final Setting<Double> atwSpeed = sgATW.add(new DoubleSetting.Builder()
-        .name("speed")
-        .description("Yaw degrees added per tick. 1 = lazy drift, 360 = full rotation per tick (extreme).")
-        .defaultValue(6.0)
-        .min(0.1)
-        .max(360.0)
-        .sliderRange(0.5, 72.0)
-        .build()
-    );
-
-    private final Setting<Boolean> atwClockwise = sgATW.add(new BoolSetting.Builder()
-        .name("clockwise")
-        .description("Spin direction. True = clockwise (yaw increases), false = counter-clockwise.")
-        .defaultValue(true)
-        .build()
-    );
-
-    private final Setting<Boolean> atwLockPitch = sgATW.add(new BoolSetting.Builder()
-        .name("lock-pitch")
-        .description("Keep the camera at a fixed pitch angle while spinning.")
-        .defaultValue(true)
-        .build()
-    );
-
-    private final Setting<Double> atwPitch = sgATW.add(new DoubleSetting.Builder()
-        .name("pitch")
-        .description("Camera pitch to hold during the spin. 0 = level, positive = look down, negative = look up.")
-        .defaultValue(15.0)
-        .min(-89.9)
-        .max(89.9)
-        .sliderRange(-60.0, 60.0)
-        .visible(atwLockPitch::get)
-        .build()
-    );
-
     // ── State ─────────────────────────────────────────────────────────────────
 
     // Free-look / BirdsEye camera angles
@@ -176,17 +147,11 @@ public class ThirdSight extends Module {
 
     private Perspective previousPerspective = null;
 
-    // ── Around the World state ────────────────────────────────────────────────
-
-    private boolean atwActive        = false;
-    private boolean wasAtwKeyPressed = false;
-    private float   atwCurrentYaw    = 0f;
-
     // ── Constructor ───────────────────────────────────────────────────────────
 
     public ThirdSight() {
-        super(HuntingUtilities.CATEGORY, "third-sight",
-            "Third-person camera with configurable distance, no block clipping, free look, and Around the World spin.");
+        super(Tim.CATEGORY, "third-sight",
+            "Third-person camera with configurable distance, no block clipping, and free look.");
     }
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -210,11 +175,8 @@ public class ThirdSight extends Module {
         wasZoomKeyPressed       = false;
         noDistanceActive        = false;
         wasNoDistanceKeyPressed = false;
+        
         originalFov = -1;
-
-        atwActive        = false;
-        wasAtwKeyPressed = false;
-        atwCurrentYaw    = cameraYaw;
     }
 
     @Override
@@ -228,8 +190,6 @@ public class ThirdSight extends Module {
 
         previousPerspective = null;
         originalFov = -1;
-
-        atwActive = false;
     }
 
     // ── Tick ──────────────────────────────────────────────────────────────────
@@ -256,23 +216,9 @@ public class ThirdSight extends Module {
             }
             wasZoomKeyPressed = zoomPressed;
 
-            // ── Around the World keybind ──────────────────────────────────────
-            boolean atwPressed = atwKey.get().isPressed();
-            if (atwPressed && !wasAtwKeyPressed) {
-                atwActive = !atwActive;
-                if (atwActive) {
-                    atwCurrentYaw = cameraYaw;
-                    info("Around the World §aon§r.");
-                } else {
-                    info("Around the World §coff§r.");
-                }
-            }
-            wasAtwKeyPressed = atwPressed;
-
         } else {
             wasNoDistanceKeyPressed = false;
             wasZoomKeyPressed       = false;
-            wasAtwKeyPressed        = false;
             if (!zoomToggle.get()) isZooming = false;
         }
 
@@ -298,59 +244,48 @@ public class ThirdSight extends Module {
         if (noDistanceActive) targetDist = 4.0; // Vanilla third person distance
         else targetDist = isZooming ? zoomDistance.get() : distance.get();
 
-        if (atwActive) {
-            float delta = (float)(atwSpeed.get() * event.tickDelta);
-            if (!atwClockwise.get()) delta = -delta;
-            atwCurrentYaw += delta;
-            if      (atwCurrentYaw >  180f) atwCurrentYaw -= 360f;
-            else if (atwCurrentYaw < -180f) atwCurrentYaw += 360f;
-
-            cameraYaw   = atwCurrentYaw;
-            cameraPitch = atwLockPitch.get()
-                ? (float) atwPitch.get().doubleValue()
-                : cameraPitch;
-        } else {
-            // When free-look is off, smoothly chase the player's look direction.
-            boolean shouldFollow = !freeLook.get()
-                && mc.player != null;
-            if (shouldFollow) {
-                float playerYaw = mc.player.getYaw();
-                float yawDiff = playerYaw - cameraYaw;
-                if (yawDiff >  180f) yawDiff -= 360f;
-                if (yawDiff < -180f) yawDiff += 360f;
-                float fs = (float) followSpeed.get().doubleValue();
-                cameraYaw += yawDiff * fs;
-            }
+        // When free-look is off, smoothly chase the player's look direction.
+        boolean shouldFollow = !freeLook.get() && mc.player != null;
+        if (shouldFollow) {
+            float playerYaw = mc.player.getYaw();
+            float yawDiff = playerYaw - cameraYaw;
+            if (yawDiff >  180f) yawDiff -= 360f;
+            if (yawDiff < -180f) yawDiff += 360f;
+            float fs = (float) followSpeed.get().doubleValue();
+            cameraYaw += yawDiff * fs;
         }
 
         currentDistance += (targetDist - currentDistance) * speed;
         if (Math.abs(targetDist - currentDistance) < 0.01) currentDistance = targetDist;
 
-        // FOV smoothing (first-person zoom)
-        if (!atwActive) {
-            if (noDistanceActive && mc.options.getPerspective().isFirstPerson()) {
-                if (isZooming) {
-                    if (originalFov == -1) {
-                        originalFov = mc.options.getFov().getValue();
-                        currentFov  = originalFov;
-                    }
-                    double targetFov = zoomFov.get();
-                    currentFov += (targetFov - currentFov) * speed;
-                    if (Math.abs(targetFov - currentFov) < 0.1) currentFov = targetFov;
-                    mc.options.getFov().setValue((int) currentFov);
-                } else if (originalFov != -1) {
-                    currentFov += (originalFov - currentFov) * speed;
-                    if (Math.abs(originalFov - currentFov) < 0.1) {
-                        currentFov  = originalFov;
-                        mc.options.getFov().setValue((int) originalFov);
-                        originalFov = -1;
-                    } else {
-                        mc.options.getFov().setValue((int) currentFov);
-                    }
-                }
-            } else if (originalFov != -1) {
+        // FOV smoothing (unified for first-person custom FOV and zoom)
+        double targetFovValue = originalFov;
+
+        // Only apply custom/zoom FOV when in First Person
+        if (mc.options.getPerspective().isFirstPerson() && customFov.get()) {
+            if (isZooming) {
+                targetFovValue = zoomFov.get();
+            } else {
+                targetFovValue = targetFov.get();
+            }
+        }
+
+        if (targetFovValue != originalFov) {
+            if (originalFov == -1) {
+                originalFov = mc.options.getFov().getValue();
+                currentFov = originalFov;
+            }
+            currentFov += (targetFovValue - currentFov) * speed;
+            if (Math.abs(targetFovValue - currentFov) < 0.1) currentFov = targetFovValue;
+            mc.options.getFov().setValue((int) currentFov);
+        } else if (originalFov != -1) {
+            currentFov += (originalFov - currentFov) * speed;
+            if (Math.abs(originalFov - currentFov) < 0.1) {
+                currentFov = originalFov;
                 mc.options.getFov().setValue((int) originalFov);
                 originalFov = -1;
+            } else {
+                mc.options.getFov().setValue((int) currentFov);
             }
         }
     }
@@ -365,7 +300,13 @@ public class ThirdSight extends Module {
 
     public boolean isNoDistanceActive() { return noDistanceActive; }
 
-    public boolean isAtwActive() { return atwActive; }
+    /**
+     * Called by AbstractClientPlayerEntityMixin to counteract the vanilla FOV multiplier 
+     * (which causes the "beacon effect" FOV scaling from speed/jump boost).
+     */
+    public boolean isBeaconEffectCountered() {
+        return isActive();
+    }
 
     /**
      * Called by ThirdSightMouseMixin — free look is active when enabled and not zooming in first person.

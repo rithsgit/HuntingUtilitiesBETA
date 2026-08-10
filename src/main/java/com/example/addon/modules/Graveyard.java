@@ -6,7 +6,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
-import com.example.addon.HuntingUtilities;
+import com.example.addon.Tim;
 
 import meteordevelopment.meteorclient.events.render.Render3DEvent;
 import meteordevelopment.meteorclient.events.world.TickEvent;
@@ -167,7 +167,7 @@ public class Graveyard extends Module {
     private static final long XP_NOTIFY_COOLDOWN_MS = 3000;
 
     public Graveyard() {
-        super(HuntingUtilities.CATEGORY, "graveyard", "Highlights valuable items and XP on the ground.");
+        super(Tim.CATEGORY, "graveyard", "Highlights valuable items and XP on the ground.");
     }
 
     @Override

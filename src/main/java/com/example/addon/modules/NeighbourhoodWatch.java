@@ -4,7 +4,8 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
-import com.example.addon.HuntingUtilities;
+import com.example.addon.Tim;
+import com.example.addon.hud.LastSeenPlayerHud;
 import com.example.addon.utils.GlowingRegistry;
 
 import meteordevelopment.meteorclient.events.game.GameJoinedEvent;
@@ -22,6 +23,9 @@ import meteordevelopment.meteorclient.settings.SettingGroup;
 import meteordevelopment.meteorclient.settings.StringListSetting;
 import meteordevelopment.meteorclient.settings.StringSetting;
 import meteordevelopment.meteorclient.systems.modules.Module;
+import meteordevelopment.meteorclient.systems.hud.Hud;
+import meteordevelopment.meteorclient.systems.hud.HudElement;
+import meteordevelopment.meteorclient.systems.Systems;
 import meteordevelopment.meteorclient.utils.render.WireframeEntityRenderer;
 import meteordevelopment.meteorclient.utils.render.color.SettingColor;
 import meteordevelopment.orbit.EventHandler;
@@ -42,10 +46,6 @@ public class NeighbourhoodWatch extends Module {
     public enum TabFilter  { Friends, Enemies, Proxies, Others, All }
     public enum FilterMode { Censor, AutoIgnore }
 
-    /**
-     * Wireframe — custom geometry outline drawn by WireframeEntityRenderer.
-     * Spectral  — vanilla glowing outline driven by GlowingRegistry → EntityGlowingMixin pipeline.
-     */
     public enum HighlightMode {
         Wireframe("Wireframe"),
         Spectral("Spectral");
@@ -188,8 +188,6 @@ public class NeighbourhoodWatch extends Module {
     // Settings — Friends & Enemies
     // ═══════════════════════════════════════════════════════════════════════════
 
-    // ── Friends ───────────────────────────────────────────────────────────────
-
     private final Setting<List<String>> friends = sgFriends.add(new StringListSetting.Builder()
         .name("friends").description("Players treated as friends. Case-insensitive.")
         .defaultValue(List.of()).onChanged(l -> updateFriendEnemySets())
@@ -203,8 +201,6 @@ public class NeighbourhoodWatch extends Module {
         .visible(() -> trackPlayers.get() && isFriendCategoryVisible())
         .build()
     );
-
-    // ── Enemies ───────────────────────────────────────────────────────────────
 
     private final Setting<List<String>> enemies = sgFriends.add(new StringListSetting.Builder()
         .name("enemies").description("Players treated as enemies. Case-insensitive.")
@@ -220,8 +216,6 @@ public class NeighbourhoodWatch extends Module {
         .build()
     );
 
-    // ── Proxies ───────────────────────────────────────────────────────────────
-
     private final Setting<List<String>> proxies = sgFriends.add(new StringListSetting.Builder()
         .name("proxies").description("Players treated as proxies. Case-insensitive.")
         .defaultValue(List.of()).onChanged(l -> updateFriendEnemySets())
@@ -235,8 +229,6 @@ public class NeighbourhoodWatch extends Module {
         .visible(() -> trackPlayers.get() && isProxyCategoryVisible())
         .build()
     );
-
-    // ── Others ────────────────────────────────────────────────────────────────
 
     private final Setting<SettingColor> otherColor = sgFriends.add(new ColorSetting.Builder()
         .name("other-color").description("Highlight color for unknown players.")
@@ -275,12 +267,14 @@ public class NeighbourhoodWatch extends Module {
     private final Set<String>  enemySet           = new HashSet<>();
     private final Set<String>  proxySet           = new HashSet<>();
 
+    private boolean anyPlayerNearby = false;
+
     // ═══════════════════════════════════════════════════════════════════════════
     // Constructor
     // ═══════════════════════════════════════════════════════════════════════════
 
     public NeighbourhoodWatch() {
-        super(HuntingUtilities.CATEGORY, "neighbourhood-watch",
+        super(Tim.CATEGORY, "neighbourhood-watch",
             "Manages player tracking, safety, server monitoring, and keyword alerts.");
     }
 
@@ -304,12 +298,14 @@ public class NeighbourhoodWatch extends Module {
     public void onDeactivate() {
         clearAllOutlines();
         resetState();
+        anyPlayerNearby = false;
     }
 
     @EventHandler
     private void onGameJoined(GameJoinedEvent event) {
         clearAllOutlines();
         resetState();
+        anyPlayerNearby = false;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -366,7 +362,6 @@ public class NeighbourhoodWatch extends Module {
             newlyActive.add(player.getId());
         }
 
-        // Clean up previously outlined players that are no longer tracked (or if we switched to Wireframe)
         for (int id : activelyOutlined) {
             if (!newlyActive.contains(id) || !spectral) {
                 GlowingRegistry.remove(id);
@@ -385,7 +380,6 @@ public class NeighbourhoodWatch extends Module {
     private void onRender(Render3DEvent event) {
         if (mc.world == null || mc.player == null) return;
 
-        // ── Render Tracked Players (Wireframe) ──
         if (trackPlayers.get() && highlightMode.get() == HighlightMode.Wireframe) {
             for (PlayerEntity player : mc.world.getPlayers()) {
                 if (!activelyOutlined.contains(player.getId())) continue;
@@ -399,7 +393,6 @@ public class NeighbourhoodWatch extends Module {
                     case Other  -> otherColor.get();
                 };
 
-                // Using ShapeMode.Lines prevents the glitchy Z-fighting filled faces that ShapeMode.Both causes
                 WireframeEntityRenderer.render(
                     event, player, outlineScale.get(),
                     withAlpha(color, 0), color, ShapeMode.Lines
@@ -470,14 +463,36 @@ public class NeighbourhoodWatch extends Module {
     }
 
     private void tickPlayerTracking() {
-        if (!trackPlayers.get()) return;
+        if (!trackPlayers.get()) {
+            anyPlayerNearby = false;
+            return;
+        }
+
+        anyPlayerNearby = false;
 
         for (PlayerEntity player : mc.world.getPlayers()) {
             if (player == mc.player || player.isSpectator()) continue;
             if (mc.player.distanceTo(player) > trackRange.get()) continue;
 
+            anyPlayerNearby = true;
+
             String       name   = player.getName().getString();
             PlayerStatus status = getPlayerStatusPublic(name);
+
+            boolean isNewlySpotted = notifiedPlayers.add(player.getId());
+
+            if (isNewlySpotted) {
+                // ── Update Last Seen HUD directly ──
+                Hud hudSystem = Systems.get(Hud.class);
+                if (hudSystem != null) {
+                    for (HudElement element : hudSystem) {
+                        if (element instanceof LastSeenPlayerHud lastSeenHud) {
+                            lastSeenHud.updateLastSeen(player);
+                            break;
+                        }
+                    }
+                }
+            }
 
             boolean shouldNotify = trackFilter.get() == TabFilter.All || switch (status) {
                 case Friend -> trackFilter.get() == TabFilter.Friends;
@@ -487,7 +502,7 @@ public class NeighbourhoodWatch extends Module {
             };
             if (!shouldNotify) continue;
 
-            if (notifiedPlayers.add(player.getId())) {
+            if (isNewlySpotted) {
                 if (notifyChat.get()) {
                     String statusStr = status.name().toLowerCase();
                     String msg = customMessage.get()
@@ -500,7 +515,6 @@ public class NeighbourhoodWatch extends Module {
                 }
             }
         }
-        // Remove stale IDs for players who have left the world
         notifiedPlayers.removeIf(id -> mc.world.getEntityById(id) == null);
     }
 
@@ -663,8 +677,12 @@ public class NeighbourhoodWatch extends Module {
         return PlayerStatus.Other;
     }
 
-    /** Exposes whether the disconnect-on-player safety feature is armed. Used by the HUD. */
     public boolean isDisconnectOnPlayerArmed() {
         return disconnectOnPlayer.get();
+    }
+
+    /** Exposes whether a player is actively inside tracking range. Used by the HUD. */
+    public boolean isAnyPlayerNearby() {
+        return anyPlayerNearby;
     }
 }

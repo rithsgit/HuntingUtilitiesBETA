@@ -1,7 +1,5 @@
 package com.example.addon.hud;
-
-import com.example.addon.HuntingUtilities;
-
+import com.example.addon.Tim;
 import meteordevelopment.meteorclient.settings.BoolSetting;
 import meteordevelopment.meteorclient.settings.ColorSetting;
 import meteordevelopment.meteorclient.settings.DoubleSetting;
@@ -11,14 +9,19 @@ import meteordevelopment.meteorclient.settings.SettingGroup;
 import meteordevelopment.meteorclient.systems.hud.HudElement;
 import meteordevelopment.meteorclient.systems.hud.HudElementInfo;
 import meteordevelopment.meteorclient.systems.hud.HudRenderer;
+import meteordevelopment.meteorclient.utils.render.color.Color;
 import meteordevelopment.meteorclient.utils.render.color.SettingColor;
 import meteordevelopment.meteorclient.utils.world.TickRate;
 import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.network.PlayerListEntry;
+
+import java.util.ArrayList;
+import java.util.List;
 
 public class StatisticsInformation extends HudElement {
 
     public static final HudElementInfo<StatisticsInformation> INFO = new HudElementInfo<>(
-        HuntingUtilities.HUD_GROUP,
+        Tim.HUD_GROUP,
         "statistics-information",
         "Provides a comprehensive display of real-time performance metrics, navigational data, and session-specific statistics.",
         StatisticsInformation::new
@@ -30,7 +33,7 @@ public class StatisticsInformation extends HudElement {
 
     private final SettingGroup sgGeneral = settings.getDefaultGroup();
 
-    // Speed
+    // Performance
     private final Setting<Boolean> showSpeed = sgGeneral.add(new BoolSetting.Builder()
         .name("show-speed")
         .description("Show player speed.")
@@ -48,7 +51,6 @@ public class StatisticsInformation extends HudElement {
         .build()
     );
 
-    // FPS
     private final Setting<Boolean> showFps = sgGeneral.add(new BoolSetting.Builder()
         .name("show-fps")
         .description("Show current FPS.")
@@ -56,7 +58,6 @@ public class StatisticsInformation extends HudElement {
         .build()
     );
 
-    // TPS
     private final Setting<Boolean> showTps = sgGeneral.add(new BoolSetting.Builder()
         .name("show-tps")
         .description("Show server TPS.")
@@ -64,11 +65,15 @@ public class StatisticsInformation extends HudElement {
         .build()
     );
 
-    // Coordinates
-    public enum CoordinateDisplay {
-        Show,
-        Hidden
-    }
+    private final Setting<Boolean> showPing = sgGeneral.add(new BoolSetting.Builder()
+        .name("show-ping")
+        .description("Show your ping to the server.")
+        .defaultValue(true)
+        .build()
+    );
+
+    // Location
+    public enum CoordinateDisplay { Show, Hidden }
 
     private final Setting<CoordinateDisplay> coordinateDisplay = sgGeneral.add(new EnumSetting.Builder<CoordinateDisplay>()
         .name("coordinates")
@@ -77,7 +82,6 @@ public class StatisticsInformation extends HudElement {
         .build()
     );
 
-    // Direction
     private final Setting<Boolean> showDirection = sgGeneral.add(new BoolSetting.Builder()
         .name("show-direction")
         .description("Show the direction you are facing (cardinal + yaw).")
@@ -95,7 +99,7 @@ public class StatisticsInformation extends HudElement {
         .build()
     );
 
-    // Memory
+    // System & World
     private final Setting<Boolean> showMemory = sgGeneral.add(new BoolSetting.Builder()
         .name("show-memory")
         .description("Show JVM memory usage (used / max MB).")
@@ -111,7 +115,6 @@ public class StatisticsInformation extends HudElement {
         .build()
     );
 
-    // Chunks
     private final Setting<Boolean> showChunks = sgGeneral.add(new BoolSetting.Builder()
         .name("show-chunks")
         .description("Show number of loaded chunks.")
@@ -119,7 +122,6 @@ public class StatisticsInformation extends HudElement {
         .build()
     );
 
-    // Player Count
     private final Setting<Boolean> showPlayerCount = sgGeneral.add(new BoolSetting.Builder()
         .name("show-player-count")
         .description("Show number of players on the server.")
@@ -127,7 +129,7 @@ public class StatisticsInformation extends HudElement {
         .build()
     );
 
-    // Distance Traveled
+    // Session
     private final Setting<Boolean> showDistance = sgGeneral.add(new BoolSetting.Builder()
         .name("show-distance")
         .description("Show total distance traveled since login.")
@@ -153,7 +155,6 @@ public class StatisticsInformation extends HudElement {
         .build()
     );
 
-    // Time Online
     private final Setting<Boolean> showTimeOnline = sgGeneral.add(new BoolSetting.Builder()
         .name("show-time-online")
         .description("Show time spent online since joining the server.")
@@ -171,7 +172,7 @@ public class StatisticsInformation extends HudElement {
         .build()
     );
 
-    // Stability
+    // Safety & Stability
     private final Setting<Boolean> showStability = sgGeneral.add(new BoolSetting.Builder()
         .name("show-stability")
         .description("Show connection stability based on time since last server tick.")
@@ -179,7 +180,6 @@ public class StatisticsInformation extends HudElement {
         .build()
     );
 
-    // TPS Guard
     private final Setting<Boolean> tpsGuard = sgGeneral.add(new BoolSetting.Builder()
         .name("tps-guard")
         .description("Show a warning if TPS is too low for safe movement through unloaded chunks.")
@@ -199,14 +199,6 @@ public class StatisticsInformation extends HudElement {
         .name("tps-guard-hide-stationary")
         .description("Hide the TPS guard warning when the player is not moving.")
         .defaultValue(false)
-        .visible(tpsGuard::get)
-        .build()
-    );
-
-    private final Setting<SettingColor> tpsGuardColor = sgGeneral.add(new ColorSetting.Builder()
-        .name("tps-guard-color")
-        .description("Color for the TPS guard warning.")
-        .defaultValue(new SettingColor(255, 60, 60, 255))
         .visible(tpsGuard::get)
         .build()
     );
@@ -235,14 +227,14 @@ public class StatisticsInformation extends HudElement {
 
     private final Setting<SettingColor> separatorColor = sgGeneral.add(new ColorSetting.Builder()
         .name("separator-color")
-        .description("Color of the | separator between FPS and TPS.")
+        .description("Color of the | separator between combined stats.")
         .defaultValue(new SettingColor(100, 100, 100, 255))
         .build()
     );
 
     private final Setting<Boolean> showBackground = sgGeneral.add(new BoolSetting.Builder()
         .name("background")
-        .description("Show a background highlight behind each line.")
+        .description("Show a background highlight behind the element.")
         .defaultValue(false)
         .build()
     );
@@ -254,11 +246,11 @@ public class StatisticsInformation extends HudElement {
         .build()
     );
 
-    public enum Alignment { Left, Right }
+    public enum Alignment { Left, Center, Right }
 
     private final Setting<Alignment> alignment = sgGeneral.add(new EnumSetting.Builder<Alignment>()
         .name("alignment")
-        .description("Align text to the left or right.")
+        .description("Align text to the left, center, or right.")
         .defaultValue(Alignment.Left)
         .build()
     );
@@ -269,22 +261,22 @@ public class StatisticsInformation extends HudElement {
     private double prevX = Double.MAX_VALUE;
     private double prevY = Double.MAX_VALUE;
     private double prevZ = Double.MAX_VALUE;
-
-    /** System time (ms) when the HUD element was first ticked after joining. */
     private long sessionStartMs = -1;
-
-    // ── Constructor ───────────────────────────────────────────────────────────────
 
     public StatisticsInformation() {
         super(INFO);
     }
+
+    // ── Render Data Structures ────────────────────────────────────────────────────
+
+    private record Segment(String text, Color color) {}
+    private record Line(List<Segment> segments) {}
 
     // ── Tick ──────────────────────────────────────────────────────────────────────
 
     @Override
     public void tick(HudRenderer renderer) {
         if (mc.player == null) {
-            // Player left — reset so the timer restarts on next join
             prevX = Double.MAX_VALUE;
             prevY = Double.MAX_VALUE;
             prevZ = Double.MAX_VALUE;
@@ -293,7 +285,6 @@ public class StatisticsInformation extends HudElement {
             return;
         }
 
-        // Start the session timer the first tick we have a player
         if (sessionStartMs < 0) sessionStartMs = System.currentTimeMillis();
 
         double cx = mc.player.getX();
@@ -317,297 +308,241 @@ public class StatisticsInformation extends HudElement {
     @Override
     public void render(HudRenderer renderer) {
         double s = scale.get();
-
-        double padH       = 4 * s;
-        double padV       = 2 * s;
-        double rowGap     = 2 * s;
+        double padH = 4 * s;
+        double padV = 2 * s;
+        double rowGap = 2 * s;
         double lineHeight = renderer.textHeight(false, s);
-        double sepW       = renderer.textWidth(" | ", false, s);
-        boolean rightAlign = alignment.get() == Alignment.Right;
+        double sepW = renderer.textWidth(" | ", false, s);
 
-        // ── TPS color ─────────────────────────────────────────────────────────────
-        float tps = TickRate.INSTANCE.getTickRate();
-        SettingColor tpsColor = tps < 10f
-            ? new SettingColor(255, 60,  60,  255)
-            : tps < 15f
-            ? new SettingColor(255, 200, 0,   255)
-            : valueColor.get();
+        List<Line> lines = new ArrayList<>();
 
-        // ── Line 1: Speed ─────────────────────────────────────────────────────────
-        String speedLabel = null, speedValue = null;
-        if (showSpeed.get()) {
-            double bps = getSpeedBps();
-            double kmh = bps * 3.6;
-            speedLabel = "Speed: ";
-            speedValue = switch (speedUnit.get()) {
-                case BPS  -> String.format("%.1f bps", bps);
-                case KMH  -> String.format("%.1f km/h", kmh);
-                case Both -> String.format("%.1f bps / %.1f km/h", bps, kmh);
-            };
+        // Build all lines dynamically
+        addSpeedLine(lines);
+        addPerformanceLine(lines, sepW);
+        addDirectionLine(lines);
+        addCoordsLine(lines);
+        addMemoryLine(lines);
+        addWorldLine(lines, sepW);
+        addDistanceLine(lines);
+        addTimeLine(lines);
+        addStabilityLine(lines);
+        addTpsGuardLine(lines);
+
+        if (lines.isEmpty()) {
+            setSize(0, 0);
+            return;
         }
 
-        // ── Line 2: FPS | TPS ─────────────────────────────────────────────────────
-        String fpsLabel = null, fpsValue = null, tpsLabel = null, tpsValue = null;
-        if (showFps.get()) { fpsLabel = "FPS: "; fpsValue = String.valueOf(mc.getCurrentFps()); }
-        if (showTps.get()) { tpsLabel = "TPS: "; tpsValue = String.format("%.1f", tps); }
-
-        // ── Line 3: Direction ─────────────────────────────────────────────────────
-        String dirLabel = null, dirValue = null;
-        if (showDirection.get() && mc.player != null) {
-            dirLabel = "Facing: ";
-            float yaw = mc.player.getYaw() % 360f;
-            if (yaw < 0) yaw += 360f;
-            String cardinal = getCardinal(yaw);
-            dirValue = switch (directionFormat.get()) {
-                case Cardinal -> cardinal;
-                case Yaw      -> String.format("%.1f°", yaw);
-                case Both     -> String.format("%s  %.1f°", cardinal, yaw);
-            };
-        }
-
-        // ── Line 9: Coordinates ───────────────────────────────────────────────────
-        String coordsLabel = null, coordsValue = null;
-        if (coordinateDisplay.get() == CoordinateDisplay.Show && mc.player != null) {
-            coordsLabel = "Pos: ";
-            coordsValue = String.format("%d, %d, %d", (int) mc.player.getX(), (int) mc.player.getY(), (int) mc.player.getZ());
-        }
-
-        // ── Line 4: Memory ────────────────────────────────────────────────────────
-        String memLabel = null, memValue = null;
-        SettingColor memColor = valueColor.get();
-        if (showMemory.get()) {
-            Runtime rt = Runtime.getRuntime();
-            long usedMB = (rt.totalMemory() - rt.freeMemory()) / (1024 * 1024);
-            long maxMB  = rt.maxMemory() / (1024 * 1024);
-            double pct  = (double) usedMB / maxMB;
-            memLabel = "Mem: ";
-            memValue = usedMB + " / " + maxMB + " MB";
-            if (memoryColorCode.get()) {
-                if      (pct >= 0.90) memColor = new SettingColor(255, 60,  60,  255);
-                else if (pct >= 0.75) memColor = new SettingColor(255, 200, 0,   255);
+        // Measure max width
+        double maxW = 0;
+        for (Line line : lines) {
+            double w = 0;
+            for (Segment seg : line.segments) {
+                w += renderer.textWidth(seg.text, false, s);
             }
+            if (w > maxW) maxW = w;
         }
 
-        // ── Line 5: Chunks | Players ──────────────────────────────────────────────
-        String chunkLabel = null, chunkValue = null;
-        String playerLabel = null, playerValue = null;
-        if (showChunks.get() && mc.worldRenderer != null) {
-            chunkLabel = "Chunks: ";
-            chunkValue = String.valueOf(mc.worldRenderer.getCompletedChunkCount());
-        }
-        if (showPlayerCount.get() && mc.getNetworkHandler() != null) {
-            playerLabel = "Players: ";
-            playerValue = String.valueOf(mc.getNetworkHandler().getPlayerList().size());
+        double totalW = maxW + padH * 2;
+        double totalH = lines.size() * lineHeight + (lines.size() - 1) * rowGap + padV * 2;
+
+        // Draw unified background
+        if (showBackground.get()) {
+            renderer.quad(x, y, totalW, totalH, backgroundColor.get());
         }
 
-        // ── Line 6: Distance Traveled ─────────────────────────────────────────────
-        String distLabel = null, distValue = null;
-        if (showDistance.get()) {
-            distLabel = "Traveled: ";
-            distValue = switch (distanceUnit.get()) {
-                case Blocks -> String.format("%.0f m", distanceTraveled);
-                case Km     -> String.format("%.3f km", distanceTraveled / 1000.0);
-                case Both   -> String.format("%.0f m  /  %.3f km", distanceTraveled, distanceTraveled / 1000.0);
-            };
-        }
+        // Draw lines
+        Alignment align = alignment.get();
+        for (int i = 0; i < lines.size(); i++) {
+            Line line = lines.get(i);
+            
+            double lineW = 0;
+            for (Segment seg : line.segments) {
+                lineW += renderer.textWidth(seg.text, false, s);
+            }
 
-        // ── Line 7: Time Online ───────────────────────────────────────────────────
-        String timeLabel = null, timeValue = null;
-        if (showTimeOnline.get() && sessionStartMs >= 0) {
-            long totalSecs = (System.currentTimeMillis() - sessionStartMs) / 1000L;
-            long hours     = totalSecs / 3600;
-            long minutes   = (totalSecs % 3600) / 60;
-            long seconds   = totalSecs % 60;
-            timeLabel = "Online: ";
-            timeValue = switch (timeFormat.get()) {
-                case Seconds -> String.format("%ds", totalSecs);
-                case HM      -> hours > 0
-                    ? String.format("%dh %02dm", hours, minutes)
-                    : String.format("%dm", minutes);
-                case HMS     -> hours > 0
-                    ? String.format("%dh %02dm %02ds", hours, minutes, seconds)
-                    : minutes > 0
-                    ? String.format("%dm %02ds", minutes, seconds)
-                    : String.format("%ds", seconds);
-            };
-        }
-
-        // ── Line 8: Stability ─────────────────────────────────────────────────────
-        String stabLabel = null, stabValue = null;
-        SettingColor stabColor = valueColor.get();
-        if (showStability.get()) {
-            long lastTick = (long) TickRate.INSTANCE.getTimeSinceLastTick();
-            stabLabel = "Stability: ";
-            if (lastTick > 1000) {
-                stabValue = "DESYNC";
-                stabColor = new SettingColor(255, 60, 60, 255);
+            double startX;
+            if (align == Alignment.Center) {
+                startX = x + (totalW - lineW) / 2.0;
+            } else if (align == Alignment.Right) {
+                startX = x + totalW - padH - lineW;
             } else {
-                stabValue = lastTick + "ms";
-                if (lastTick > 250) stabColor = new SettingColor(255, 200, 0, 255);
+                startX = x + padH;
+            }
+
+            double cy = y + padV + i * (lineHeight + rowGap);
+
+            double cx = startX;
+            for (Segment seg : line.segments) {
+                renderer.text(seg.text, cx, cy, seg.color, false, s);
+                cx += renderer.textWidth(seg.text, false, s);
             }
         }
-
-        // ── Line 10: TPS Guard ────────────────────────────────────────────────────
-        String guardLabel = null, guardValue = null;
-        if (tpsGuard.get() && tps < tpsGuardThreshold.get() && !(tpsGuardHideStatic.get() && getSpeedBps() < 0.1)) {
-            guardLabel = "! TPS Guard: ";
-            guardValue = "DANGER";
-        }
-
-        // ── Measure all line widths ───────────────────────────────────────────────
-        double line1W = 0, line2W = 0, line3W = 0, line4W = 0, line5W = 0, line6W = 0, line7W = 0, line8W = 0, line9W = 0, line10W = 0;
-
-        if (speedLabel  != null) line1W = renderer.textWidth(speedLabel,  false, s) + renderer.textWidth(speedValue,  false, s);
-        if (fpsLabel    != null) line2W += renderer.textWidth(fpsLabel,   false, s) + renderer.textWidth(fpsValue,   false, s);
-        if (fpsLabel    != null && tpsLabel != null) line2W += sepW;
-        if (tpsLabel    != null) line2W += renderer.textWidth(tpsLabel,   false, s) + renderer.textWidth(tpsValue,   false, s);
-        if (dirLabel    != null) line3W = renderer.textWidth(dirLabel,    false, s) + renderer.textWidth(dirValue,   false, s);
-        if (coordsLabel != null) line9W = renderer.textWidth(coordsLabel, false, s) + renderer.textWidth(coordsValue, false, s);
-        if (memLabel    != null) line4W = renderer.textWidth(memLabel,    false, s) + renderer.textWidth(memValue,   false, s);
-        if (chunkLabel  != null) line5W += renderer.textWidth(chunkLabel, false, s) + renderer.textWidth(chunkValue, false, s);
-        if (chunkLabel  != null && playerLabel != null) line5W += sepW;
-        if (playerLabel != null) line5W += renderer.textWidth(playerLabel, false, s) + renderer.textWidth(playerValue, false, s);
-        if (distLabel   != null) line6W = renderer.textWidth(distLabel,   false, s) + renderer.textWidth(distValue,  false, s);
-        if (timeLabel   != null) line7W = renderer.textWidth(timeLabel,   false, s) + renderer.textWidth(timeValue,  false, s);
-        if (stabLabel   != null) line8W = renderer.textWidth(stabLabel,   false, s) + renderer.textWidth(stabValue,  false, s);
-        if (guardLabel  != null) line10W = renderer.textWidth(guardLabel,  false, s) + renderer.textWidth(guardValue,  false, s);
-
-        boolean hasLine1 = speedLabel  != null;
-        boolean hasLine2 = fpsLabel    != null || tpsLabel    != null;
-        boolean hasLine3 = dirLabel    != null;
-        boolean hasLine9 = coordsLabel != null;
-        boolean hasLine4 = memLabel    != null;
-        boolean hasLine5 = chunkLabel  != null || playerLabel != null;
-        boolean hasLine6 = distLabel   != null;
-        boolean hasLine7 = timeLabel   != null;
-        boolean hasLine8 = stabLabel   != null;
-        boolean hasLine10 = guardLabel != null;
-
-        if (!hasLine1 && !hasLine2 && !hasLine3 && !hasLine4 && !hasLine5 && !hasLine6 && !hasLine7 && !hasLine8 && !hasLine9 && !hasLine10) {
-            setSize(0, 0); return;
-        }
-
-        double maxLineW  = Math.max(line1W, Math.max(line2W, Math.max(line3W, Math.max(line4W,
-                           Math.max(line5W, Math.max(line6W, Math.max(line7W, Math.max(line8W, Math.max(line9W, line10W)))))))));
-        double totalW    = maxLineW + padH * 2;
-        int    lineCount = (hasLine1 ? 1 : 0) + (hasLine2 ? 1 : 0) + (hasLine3 ? 1 : 0)
-                         + (hasLine4 ? 1 : 0) + (hasLine5 ? 1 : 0) + (hasLine6 ? 1 : 0) + (hasLine9 ? 1 : 0)
-                         + (hasLine7 ? 1 : 0) + (hasLine8 ? 1 : 0) + (hasLine10 ? 1 : 0);
-        double totalH    = lineCount * lineHeight + (lineCount - 1) * rowGap + padV * 2;
-
-        int lineIdx = 0;
-
-        if (hasLine1) lineIdx = drawLabelValue(renderer, s, padH, padV, rowGap, lineHeight,
-            rightAlign, totalW, line1W, lineIdx, speedLabel, speedValue, labelColor.get(), valueColor.get());
-
-        if (hasLine2) lineIdx = drawPair(renderer, s, padH, padV, rowGap, lineHeight, sepW,
-            rightAlign, totalW, line2W, lineIdx,
-            fpsLabel, fpsValue, valueColor.get(), tpsLabel, tpsValue, tpsColor);
-
-        if (hasLine3) lineIdx = drawLabelValue(renderer, s, padH, padV, rowGap, lineHeight,
-            rightAlign, totalW, line3W, lineIdx, dirLabel, dirValue, labelColor.get(), valueColor.get());
-
-        if (hasLine9) lineIdx = drawLabelValue(renderer, s, padH, padV, rowGap, lineHeight,
-            rightAlign, totalW, line9W, lineIdx, coordsLabel, coordsValue, labelColor.get(), valueColor.get());
-
-        if (hasLine4) lineIdx = drawLabelValue(renderer, s, padH, padV, rowGap, lineHeight,
-            rightAlign, totalW, line4W, lineIdx, memLabel, memValue, labelColor.get(), memColor);
-
-        if (hasLine5) lineIdx = drawPair(renderer, s, padH, padV, rowGap, lineHeight, sepW,
-            rightAlign, totalW, line5W, lineIdx,
-            chunkLabel, chunkValue, valueColor.get(), playerLabel, playerValue, valueColor.get());
-
-        if (hasLine6) lineIdx = drawLabelValue(renderer, s, padH, padV, rowGap, lineHeight,
-            rightAlign, totalW, line6W, lineIdx, distLabel, distValue, labelColor.get(), valueColor.get());
-
-        if (hasLine7) lineIdx = drawLabelValue(renderer, s, padH, padV, rowGap, lineHeight,
-            rightAlign, totalW, line7W, lineIdx, timeLabel, timeValue, labelColor.get(), valueColor.get());
-
-        if (hasLine8) lineIdx = drawLabelValue(renderer, s, padH, padV, rowGap, lineHeight,
-            rightAlign, totalW, line8W, lineIdx, stabLabel, stabValue, labelColor.get(), stabColor);
-
-        if (hasLine10) lineIdx = drawLabelValue(renderer, s, padH, padV, rowGap, lineHeight,
-            rightAlign, totalW, line10W, lineIdx, guardLabel, guardValue, labelColor.get(), tpsGuardColor.get());
 
         setSize(totalW, totalH);
     }
 
-    // ── Draw helpers ──────────────────────────────────────────────────────────────
+    // ── Line Builders ─────────────────────────────────────────────────────────────
 
-    private int drawLabelValue(HudRenderer renderer, double s,
-                               double padH, double padV, double rowGap, double lineHeight,
-                               boolean rightAlign, double totalW, double lineW, int lineIdx,
-                               String label, String value,
-                               SettingColor lColor, SettingColor vColor) {
-        double rowY     = y + padV + lineIdx * (lineHeight + rowGap);
-        double lineBoxW = lineW + padH * 2;
-        if (showBackground.get()) {
-            double bgX = rightAlign ? x + totalW - lineBoxW : x;
-            renderer.quad(bgX, rowY - 1, lineBoxW, lineHeight + 2, backgroundColor.get());
-        }
-        if (rightAlign) {
-            double vw = renderer.textWidth(value, false, s);
-            double lw = renderer.textWidth(label, false, s);
-            double vx = x + totalW - padH - vw;
-            renderer.text(label, vx - lw, rowY, lColor, false, s);
-            renderer.text(value, vx,       rowY, vColor, false, s);
-        } else {
-            double cx = x + padH;
-            renderer.text(label, cx, rowY, lColor, false, s);
-            cx += renderer.textWidth(label, false, s);
-            renderer.text(value, cx, rowY, vColor, false, s);
-        }
-        return lineIdx + 1;
+    private void addSpeedLine(List<Line> lines) {
+        if (!showSpeed.get() || mc.player == null) return;
+        double bps = getSpeedBps();
+        double kmh = bps * 3.6;
+        String value = switch (speedUnit.get()) {
+            case BPS  -> String.format("%.1f bps", bps);
+            case KMH  -> String.format("%.1f km/h", kmh);
+            case Both -> String.format("%.1f bps / %.1f km/h", bps, kmh);
+        };
+        lines.add(new Line(List.of(
+            new Segment("Speed: ", labelColor.get()),
+            new Segment(value, valueColor.get())
+        )));
     }
 
-    private int drawPair(HudRenderer renderer, double s,
-                         double padH, double padV, double rowGap, double lineHeight, double sepW,
-                         boolean rightAlign, double totalW, double lineW, int lineIdx,
-                         String labelA, String valueA, SettingColor colorA,
-                         String labelB, String valueB, SettingColor colorB) {
-        double rowY     = y + padV + lineIdx * (lineHeight + rowGap);
-        double lineBoxW = lineW + padH * 2;
-        if (showBackground.get()) {
-            double bgX = rightAlign ? x + totalW - lineBoxW : x;
-            renderer.quad(bgX, rowY - 1, lineBoxW, lineHeight + 2, backgroundColor.get());
+    private void addPerformanceLine(List<Line> lines, double sepW) {
+        List<Segment> segs = new ArrayList<>();
+        if (showFps.get()) {
+            segs.add(new Segment("FPS: ", labelColor.get()));
+            segs.add(new Segment(String.valueOf(mc.getCurrentFps()), valueColor.get()));
         }
-        if (rightAlign) {
-            double cx = x + totalW - padH;
-            if (labelB != null) {
-                double vw = renderer.textWidth(valueB, false, s);
-                double lw = renderer.textWidth(labelB, false, s);
-                cx -= vw; renderer.text(valueB, cx, rowY, colorB, false, s);
-                cx -= lw; renderer.text(labelB, cx, rowY, labelColor.get(), false, s);
+        
+        if (showTps.get()) {
+            if (!segs.isEmpty()) segs.add(new Segment(" | ", separatorColor.get()));
+            float tps = TickRate.INSTANCE.getTickRate();
+            Color tpsColor = tps < 10f ? new SettingColor(255, 60, 60, 255) : 
+                             tps < 15f ? new SettingColor(255, 200, 0, 255) : 
+                             valueColor.get();
+            segs.add(new Segment("TPS: ", labelColor.get()));
+            segs.add(new Segment(String.format("%.1f", tps), tpsColor));
+        }
+
+        if (showPing.get() && mc.player != null && mc.getNetworkHandler() != null) {
+            PlayerListEntry entry = mc.getNetworkHandler().getPlayerListEntry(mc.player.getUuid());
+            if (entry != null) {
+                if (!segs.isEmpty()) segs.add(new Segment(" | ", separatorColor.get()));
+                segs.add(new Segment("Ping: ", labelColor.get()));
+                segs.add(new Segment(entry.getLatency() + "ms", valueColor.get()));
             }
-            if (labelA != null && labelB != null) {
-                cx -= sepW;
-                renderer.text(" | ", cx, rowY, separatorColor.get(), false, s);
-            }
-            if (labelA != null) {
-                double vw = renderer.textWidth(valueA, false, s);
-                double lw = renderer.textWidth(labelA, false, s);
-                cx -= vw; renderer.text(valueA, cx, rowY, colorA, false, s);
-                cx -= lw; renderer.text(labelA, cx, rowY, labelColor.get(), false, s);
-            }
+        }
+        if (!segs.isEmpty()) lines.add(new Line(segs));
+    }
+
+    private void addDirectionLine(List<Line> lines) {
+        if (!showDirection.get() || mc.player == null) return;
+        float yaw = mc.player.getYaw() % 360f;
+        if (yaw < 0) yaw += 360f;
+        String cardinal = getCardinal(yaw);
+        String value = switch (directionFormat.get()) {
+            case Cardinal -> cardinal;
+            case Yaw      -> String.format("%.1f°", yaw);
+            case Both     -> String.format("%s  %.1f°", cardinal, yaw);
+        };
+        lines.add(new Line(List.of(
+            new Segment("Facing: ", labelColor.get()),
+            new Segment(value, valueColor.get())
+        )));
+    }
+
+    private void addCoordsLine(List<Line> lines) {
+        if (coordinateDisplay.get() != CoordinateDisplay.Show || mc.player == null) return;
+        String value = String.format("%d, %d, %d", (int) mc.player.getX(), (int) mc.player.getY(), (int) mc.player.getZ());
+        lines.add(new Line(List.of(
+            new Segment("Pos: ", labelColor.get()),
+            new Segment(value, valueColor.get())
+        )));
+    }
+
+    private void addMemoryLine(List<Line> lines) {
+        if (!showMemory.get()) return;
+        Runtime rt = Runtime.getRuntime();
+        long usedMB = (rt.totalMemory() - rt.freeMemory()) / (1024 * 1024);
+        long maxMB  = rt.maxMemory() / (1024 * 1024);
+        double pct  = (double) usedMB / maxMB;
+        
+        Color memColor = valueColor.get();
+        if (memoryColorCode.get()) {
+            if      (pct >= 0.90) memColor = new SettingColor(255, 60,  60,  255);
+            else if (pct >= 0.75) memColor = new SettingColor(255, 200, 0,   255);
+        }
+        lines.add(new Line(List.of(
+            new Segment("Mem: ", labelColor.get()),
+            new Segment(usedMB + " / " + maxMB + " MB", memColor)
+        )));
+    }
+
+    private void addWorldLine(List<Line> lines, double sepW) {
+        List<Segment> segs = new ArrayList<>();
+        if (showChunks.get() && mc.worldRenderer != null) {
+            segs.add(new Segment("Chunks: ", labelColor.get()));
+            segs.add(new Segment(String.valueOf(mc.worldRenderer.getCompletedChunkCount()), valueColor.get()));
+        }
+        if (showPlayerCount.get() && mc.getNetworkHandler() != null) {
+            if (!segs.isEmpty()) segs.add(new Segment(" | ", separatorColor.get()));
+            segs.add(new Segment("Players: ", labelColor.get()));
+            segs.add(new Segment(String.valueOf(mc.getNetworkHandler().getPlayerList().size()), valueColor.get()));
+        }
+        if (!segs.isEmpty()) lines.add(new Line(segs));
+    }
+
+    private void addDistanceLine(List<Line> lines) {
+        if (!showDistance.get()) return;
+        String value = switch (distanceUnit.get()) {
+            case Blocks -> String.format("%.0f m", distanceTraveled);
+            case Km     -> String.format("%.3f km", distanceTraveled / 1000.0);
+            case Both   -> String.format("%.0f m  /  %.3f km", distanceTraveled, distanceTraveled / 1000.0);
+        };
+        lines.add(new Line(List.of(
+            new Segment("Traveled: ", labelColor.get()),
+            new Segment(value, valueColor.get())
+        )));
+    }
+
+    private void addTimeLine(List<Line> lines) {
+        if (!showTimeOnline.get() || sessionStartMs < 0) return;
+        long totalSecs = (System.currentTimeMillis() - sessionStartMs) / 1000L;
+        long hours     = totalSecs / 3600;
+        long minutes   = (totalSecs % 3600) / 60;
+        long seconds   = totalSecs % 60;
+        String value = switch (timeFormat.get()) {
+            case Seconds -> String.format("%ds", totalSecs);
+            case HM      -> hours > 0 ? String.format("%dh %02dm", hours, minutes) : String.format("%dm", minutes);
+            case HMS     -> hours > 0 ? String.format("%dh %02dm %02ds", hours, minutes, seconds) : 
+                            minutes > 0 ? String.format("%dm %02ds", minutes, seconds) : 
+                            String.format("%ds", seconds);
+        };
+        lines.add(new Line(List.of(
+            new Segment("Online: ", labelColor.get()),
+            new Segment(value, valueColor.get())
+        )));
+    }
+
+    private void addStabilityLine(List<Line> lines) {
+        if (!showStability.get()) return;
+        long lastTick = (long) TickRate.INSTANCE.getTimeSinceLastTick();
+        Color stabColor = valueColor.get();
+        String value;
+        if (lastTick > 1000) {
+            value = "DESYNC";
+            stabColor = new SettingColor(255, 60, 60, 255);
         } else {
-            double cx = x + padH;
-            if (labelA != null) {
-                renderer.text(labelA, cx, rowY, labelColor.get(), false, s);
-                cx += renderer.textWidth(labelA, false, s);
-                renderer.text(valueA, cx, rowY, colorA, false, s);
-                cx += renderer.textWidth(valueA, false, s);
-            }
-            if (labelA != null && labelB != null) {
-                renderer.text(" | ", cx, rowY, separatorColor.get(), false, s);
-                cx += sepW;
-            }
-            if (labelB != null) {
-                renderer.text(labelB, cx, rowY, labelColor.get(), false, s);
-                cx += renderer.textWidth(labelB, false, s);
-                renderer.text(valueB, cx, rowY, colorB, false, s);
-            }
+            value = lastTick + "ms";
+            if (lastTick > 250) stabColor = new SettingColor(255, 200, 0, 255);
         }
-        return lineIdx + 1;
+        lines.add(new Line(List.of(
+            new Segment("Stability: ", labelColor.get()),
+            new Segment(value, stabColor)
+        )));
+    }
+
+    private void addTpsGuardLine(List<Line> lines) {
+        if (!tpsGuard.get()) return;
+        float tps = TickRate.INSTANCE.getTickRate();
+        if (tps < tpsGuardThreshold.get() && !(tpsGuardHideStatic.get() && getSpeedBps() < 0.1)) {
+            lines.add(new Line(List.of(
+                new Segment("! TPS Guard: ", labelColor.get()),
+                new Segment("DANGER", new SettingColor(255, 60, 60, 255))
+            )));
+        }
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────────

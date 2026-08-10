@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
-  "id": "hunting-utilities",
+  "id": "tim",
   "version": "${version}",
-  "name": "Hunting Utilities",
-  "description": "A Meteor Client addon featuring a handful of utilities for hunting.",
+  "name": "Tim (Trail Investigator Module)",
+  "description": "A Meteor Client addon built with AI featuring a handful of utilities for hunting.",
   "authors": [
     "riths"
   ],
@@ -12,11 +12,11 @@
   "environment": "client",
   "entrypoints": {
     "meteor": [
-      "com.example.addon.HuntingUtilities"
+      "com.example.addon.Tim"
     ]
   },
   "mixins": [
-    "hunting-utilities.mixins.json"
+    "Tim.mixins.json"
   ],
   "custom": {
     "meteor-client:colors": 75

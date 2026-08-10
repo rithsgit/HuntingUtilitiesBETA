@@ -2,7 +2,7 @@ package com.example.addon.modules;
 
 import org.lwjgl.glfw.GLFW;
 
-import com.example.addon.HuntingUtilities;
+import com.example.addon.Tim;
 
 import meteordevelopment.meteorclient.events.world.TickEvent;
 import meteordevelopment.meteorclient.settings.BoolSetting;
@@ -179,7 +179,7 @@ public class ElytraAssistant extends Module {
     // ═══════════════════════════════════════════════════════════════════════════
 
     public ElytraAssistant() {
-        super(HuntingUtilities.CATEGORY, "elytra-assistant", "Smart elytra and rocket management.");
+        super(Tim.CATEGORY, "elytra-assistant", "Smart elytra and rocket management.");
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

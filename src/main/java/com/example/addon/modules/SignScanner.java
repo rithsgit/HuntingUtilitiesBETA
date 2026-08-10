@@ -13,7 +13,7 @@ import java.util.concurrent.ConcurrentHashMap;
 
 import org.joml.Vector3d;
 
-import com.example.addon.HuntingUtilities;
+import com.example.addon.Tim;
 import com.mojang.blaze3d.systems.RenderSystem;
 
 import meteordevelopment.meteorclient.events.game.OpenScreenEvent;
@@ -60,13 +60,11 @@ import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.Vec3d;
 
 public class SignScanner extends Module {
-    private final SettingGroup sgGeneral      = settings.getDefaultGroup();
-    private final SettingGroup sgAutoSign     = settings.createGroup("Auto Sign");
-    private final SettingGroup sgRender       = settings.createGroup("Render");
-    private final SettingGroup sgGlow         = settings.createGroup("Glow");
-    private final SettingGroup sgSpectral     = settings.createGroup("Spectral");
-    private final SettingGroup sgFilter       = settings.createGroup("Filter");
-    private final SettingGroup sgOptimization = settings.createGroup("Optimization");
+    private final SettingGroup sgGeneral   = settings.getDefaultGroup();
+    private final SettingGroup sgFilters   = settings.createGroup("Filters");
+    private final SettingGroup sgAutoSign  = settings.createGroup("Auto Sign");
+    private final SettingGroup sgRender    = settings.createGroup("Render");
+    private final SettingGroup sgHighlight = settings.createGroup("Highlight");
 
     // ═══════════════════════════════════════════════════════════════════════════
     // Enums
@@ -124,12 +122,40 @@ public class SignScanner extends Module {
     // ═══════════════════════════════════════════════════════════════════════════
 
     private final Setting<Integer> chunks = sgGeneral.add(new IntSetting.Builder()
-        .name("chunks").description("Radius in chunks to scan for signs.")
+        .name("chunks")
+        .description("Radius in chunks to scan for signs.")
         .defaultValue(16).min(1).sliderMax(64).build());
 
     private final Setting<Boolean> chatMessages = sgGeneral.add(new BoolSetting.Builder()
-        .name("chat-messages").description("Notify in chat when a sign is found.")
+        .name("chat-messages")
+        .description("Notify in chat when a sign is found.")
         .defaultValue(true).build());
+
+    private final Setting<Boolean> cacheSignText = sgGeneral.add(new BoolSetting.Builder()
+        .name("cache-sign-text")
+        .description("Cache sign text to improve performance.")
+        .defaultValue(true).build());
+
+    private final Setting<Integer> updateInterval = sgGeneral.add(new IntSetting.Builder()
+        .name("update-interval")
+        .description("How often to scan for signs (in ticks).")
+        .defaultValue(20).min(1).sliderMax(100)
+        .visible(cacheSignText::get).build());
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Settings — Filters
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    private final Setting<Boolean> censorship = sgFilters.add(new BoolSetting.Builder()
+        .name("censorship")
+        .description("Censors bad words on signs.")
+        .defaultValue(true).build());
+
+    private final Setting<List<String>> badWords = sgFilters.add(new StringListSetting.Builder()
+        .name("banned-words")
+        .description("List of words to censor.")
+        .defaultValue(List.of("badword1", "badword2"))
+        .visible(censorship::get).build());
 
     // ═══════════════════════════════════════════════════════════════════════════
     // Settings — Auto Sign
@@ -176,22 +202,24 @@ public class SignScanner extends Module {
         .build());
 
     private final Setting<Integer> editorDelay = sgAutoSign.add(new IntSetting.Builder()
-        .name("editor-delay").description("Ticks to wait before submitting the sign.")
+        .name("editor-delay")
+        .description("Ticks to wait before submitting the sign.")
         .defaultValue(8).min(1)
         .visible(autoSign::get).build());
 
-    private final Setting<Boolean> autoGlow = sgAutoSign.add(new BoolSetting.Builder()
-        .name("auto-glow").description("Automatically applies a glow ink sac to the sign after editing.")
-        .defaultValue(false).visible(autoSign::get).build());
-
-    private final Setting<Boolean> autoDye = sgAutoSign.add(new BoolSetting.Builder()
-        .name("auto-dye").description("Automatically applies a selected dye to the sign after editing.")
-        .defaultValue(false).visible(autoSign::get).build());
+    private final Setting<Boolean> autoGlowDye = sgAutoSign.add(new BoolSetting.Builder()
+        .name("auto-glow-dye")
+        .description("Automatically applies a glow ink sac and selected dye to the sign after editing.")
+        .defaultValue(false)
+        .visible(autoSign::get)
+        .build());
 
     private final Setting<DyeColor> dyeColor = sgAutoSign.add(new EnumSetting.Builder<DyeColor>()
-        .name("dye-color").description("Which color dye to apply to the sign.")
+        .name("dye-color")
+        .description("Which color dye to apply to the sign.")
         .defaultValue(DyeColor.WHITE)
-        .visible(() -> autoSign.get() && autoDye.get()).build());
+        .visible(() -> autoSign.get() && autoGlowDye.get())
+        .build());
 
     private final Setting<Boolean> autoDate = sgAutoSign.add(new BoolSetting.Builder()
         .name("auto-date")
@@ -219,23 +247,28 @@ public class SignScanner extends Module {
     // ═══════════════════════════════════════════════════════════════════════════
 
     private final Setting<Double> scale = sgRender.add(new DoubleSetting.Builder()
-        .name("scale").description("Scale of the rendered text.")
+        .name("scale")
+        .description("Scale of the rendered text.")
         .defaultValue(1.5).min(0.1).sliderMax(5.0).build());
 
     private final Setting<SettingColor> textColor = sgRender.add(new ColorSetting.Builder()
-        .name("text-color").description("Text color.")
+        .name("text-color")
+        .description("Text color.")
         .defaultValue(new SettingColor(255, 255, 255, 255)).build());
 
     private final Setting<Boolean> useSignColor = sgRender.add(new BoolSetting.Builder()
-        .name("use-sign-color").description("Use the sign's dye color for text.")
+        .name("use-sign-color")
+        .description("Use the sign's dye color for text.")
         .defaultValue(false).build());
 
     private final Setting<Boolean> background = sgRender.add(new BoolSetting.Builder()
-        .name("background").description("Render a background behind the text.")
+        .name("background")
+        .description("Render a background behind the text.")
         .defaultValue(true).build());
 
     private final Setting<SettingColor> backgroundColor = sgRender.add(new ColorSetting.Builder()
-        .name("background-color").description("Background color.")
+        .name("background-color")
+        .description("Background color.")
         .defaultValue(new SettingColor(30, 30, 30, 160))
         .visible(background::get).build());
 
@@ -246,122 +279,94 @@ public class SignScanner extends Module {
         .visible(background::get).build());
 
     private final Setting<Boolean> merge = sgRender.add(new BoolSetting.Builder()
-        .name("merge").description("Merge signs that are close together.")
+        .name("merge")
+        .description("Merge signs that are close together.")
         .defaultValue(true).build());
 
     private final Setting<Double> mergeDistance = sgRender.add(new DoubleSetting.Builder()
-        .name("merge-distance").description("Distance in pixels to merge signs.")
+        .name("merge-distance")
+        .description("Distance in pixels to merge signs.")
         .defaultValue(20.0).min(0).sliderMax(100)
         .visible(merge::get).build());
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // Settings — Glow
+    // Settings — Highlight
     // ═══════════════════════════════════════════════════════════════════════════
 
-    private final Setting<Integer> glowLayers = sgGlow.add(new IntSetting.Builder()
-        .name("glow-layers").description("Number of bloom layers rendered around the background panel.")
+    private final Setting<Integer> glowLayers = sgHighlight.add(new IntSetting.Builder()
+        .name("glow-layers")
+        .description("Number of bloom layers rendered around the background panel.")
         .defaultValue(4).min(1).sliderMax(8)
         .visible(() -> background.get() && (highlightStyle.get() == HighlightStyle.GLOW || highlightStyle.get() == HighlightStyle.PULSE)).build());
 
-    private final Setting<Double> glowSpread = sgGlow.add(new DoubleSetting.Builder()
-        .name("glow-spread").description("How far each bloom layer expands outward (in pixels).")
+    private final Setting<Double> glowSpread = sgHighlight.add(new DoubleSetting.Builder()
+        .name("glow-spread")
+        .description("How far each bloom layer expands outward (in pixels).")
         .defaultValue(3.0).min(0.5).sliderMax(12.0)
         .visible(() -> background.get() && (highlightStyle.get() == HighlightStyle.GLOW || highlightStyle.get() == HighlightStyle.PULSE)).build());
 
-    private final Setting<Integer> glowBaseAlpha = sgGlow.add(new IntSetting.Builder()
-        .name("glow-base-alpha").description("Alpha of the innermost glow layer (0-255).")
+    private final Setting<Integer> glowBaseAlpha = sgHighlight.add(new IntSetting.Builder()
+        .name("glow-base-alpha")
+        .description("Alpha of the innermost glow layer (0-255).")
         .defaultValue(60).min(4).sliderMax(150)
         .visible(() -> background.get() && highlightStyle.get() == HighlightStyle.GLOW).build());
 
-    private final Setting<SettingColor> glowColor = sgGlow.add(new ColorSetting.Builder()
-        .name("glow-color").description("Color of the bloom glow.")
+    private final Setting<SettingColor> glowColor = sgHighlight.add(new ColorSetting.Builder()
+        .name("glow-color")
+        .description("Color of the bloom glow.")
         .defaultValue(new SettingColor(100, 180, 255, 255))
         .visible(() -> background.get() && (highlightStyle.get() == HighlightStyle.GLOW || highlightStyle.get() == HighlightStyle.PULSE)).build());
 
-    private final Setting<Double> pulseSpeed = sgGlow.add(new DoubleSetting.Builder()
+    private final Setting<Double> pulseSpeed = sgHighlight.add(new DoubleSetting.Builder()
         .name("pulse-speed")
         .description("Pulse cycle speed. 1.0 = one full fade in/out per second.")
         .defaultValue(1.0).min(0.1).max(5.0).sliderMax(3.0)
         .visible(() -> background.get() && highlightStyle.get() == HighlightStyle.PULSE).build()
     );
 
-    private final Setting<Integer> pulseMinAlpha = sgGlow.add(new IntSetting.Builder()
+    private final Setting<Integer> pulseMinAlpha = sgHighlight.add(new IntSetting.Builder()
         .name("pulse-min-alpha")
         .description("Lowest alpha reached during the pulse (0 = invisible).")
         .defaultValue(15).min(0).max(255).sliderMax(100)
         .visible(() -> background.get() && highlightStyle.get() == HighlightStyle.PULSE).build()
     );
 
-    private final Setting<Integer> pulseMaxAlpha = sgGlow.add(new IntSetting.Builder()
+    private final Setting<Integer> pulseMaxAlpha = sgHighlight.add(new IntSetting.Builder()
         .name("pulse-max-alpha")
         .description("Peak alpha reached during the pulse.")
         .defaultValue(220).min(50).max(255).sliderMax(255)
         .visible(() -> background.get() && highlightStyle.get() == HighlightStyle.PULSE).build()
     );
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // Settings — Spectral
-    // ═══════════════════════════════════════════════════════════════════════════
-
-    private final Setting<SettingColor> spectralColor = sgSpectral.add(new ColorSetting.Builder()
-        .name("spectral-color").description("Color of the spectral outline border.")
+    private final Setting<SettingColor> spectralColor = sgHighlight.add(new ColorSetting.Builder()
+        .name("spectral-color")
+        .description("Color of the spectral outline border.")
         .defaultValue(new SettingColor(255, 255, 255, 255))
         .visible(() -> background.get() && highlightStyle.get() == HighlightStyle.SPECTRAL).build());
 
-    private final Setting<Double> spectralThickness = sgSpectral.add(new DoubleSetting.Builder()
-        .name("thickness").description("Thickness of the spectral border lines (in pixels).")
+    private final Setting<Double> spectralThickness = sgHighlight.add(new DoubleSetting.Builder()
+        .name("thickness")
+        .description("Thickness of the spectral border lines (in pixels).")
         .defaultValue(1.5).min(0.5).sliderMax(6.0)
         .visible(() -> background.get() && highlightStyle.get() == HighlightStyle.SPECTRAL).build());
 
-    private final Setting<Double> spectralExpand = sgSpectral.add(new DoubleSetting.Builder()
-        .name("expand").description("How far the border sits beyond the panel edge (in pixels).")
+    private final Setting<Double> spectralExpand = sgHighlight.add(new DoubleSetting.Builder()
+        .name("expand")
+        .description("How far the border sits beyond the panel edge (in pixels).")
         .defaultValue(2.0).min(0.0).sliderMax(10.0)
         .visible(() -> background.get() && highlightStyle.get() == HighlightStyle.SPECTRAL).build());
 
-    private final Setting<Boolean> spectralPulse = sgSpectral.add(new BoolSetting.Builder()
-        .name("pulse").description("Pulsate the spectral border alpha over time, like the vanilla glowing effect.")
+    private final Setting<Boolean> spectralPulse = sgHighlight.add(new BoolSetting.Builder()
+        .name("pulse")
+        .description("Pulsate the spectral border alpha over time, like the vanilla glowing effect.")
         .defaultValue(true)
         .visible(() -> background.get() && highlightStyle.get() == HighlightStyle.SPECTRAL).build());
 
-    private final Setting<Integer> spectralFillAlpha = sgSpectral.add(new IntSetting.Builder()
-        .name("fill-alpha").description("Alpha of a faint tinted fill drawn inside the border (0 = border only).")
+    private final Setting<Integer> spectralFillAlpha = sgHighlight.add(new IntSetting.Builder()
+        .name("fill-alpha")
+        .description("Alpha of a faint tinted fill drawn inside the border (0 = border only).")
         .defaultValue(20).min(0).sliderMax(80)
         .visible(() -> background.get() && highlightStyle.get() == HighlightStyle.SPECTRAL).build());
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // Settings — Filter
-    // ═══════════════════════════════════════════════════════════════════════════
-
-    private final Setting<Boolean> ignoreEmpty = sgFilter.add(new BoolSetting.Builder()
-        .name("ignore-empty").description("Ignore signs with no text.")
-        .defaultValue(true).build());
-
-    private final Setting<Boolean> censorship = sgFilter.add(new BoolSetting.Builder()
-        .name("censorship").description("Censors bad words on signs.")
-        .defaultValue(true).build());
-
-    private final Setting<Boolean> redactCoordinates = sgFilter.add(new BoolSetting.Builder()
-        .name("redact-coordinates")
-        .description("Automatically masks text that looks like coordinates (e.g. 100000, 64, -20000).")
-        .defaultValue(true).build());
-
-    private final Setting<List<String>> badWords = sgFilter.add(new StringListSetting.Builder()
-        .name("Banned Words").description("List of words to censor.")
-        .defaultValue(List.of("badword1", "badword2"))
-        .visible(censorship::get).build());
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // Settings — Optimization
-    // ═══════════════════════════════════════════════════════════════════════════
-
-    private final Setting<Boolean> cacheSignText = sgOptimization.add(new BoolSetting.Builder()
-        .name("cache-sign-text").description("Cache sign text to improve performance.")
-        .defaultValue(true).build());
-
-    private final Setting<Integer> updateInterval = sgOptimization.add(new IntSetting.Builder()
-        .name("update-interval").description("How often to scan for signs (in ticks).")
-        .defaultValue(20).min(1).sliderMax(100)
-        .visible(cacheSignText::get).build());
 
     // ═══════════════════════════════════════════════════════════════════════════
     // State
@@ -380,7 +385,7 @@ public class SignScanner extends Module {
     // ═══════════════════════════════════════════════════════════════════════════
 
     public SignScanner() {
-        super(HuntingUtilities.CATEGORY, "sign-scanner", "Scans and displays sign text.");
+        super(Tim.CATEGORY, "sign-scanner", "Scans and displays sign text.");
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -461,7 +466,8 @@ public class SignScanner extends Module {
                 readSignText(front, lineList);
                 readSignText(back,  lineList);
 
-                if (lineList.stream().allMatch(t -> t.getString().isBlank()) && ignoreEmpty.get()) continue;
+                // Hardcoded ignore empty
+                if (lineList.stream().allMatch(t -> t.getString().isBlank())) continue;
 
                 signs.put(be.getPos(), lineList);
                 currentSigns.add(be.getPos());
@@ -508,7 +514,7 @@ public class SignScanner extends Module {
             new UpdateSignC2SPacket(pos, true, rows[0], rows[1], rows[2], rows[3])
         );
 
-        if (autoGlow.get()) {
+        if (autoGlowDye.get()) {
             FindItemResult glowSac = InvUtils.findInHotbar(Items.GLOW_INK_SAC);
             if (glowSac.found()) {
                 InvUtils.swap(glowSac.slot(), false);
@@ -516,10 +522,11 @@ public class SignScanner extends Module {
                     new BlockHitResult(Vec3d.ofCenter(pos), Direction.UP, pos, false));
                 mc.player.swingHand(Hand.MAIN_HAND);
                 InvUtils.swapBack();
+            } else {
+                error("Glow Ink Sac not found in hotbar. Disabling auto-glow-dye.");
+                autoGlowDye.set(false);
             }
-        }
 
-        if (autoDye.get()) {
             Item dyeItem = DyeItem.byColor(dyeColor.get());
             FindItemResult dyeResult = InvUtils.findInHotbar(dyeItem);
             if (dyeResult.found()) {
@@ -529,8 +536,8 @@ public class SignScanner extends Module {
                 mc.player.swingHand(Hand.MAIN_HAND);
                 InvUtils.swapBack();
             } else {
-                error("Selected dye (%s) not found in hotbar. Disabling auto-dye.", dyeColor.get().getName());
-                autoDye.set(false);
+                error("Selected dye (%s) not found in hotbar. Disabling auto-glow-dye.", dyeColor.get().getName());
+                autoGlowDye.set(false);
             }
         }
 
@@ -617,9 +624,8 @@ public class SignScanner extends Module {
             try { if (working.matches("(?i).*" + bad + ".*")) return "****"; }
             catch (Exception ignored) {}
         }
-        if (redactCoordinates.get()) {
-            working = working.replaceAll("-?\\d+[kKmM]?([\\s,]+-?\\d+[kKmM]?){1,2}", "XXXX");
-        }
+        // Hardcoded redact coordinates
+        working = working.replaceAll("-?\\d+[kKmM]?([\\s,]+-?\\d+[kKmM]?){1,2}", "XXXX");
         return working;
     }
 

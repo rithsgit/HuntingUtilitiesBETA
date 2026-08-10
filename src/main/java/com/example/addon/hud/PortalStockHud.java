@@ -1,6 +1,7 @@
 package com.example.addon.hud;
 
-import com.example.addon.HuntingUtilities;
+
+import com.example.addon.Tim;
 import meteordevelopment.meteorclient.settings.*;
 import meteordevelopment.meteorclient.systems.hud.HudElement;
 import meteordevelopment.meteorclient.systems.hud.HudElementInfo;
@@ -18,7 +19,7 @@ import java.util.List;
 
 public class PortalStockHud extends HudElement {
     public static final HudElementInfo<PortalStockHud> INFO = new HudElementInfo<>(
-        HuntingUtilities.HUD_GROUP, "Portal Stock",
+        Tim.HUD_GROUP, "Portal Stock",
         "Portal Stock",
         "Displays obsidian count in inventory and portal frame progress.",
         PortalStockHud::new

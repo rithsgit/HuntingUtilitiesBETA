@@ -1,6 +1,6 @@
 package com.example.addon.hud;
 
-import com.example.addon.HuntingUtilities;
+import com.example.addon.Tim;
 import com.example.addon.modules.Gatekeeper;
 
 import meteordevelopment.meteorclient.settings.*;
@@ -18,7 +18,7 @@ import java.util.List;
 public class GatekeeperHUD extends HudElement {
 
     public static final HudElementInfo<GatekeeperHUD> INFO = new HudElementInfo<>(
-        HuntingUtilities.HUD_GROUP,
+        Tim.HUD_GROUP,
         "gatekeeper",
         "Displays end portal and gateway statistics for the area.",
         GatekeeperHUD::new
@@ -186,7 +186,6 @@ public class GatekeeperHUD extends HudElement {
         List<Stat> segments = new ArrayList<>();
         if (showEndPortals.get())         segments.add(new Stat("End Portals: ", String.valueOf(tracker.getTotalEndPortals()),    new ItemStack(Items.ENDER_EYE)));
         if (showEndGateways.get())        segments.add(new Stat("Gateways: ",    String.valueOf(tracker.getTotalGateways()),       new ItemStack(Items.CHORUS_FLOWER)));
-        if (showAnomalousGateways.get())  segments.add(new Stat("Anomalous: ",   String.valueOf(tracker.getAnomalousGateways()),   new ItemStack(Items.BARRIER)));
         if (segments.isEmpty()) { setSize(0, 0); return; }
 
         double totalW = 0, rowH = showIcon ? Math.max(lh, iconSz) : lh;
@@ -237,7 +236,6 @@ public class GatekeeperHUD extends HudElement {
         List<Data> stats = new ArrayList<>();
         if (showEndPortals.get())        stats.add(new Data(showText ? "End Portals: " : "", String.valueOf(tracker.getTotalEndPortals()),    showIcon ? new ItemStack(Items.ENDER_EYE) : ItemStack.EMPTY));
         if (showEndGateways.get())       stats.add(new Data(showText ? "Gateways: " : "",    String.valueOf(tracker.getTotalGateways()),       showIcon ? new ItemStack(Items.CHORUS_FLOWER) : ItemStack.EMPTY));
-        if (showAnomalousGateways.get()) stats.add(new Data(showText ? "Anomalous: " : "",  String.valueOf(tracker.getAnomalousGateways()),   showIcon ? new ItemStack(Items.BARRIER) : ItemStack.EMPTY));
         if (stats.isEmpty()) { setSize(0, 0); return; }
 
         double maxRowW = 0;

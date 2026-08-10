@@ -3,8 +3,7 @@ package com.example.addon.hud;
 import java.util.concurrent.TimeUnit;
 import java.util.ArrayList;
 import java.util.List;
-
-import com.example.addon.HuntingUtilities;
+import com.example.addon.Tim;
 import com.example.addon.modules.RocketPilot;
 
 import meteordevelopment.meteorclient.settings.BoolSetting;
@@ -27,7 +26,7 @@ import net.minecraft.item.Items;
 
 public class RocketPilotHud extends HudElement {
     public static final HudElementInfo<RocketPilotHud> INFO = new HudElementInfo<>(
-        HuntingUtilities.HUD_GROUP,
+        Tim.HUD_GROUP,
         "rocket-pilot",
         "Displays RocketPilot status, elytra durability, and rocket count.",
         RocketPilotHud::new

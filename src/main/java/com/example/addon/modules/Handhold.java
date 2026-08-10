@@ -2,7 +2,7 @@ package com.example.addon.modules;
 
 import java.lang.reflect.Method;
 
-import com.example.addon.HuntingUtilities;
+import com.example.addon.Tim;
 
 import meteordevelopment.meteorclient.events.world.TickEvent;
 import meteordevelopment.meteorclient.settings.BoolSetting;
@@ -226,7 +226,7 @@ public class Handhold extends Module {
             getFlagMethod = Entity.class.getDeclaredMethod("getFlag", int.class);
             getFlagMethod.setAccessible(true);
         } catch (NoSuchMethodException e) {
-            HuntingUtilities.LOG.error("Failed to find getFlag method", e);
+            Tim.LOG.error("Failed to find getFlag method", e);
         }
     }
 
@@ -249,7 +249,7 @@ public class Handhold extends Module {
     private boolean savedRpTargetY = true;
 
     public Handhold() {
-        super(HuntingUtilities.CATEGORY, "handhold", "Follow a player or lead with mutual safety disconnects.");
+        super(Tim.CATEGORY, "handhold", "Follow a player or lead with mutual safety disconnects.");
     }
 
     @Override

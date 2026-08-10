@@ -1,0 +1,43 @@
+{
+  "required": true,
+  "refmap": "Tim.refmap.json",
+  "package": "com.example.addon.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "mixins": [
+    "EndGatewayBlockEntityAccessor",
+    "LavaMarkerMixin",
+    "PortalMakerMixin",
+    "AbstractClientPlayerEntityMixin",
+    "PortalTrackerMixin"
+  ],
+  "client": [
+    "ClientPlayerEntityMixin",
+    "DungeonAssistantMixin",
+    "ElytraAssistantMixin",
+    "ElytraAssistantSwingMixin",
+    "EntityGlowingColorMixin",
+    "EntityGlowingMixin",
+    "EntityMixin",
+    "HandledScreenAccessor",
+    "HandledScreenMixin",
+    "HandmoldBobMixin",
+    "HandmoldMixin",
+    "HeldItemRendererAccessor",
+    "IMouseAccessor",
+    "InGameHudMixin",
+    "DatamineMixin",
+    "InteractionAccessor",
+    "LivingEntityRendererMixin",
+    "MixinSignBlockEntityRenderer",
+    "PlayerEntityRendererMixin",
+    "RocketPilotInputMixin",
+    "RocketPilotMixin",
+    "ServerHealthcareSystemMixin",
+    "ThirdSightCameraMixin",
+    "ThirdSightMouseMixin",
+    "TunnelersMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

@@ -1,6 +1,6 @@
 package com.example.addon.hud;
 
-import com.example.addon.HuntingUtilities;
+import com.example.addon.Tim;
 import com.example.addon.modules.LootLens;
 
 import meteordevelopment.meteorclient.settings.BoolSetting;
@@ -21,7 +21,7 @@ import net.minecraft.item.Items;
 public class LootLensHud extends HudElement {
 
     public static final HudElementInfo<LootLensHud> INFO = new HudElementInfo<>(
-        HuntingUtilities.HUD_GROUP,
+        Tim.HUD_GROUP,
         "loot-lens",
         "Shows nearby double chests, shulker boxes, and ender chests from Loot Lens.",
         LootLensHud::new
