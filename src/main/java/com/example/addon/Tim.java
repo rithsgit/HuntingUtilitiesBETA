@@ -46,6 +46,7 @@ import com.example.addon.modules.Mobanom;
 import com.example.addon.modules.NeighbourhoodWatch;
 import com.example.addon.modules.Penpal;
 import com.example.addon.modules.PortalMaker;
+import com.example.addon.modules.Raidar;
 import com.example.addon.modules.RocketPilot;
 import com.example.addon.modules.SafetyNet;
 import com.example.addon.modules.ServerHealthcareSystem;
@@ -95,6 +96,7 @@ public class Tim extends MeteorAddon {
         modules.add(new NeighbourhoodWatch());
         modules.add(new Penpal());
         modules.add(new PortalMaker());
+        modules.add(new Raidar());
         modules.add(new RocketPilot());
         modules.add(new SafetyNet());
         modules.add(new ServerHealthcareSystem());
