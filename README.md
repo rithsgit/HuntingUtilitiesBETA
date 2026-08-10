@@ -21,9 +21,9 @@ Modules List
 - Mendbot
 - Mobanom
 - Neighbourhood Watch
-- Pearl Pulse
 - Penpal
 - Portal Maker
+- Raidar
 - Rocket Pilot
 - Safety Net
 - Server Healthcare System
@@ -32,6 +32,7 @@ Modules List
 - Time Throttle
 - Total Disposal
 - Tunnelers
+- Waypearl
 
 HUD List
 - Baromine
@@ -45,11 +46,8 @@ HUD List
 - End Assistant
 - Gatekeeper
 - Info Assistant
-- Inspector Gadget
 - Last Seen Player
 - Loot Lens
-- Manor Assistant
-- Mobanom
 - Neighbourhood Watch
 - Position
 - Rocket Pilot
