@@ -1,4 +1,4 @@
-# HuntingUtilitiesBETA
+# Tim - Trail Investigator Module
 
 **Meteor Client addon** providing utilities focused on **stash hunting**, **base hunting**, and general survival/QoL on the 2b2t anarchy server (and similar environments).
 
