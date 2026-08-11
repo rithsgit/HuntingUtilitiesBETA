@@ -1,6 +1,8 @@
-Tim (Trail Investigator Module) Formerly known as Hunting Utilities, Tim is a Meteor Client addon providing utilities focused on stash hunting, base hunting, and general survival/QoL on the 2b2t anarchy server (and similar environments).
+# HuntingUtilitiesBETA
 
-Modules List
+**Meteor Client addon** providing utilities focused on **stash hunting**, **base hunting**, and general survival/QoL on the 2b2t anarchy server (and similar environments).
+
+Modules List;
 - Baromine
 - Chambers Assistant
 - City Assistant
@@ -21,7 +23,6 @@ Modules List
 - Mendbot
 - Mobanom
 - Neighbourhood Watch
-- Pearl Pulse
 - Penpal
 - Portal Maker
 - Rocket Pilot
@@ -58,18 +59,29 @@ HUD List
 - Statistics Information
 - Time Throttle
 
-More modules/huds coming soon.
+More modules/huds coming soon — 
 
-Requirements
-Minecraft 1.21.x (or whichever version your addon targets — check gradle/libs.versions.toml)
-Fabric Loader
+## Requirements
 
-Meteor Client (latest snapshot recommended for 2b2t compatibility)
-This addon JAR
-Installation
-Download the latest release JAR from Releases (or build from source — see below).
-Place the JAR in your Minecraft mods folder alongside Meteor Client.
-Launch Minecraft using the Fabric profile.
-In-game: Open Meteor GUI (Right Shift by default) → your Tim modules should appear in the module list.
-Building from Source
+- Minecraft **1.21.x** (or whichever version your addon targets — check `gradle/libs.versions.toml`)
+- [Fabric Loader](https://fabricmc.net/use/installer/)
+- [Meteor Client](https://meteorclient.com/) (latest snapshot recommended for 2b2t compatibility)
+- This addon JAR
+
+## Installation
+
+1. Download the latest release JAR from [Releases](https://github.com/rithsgit/HuntingUtilitiesBETA/releases) (or build from source — see below).
+2. Place the JAR in your Minecraft `mods` folder **alongside** Meteor Client.
+3. Launch Minecraft using the Fabric profile.
+4. In-game: Open Meteor GUI (`Right Shift` by default) → your HuntingUtilities modules should appear in the module list.
+
+## Building from Source
+
 This project uses the Meteor Addon Template structure.
+
+### Setup
+
+- Clone the repo:  
+  ```bash
+  git clone https://github.com/rithsgit/HuntingUtilitiesBETA.git
+  cd HuntingUtilitiesBETA
