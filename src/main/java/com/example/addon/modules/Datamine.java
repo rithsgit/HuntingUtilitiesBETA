@@ -59,6 +59,7 @@ public class Datamine extends Module {
     // --- Setting Groups ---
     private final SettingGroup sgMining = this.settings.getDefaultGroup();
     private final SettingGroup sgTools = this.settings.createGroup("Tools");
+    private final SettingGroup sgVanilla = this.settings.createGroup("Vanilla Bypass");
     private final SettingGroup sgCollect = this.settings.createGroup("Auto-Collect");
     private final SettingGroup sgVisuals = this.settings.createGroup("Visuals");
 
@@ -134,6 +135,16 @@ public class Datamine extends Module {
         .min(1)
         .sliderMax(50)
         .visible(durabilityProtection::get)
+        .build()
+    );
+
+    // --- Vanilla Bypass Settings ---
+    private final Setting<Integer> vanilla = sgVanilla.add(new IntSetting.Builder()
+        .name("vanilla-bypass")
+        .description("Bypasses the mining queue for blocks that break within this many ticks. 0 = disabled.")
+        .defaultValue(0)
+        .min(0)
+        .sliderMax(20)
         .build()
     );
 
@@ -370,7 +381,7 @@ public class Datamine extends Module {
                 action == PlayerActionC2SPacket.Action.STOP_DESTROY_BLOCK ||
                 action == PlayerActionC2SPacket.Action.ABORT_DESTROY_BLOCK) {
                 
-                if (this.tracked(packet.getPos())) {
+                if (this.isTracked(packet.getPos())) {
                     event.cancel();
                 }
                 
@@ -418,7 +429,7 @@ public class Datamine extends Module {
         if (this.mc.player == null || this.mc.world == null || this.mc.interactionManager == null || pos == null || side == null) return;
 
         pos = pos.toImmutable();
-        if (this.tracked(pos)) return;
+        if (this.isTracked(pos)) return;
 
         BlockState state = this.mc.world.getBlockState(pos);
         if (!this.breakable(pos, state)) return;
@@ -489,7 +500,7 @@ public class Datamine extends Module {
         if (target == this.secondary) this.secondary = null;
     }
 
-    private boolean tracked(BlockPos pos) {
+    public boolean isTracked(BlockPos pos) {
         if (this.primary != null && this.primary.pos.equals(pos)) return true;
         if (this.secondary != null && this.secondary.pos.equals(pos)) return true;
         for (Request request : this.queue) {
@@ -500,6 +511,24 @@ public class Datamine extends Module {
 
     private boolean breakable(BlockPos pos, BlockState state) {
         return !state.isAir() && state.getHardness(this.mc.world, pos) >= 0;
+    }
+
+    // --- Vanilla Bypass ---
+    public boolean bypass(BlockPos pos) {
+        if (this.mc.player == null ||
+            this.mc.world == null || pos == null ||
+            this.vanilla.get() <= 0 || this.isTracked(pos)) {
+            return false;
+        }
+
+        BlockState state = this.mc.world.getBlockState(pos);
+        if (!this.breakable(pos, state)) return false;
+
+        float delta = state.calcBlockBreakingDelta(
+            this.mc.player, this.mc.world, pos
+        );
+
+        return delta >= 1.0F / this.vanilla.get();
     }
 
     // --- Mining Logic ---

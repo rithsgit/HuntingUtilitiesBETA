@@ -8,6 +8,8 @@
     "LavaMarkerMixin",
     "PortalMakerMixin",
     "AbstractClientPlayerEntityMixin",
+    "DatamineMixin",
+    "InteractionAccessor",
     "PortalTrackerMixin"
 
   ],
