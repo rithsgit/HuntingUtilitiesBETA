@@ -809,7 +809,7 @@ public class Tunnelers extends Module {
     // ═══════════════════════════════════════════════════════════════════════════
 
     private boolean isHole(int x, int y, int z, ScanContext ctx, int depth) {
-        if (!ctx.isAir(x, y, z)) return false;
+        if (!ctx.isTunnelInterior(x, y, z)) return false;
         for (int dx = -1; dx <= 1; dx++) {
             for (int dz = -1; dz <= 1; dz++) {
                 if ((dx != 0 || dz != 0) && !ctx.isSolid(x + dx, y, z + dz)) return false;
@@ -817,7 +817,7 @@ public class Tunnelers extends Module {
         }
         for (int i = 1; i < depth; i++) {
             int sy = y - i;
-            if (!ctx.isAir(x,sy,z) || !ctx.isSolid(x-1,sy,z) || !ctx.isSolid(x+1,sy,z)
+            if (!ctx.isTunnelInterior(x,sy,z) || !ctx.isSolid(x-1,sy,z) || !ctx.isSolid(x+1,sy,z)
                     || !ctx.isSolid(x,sy,z-1) || !ctx.isSolid(x,sy,z+1)) return false;
         }
         return true;
@@ -950,7 +950,7 @@ public class Tunnelers extends Module {
         if (!ctx.isSolid(x, y - 1, z)) return false;
         for (int i = 0; i < minH; i++) {
             int cy = y + i;
-            if (!ctx.isAir(x, cy, z)) return false;
+            if (!ctx.isTunnelInterior(x, cy, z)) return false;
             if (!ctx.isLadder(x-1, cy, z) && !ctx.isLadder(x+1, cy, z)
                     && !ctx.isLadder(x, cy, z-1) && !ctx.isLadder(x, cy, z+1)) return false;
 
