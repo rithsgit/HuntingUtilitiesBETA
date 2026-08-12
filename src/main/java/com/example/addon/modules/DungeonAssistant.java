@@ -66,7 +66,7 @@ import net.minecraft.world.chunk.WorldChunk;
 
 public class DungeonAssistant extends Module {
 
-    // ═══════════════════════════════════════════════════════════════
+    // ═══════════════════════════════════════════════════════════════════════════
     // Enums
     // ═══════════════════════════════════════════════════════════════════════════
 
@@ -85,6 +85,12 @@ public class DungeonAssistant extends Module {
         GLOW,
         SPECTRAL,
         PULSE
+    }
+
+    public enum ChestBeamMode {
+        NONE,
+        NEAREST,
+        ALL
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -244,6 +250,21 @@ public class DungeonAssistant extends Module {
         .name("steal-dump-buttons")
         .description("Show steal and dump buttons on container screens.")
         .defaultValue(true)
+        .build()
+    );
+
+    private final Setting<ChestBeamMode> chestBeamMode = sgGeneral.add(new EnumSetting.Builder<ChestBeamMode>()
+        .name("chest-beam-mode")
+        .description("Connecting beams from chests to the sky. NONE = disabled. NEAREST = beam on closest chest only. ALL = beams on every chest in range.")
+        .defaultValue(ChestBeamMode.NONE)
+        .build()
+    );
+
+    private final Setting<SettingColor> chestBeamColor = sgGeneral.add(new ColorSetting.Builder()
+        .name("chest-beam-color")
+        .description("Color of the beams drawn on chests.")
+        .defaultValue(new SettingColor(255, 215, 0, 180))
+        .visible(() -> chestBeamMode.get() != ChestBeamMode.NONE)
         .build()
     );
 
@@ -743,6 +764,58 @@ public class DungeonAssistant extends Module {
                 }
             }
         }
+
+        renderChestBeams(event, isSpectral, isPulse);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Chest Beams Rendering
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    private void renderChestBeams(Render3DEvent event, boolean isSpectral, boolean isPulse) {
+        if (chestBeamMode.get() == ChestBeamMode.NONE) return;
+        if (!trackChests.get()) return;
+        if (mc.player == null || mc.world == null) return;
+
+        double maxDistSq = Math.pow(range.get() * 16, 2);
+        SettingColor beamColor = chestBeamColor.get();
+        double beamSize = beamWidth.get() / 100.0;
+
+        List<BlockPos> chests = targets.entrySet().stream()
+            .filter(e -> e.getValue() == TargetType.CHEST)
+            .map(Map.Entry::getKey)
+            .filter(pos -> pos.getSquaredDistance(mc.player.getPos()) <= maxDistSq)
+            .filter(pos -> mc.world.getChunkManager().isChunkLoaded(pos.getX() >> 4, pos.getZ() >> 4))
+            .filter(pos -> !mc.world.getBlockState(pos).isAir())
+            .sorted(Comparator.comparingDouble(pos -> pos.getSquaredDistance(mc.player.getPos())))
+            .toList();
+
+        if (chests.isEmpty()) return;
+
+        if (chestBeamMode.get() == ChestBeamMode.NEAREST) {
+            drawChestBeam(event, chests.get(0), beamColor, beamSize, isSpectral, isPulse);
+        } else { // ALL
+            for (BlockPos pos : chests) {
+                drawChestBeam(event, pos, beamColor, beamSize, isSpectral, isPulse);
+            }
+        }
+    }
+
+    private void drawChestBeam(Render3DEvent event, BlockPos pos, SettingColor color, double beamSize, boolean isSpectral, boolean isPulse) {
+        Vec3d beamPos = Vec3d.ofCenter(pos);
+        Box beamBox = new Box(
+            beamPos.x - beamSize, pos.getY(), beamPos.z - beamSize,
+            beamPos.x + beamSize, mc.world.getHeight(), beamPos.z + beamSize
+        );
+
+        if (isSpectral) {
+            event.renderer.box(beamBox, withAlpha(color, 20), withAlpha(color, 180), ShapeMode.Both, 0);
+        } else if (isPulse) {
+            renderPulseBox(event, beamBox, color);
+        } else {
+            renderGlowLayers(event, beamBox, color);
+            event.renderer.box(beamBox, withAlpha(color, 60), color, ShapeMode.Both, 0);
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -1214,7 +1287,7 @@ public class DungeonAssistant extends Module {
 
     // ═══════════════════════════════════════════════════════════════════════════
     // Scanning
-    // ═════════════════════════════════════════════════════════════════════════
+    // ═══════════════════════════════════════════════════════════════════════════
 
     private void resetScanningState() {
         targets.clear();
@@ -1381,7 +1454,7 @@ public class DungeonAssistant extends Module {
                     int worldY = sectionMinY + y;
                     if (worldY > maxY) continue;
 
-                    for (int z = 0; z < 16; z++) { // RESTORED THE Z LOOP
+                    for (int z = 0; z < 16; z++) {
                         BlockState state    = section.getBlockState(x, y, z);
                         Block      block    = state.getBlock();
                         BlockPos   blockPos = new BlockPos((currentChunkPos.x << 4) + x, worldY, (currentChunkPos.z << 4) + z);
@@ -1517,7 +1590,7 @@ public class DungeonAssistant extends Module {
 
     // ═══════════════════════════════════════════════════════════════════════════
     // Pruning
-    // ═════════════════════════════════════════════════════════════════════════
+    // ═══════════════════════════════════════════════════════════════════════════
 
     private void pruneBlockTargets() {
         if (mc.world == null || mc.player == null) return;
