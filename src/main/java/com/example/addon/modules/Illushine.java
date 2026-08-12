@@ -433,4 +433,4 @@ public class Illushine extends Module {
     private static int toARGB(SettingColor c) {
         return (c.a << 24) | (c.r << 16) | (c.g << 8) | c.b;
     }
-}
+} 
