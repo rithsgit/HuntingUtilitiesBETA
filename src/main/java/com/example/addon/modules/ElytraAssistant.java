@@ -64,6 +64,7 @@ public class ElytraAssistant extends Module {
 
     private final SettingGroup sgAutoReplace = settings.createGroup("Auto Replace");
     private final SettingGroup sgMiddleClick = settings.createGroup("Middle Click");
+    private final SettingGroup sgRocketReplenish = settings.createGroup("Rocket Replenish");
     private final SettingGroup sgMisc        = settings.createGroup("Miscellaneous");
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -133,6 +134,31 @@ public class ElytraAssistant extends Module {
         .name("silent-rocket")
         .description("Prevents hand swing animation when using rockets.")
         .defaultValue(true)
+        .build()
+    );
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Settings — Rocket Replenish
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    private final Setting<Boolean> rocketReplenishEnabled = sgRocketReplenish.add(new BoolSetting.Builder()
+        .name("enabled")
+        .description("Enables the rocket replenish keybind.")
+        .defaultValue(true)
+        .build()
+    );
+
+    private final Setting<Keybind> rocketReplenishKey = sgRocketReplenish.add(new KeybindSetting.Builder()
+        .name("replenish-key")
+        .description("Replenishes the selected hotbar slot's item to its max stack size from the main inventory.")
+        .defaultValue(Keybind.none())
+        .visible(rocketReplenishEnabled::get)
+        .action(() -> {
+            if (mc.currentScreen != null) return;
+            if (mc.player == null || mc.world == null) return;
+            if (!rocketReplenishEnabled.get()) return;
+            handleRocketReplenish();
+        })
         .build()
     );
 
@@ -341,6 +367,63 @@ public class ElytraAssistant extends Module {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
+    // Rocket Replenish Feature
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    private void handleRocketReplenish() {
+        int selectedSlot = mc.player.getInventory().selectedSlot;
+        ItemStack targetStack = mc.player.getInventory().getStack(selectedSlot);
+
+        if (targetStack.isEmpty()) {
+            info("Selected hotbar slot is empty — nothing to replenish.");
+            return;
+        }
+
+        // Don't interfere if the cursor is already holding an item.
+        if (!mc.player.currentScreenHandler.getCursorStack().isEmpty()) {
+            info("Cursor has an item — cannot replenish right now.");
+            return;
+        }
+
+        int maxCount = targetStack.getMaxCount();
+        int currentCount = targetStack.getCount();
+        int needed = maxCount - currentCount;
+
+        if (needed <= 0) {
+            info("Stack is already full (" + maxCount + ").");
+            return;
+        }
+
+        // Search main inventory (slots 9–35) for matching items and move them
+        // into the selected hotbar slot until it reaches max stack size.
+        for (int i = 9; i < 36 && needed > 0; i++) {
+            ItemStack sourceStack = mc.player.getInventory().getStack(i);
+            if (sourceStack.isEmpty()) continue;
+            if (!ItemStack.areItemsEqual(targetStack, sourceStack)) continue;
+
+            int available = sourceStack.getCount();
+
+            // from() uses screen-handler slot indices; main inventory is 9–35
+            // which coincides with the inventory index used above.
+            // toHotbar() internally converts 0–8 → 36–44.
+            InvUtils.move().from(i).toHotbar(selectedSlot);
+
+            needed -= Math.min(needed, available);
+        }
+
+        int finalCount = maxCount - needed;
+
+        if (needed > 0) {
+            info("Replenished " + targetStack.getName().getString()
+                + " to " + finalCount + " (not enough items in inventory).");
+        } else {
+            info("Replenished " + targetStack.getName().getString()
+                + " to " + maxCount + ".");
+            mc.player.playSound(SoundEvents.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
     // Anti-AFK Feature
     // ═══════════════════════════════════════════════════════════════════════════
 
@@ -406,4 +489,4 @@ public class ElytraAssistant extends Module {
     // ═══════════════════════════════════════════════════════════════════════════
 
     private record ItemUsage(net.minecraft.item.Item item) {}
-} 
+}

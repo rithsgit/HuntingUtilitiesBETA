@@ -11,6 +11,7 @@ import java.util.concurrent.ConcurrentHashMap;
 
 import com.example.addon.Tim;
 import com.example.addon.utils.GlowingRegistry;
+import com.mojang.blaze3d.systems.RenderSystem;
 
 import meteordevelopment.meteorclient.events.game.OpenScreenEvent;
 import meteordevelopment.meteorclient.events.render.Render3DEvent;
@@ -37,8 +38,15 @@ import net.minecraft.block.BlockState;
 import net.minecraft.block.Blocks;
 import net.minecraft.block.entity.BlockEntity;
 import net.minecraft.block.entity.MobSpawnerBlockEntity;
+import net.minecraft.client.gl.ShaderProgramKeys;
 import net.minecraft.client.gui.screen.ingame.HandledScreen;
 import net.minecraft.client.gui.screen.ingame.InventoryScreen;
+import net.minecraft.client.render.BufferBuilder;
+import net.minecraft.client.render.BufferRenderer;
+import net.minecraft.client.render.Tessellator;
+import net.minecraft.client.render.VertexFormat;
+import net.minecraft.client.render.VertexFormats;
+import net.minecraft.client.util.math.MatrixStack;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.ExperienceOrbEntity;
 import net.minecraft.entity.mob.EndermiteEntity;
@@ -91,6 +99,11 @@ public class DungeonAssistant extends Module {
         NONE,
         NEAREST,
         ALL
+    }
+
+    public enum BeamStyle {
+        BOX,
+        GUARDIAN
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -153,6 +166,7 @@ public class DungeonAssistant extends Module {
     private final SettingGroup sgEntities   = settings.createGroup("Targets - Entities");
     private final SettingGroup sgAutomation = settings.createGroup("Automation");
     private final SettingGroup sgSafety     = settings.createGroup("Safety");
+    private final SettingGroup sgBeam       = settings.createGroup("Beams");
 
     // ═══════════════════════════════════════════════════════════════════════════
     // Settings — General
@@ -239,13 +253,6 @@ public class DungeonAssistant extends Module {
         .visible(() -> renderMode.get() == RenderMode.PULSE).build()
     );
 
-    private final Setting<Integer> beamWidth = sgGeneral.add(new IntSetting.Builder()
-        .name("beam-width")
-        .description("Width of the beams for entities and anomalies.")
-        .defaultValue(15).min(5).max(50)
-        .build()
-    );
-
     private final Setting<Boolean> stealDumpButtons = sgGeneral.add(new BoolSetting.Builder()
         .name("steal-dump-buttons")
         .description("Show steal and dump buttons on container screens.")
@@ -253,14 +260,108 @@ public class DungeonAssistant extends Module {
         .build()
     );
 
-    private final Setting<ChestBeamMode> chestBeamMode = sgGeneral.add(new EnumSetting.Builder<ChestBeamMode>()
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Settings — Beams
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    private final Setting<BeamStyle> beamStyle = sgBeam.add(new EnumSetting.Builder<BeamStyle>()
+        .name("beam-style")
+        .description("BOX = simple axis-aligned box beam. GUARDIAN = spinning guardian-style beam.")
+        .defaultValue(BeamStyle.GUARDIAN)
+        .build()
+    );
+
+    private final Setting<Integer> beamWidth = sgBeam.add(new IntSetting.Builder()
+        .name("beam-width").description("Box beam width (in hundredths of a block).")
+        .defaultValue(15).min(5).max(50).sliderMin(5).sliderMax(50)
+        .visible(() -> beamStyle.get() == BeamStyle.BOX)
+        .build()
+    );
+
+    private final Setting<Boolean> mergeBeams = sgBeam.add(new BoolSetting.Builder()
+        .name("merge-beams").description("Merge beams for nearby targets to reduce clutter.")
+        .defaultValue(true)
+        .build()
+    );
+
+    private final Setting<Double> mergeDistance = sgBeam.add(new DoubleSetting.Builder()
+        .name("merge-distance").description("Distance within which beams are merged.")
+        .defaultValue(2.0).min(0).sliderMax(10).visible(mergeBeams::get)
+        .build()
+    );
+
+    private final Setting<Double> guardianBeamRadius = sgBeam.add(new DoubleSetting.Builder()
+        .name("guardian-radius")
+        .description("Radius of the guardian beam strands from centre (blocks).")
+        .defaultValue(0.08).min(0.01).max(0.6).sliderMax(0.3)
+        .visible(() -> beamStyle.get() == BeamStyle.GUARDIAN)
+        .build()
+    );
+
+    private final Setting<Integer> guardianStrands = sgBeam.add(new IntSetting.Builder()
+        .name("guardian-strands")
+        .description("Number of spinning flat quads that make up the beam (2-8).")
+        .defaultValue(4).min(2).max(8).sliderMax(8)
+        .visible(() -> beamStyle.get() == BeamStyle.GUARDIAN)
+        .build()
+    );
+
+    private final Setting<Double> guardianSpinSpeed = sgBeam.add(new DoubleSetting.Builder()
+        .name("guardian-spin-speed")
+        .description("How fast the beam rotates. 1.0 = one full revolution every ~6 seconds.")
+        .defaultValue(1.0).min(0.1).max(5.0).sliderMax(3.0)
+        .visible(() -> beamStyle.get() == BeamStyle.GUARDIAN)
+        .build()
+    );
+
+    private final Setting<Integer> guardianCoreAlpha = sgBeam.add(new IntSetting.Builder()
+        .name("guardian-core-alpha")
+        .description("Alpha of the solid centre core of the guardian beam (0 = no core).")
+        .defaultValue(90).min(0).max(255).sliderMax(200)
+        .visible(() -> beamStyle.get() == BeamStyle.GUARDIAN)
+        .build()
+    );
+
+    private final Setting<Integer> guardianStrandAlpha = sgBeam.add(new IntSetting.Builder()
+        .name("guardian-strand-alpha")
+        .description("Alpha of the outer spinning strands.")
+        .defaultValue(160).min(10).max(255).sliderMax(255)
+        .visible(() -> beamStyle.get() == BeamStyle.GUARDIAN)
+        .build()
+    );
+
+    private final Setting<Boolean> guardianGlow = sgBeam.add(new BoolSetting.Builder()
+        .name("guardian-glow")
+        .description("Add a soft bloom halo around the guardian beam.")
+        .defaultValue(true)
+        .visible(() -> beamStyle.get() == BeamStyle.GUARDIAN)
+        .build()
+    );
+
+    private final Setting<Double> guardianGlowRadius = sgBeam.add(new DoubleSetting.Builder()
+        .name("guardian-glow-radius")
+        .description("Radius of the bloom halo around the guardian beam.")
+        .defaultValue(0.18).min(0.02).max(1.0).sliderMax(0.5)
+        .visible(() -> beamStyle.get() == BeamStyle.GUARDIAN && guardianGlow.get())
+        .build()
+    );
+
+    private final Setting<ChestBeamMode> chestBeamMode = sgBeam.add(new EnumSetting.Builder<ChestBeamMode>()
         .name("chest-beam-mode")
         .description("Connecting beams from chests to the sky. NONE = disabled. NEAREST = beam on closest chest only. ALL = beams on every chest in range.")
         .defaultValue(ChestBeamMode.NONE)
         .build()
     );
 
-    private final Setting<SettingColor> chestBeamColor = sgGeneral.add(new ColorSetting.Builder()
+    private final Setting<Integer> chestBeamMinY = sgBeam.add(new IntSetting.Builder()
+        .name("chest-beam-y-level")
+        .description("Only renders beams on chests at or above this Y level.")
+        .defaultValue(-64).min(-64).max(320).sliderMin(-64).sliderMax(320)
+        .visible(() -> chestBeamMode.get() != ChestBeamMode.NONE)
+        .build()
+    );
+
+    private final Setting<SettingColor> chestBeamColor = sgBeam.add(new ColorSetting.Builder()
         .name("chest-beam-color")
         .description("Color of the beams drawn on chests.")
         .defaultValue(new SettingColor(255, 215, 0, 180))
@@ -637,6 +738,7 @@ public class DungeonAssistant extends Module {
         boolean isSpectral = renderMode.get() == RenderMode.SPECTRAL;
         boolean isPulse    = renderMode.get() == RenderMode.PULSE;
         Set<BlockPos> toRemove = new HashSet<>();
+        List<BeamData> beamsToRender = new ArrayList<>();
 
         for (Map.Entry<BlockPos, TargetType> entry : targets.entrySet()) {
             BlockPos   pos  = entry.getKey();
@@ -656,21 +758,7 @@ public class DungeonAssistant extends Module {
                 color = getColor(type);
 
                 if (type == TargetType.MISROTATED_CHEST_MINECART || type == TargetType.DISPLACED_CHEST_MINECART) {
-                    double beamSize = beamWidth.get() / 100.0;
-                    Vec3d cartPos = cart.getPos();
-                    Box beamBox = new Box(
-                        cartPos.x - beamSize, cartPos.y, cartPos.z - beamSize,
-                        cartPos.x + beamSize, mc.world.getHeight(), cartPos.z + beamSize
-                    );
-                    
-                    if (isSpectral) {
-                        event.renderer.box(beamBox, withAlpha(color, 20), withAlpha(color, 180), ShapeMode.Both, 0);
-                    } else if (isPulse) {
-                        renderPulseBox(event, beamBox, color);
-                    } else {
-                        renderGlowLayers(event, beamBox, color);
-                        event.renderer.box(beamBox, withAlpha(color, 60), color, ShapeMode.Both, 0);
-                    }
+                    beamsToRender.add(new BeamData(renderBox, color));
                 }
 
             } else {
@@ -726,24 +814,16 @@ public class DungeonAssistant extends Module {
             for (EndermiteEntity endermite : endermiteTargets) {
                 if (!endermite.isAlive()) continue;
 
-                double beamSize = beamWidth.get() / 100.0;
-                Vec3d  epos     = endermite.getPos();
-                Box    beamBox  = new Box(
-                    epos.x - beamSize, epos.y, epos.z - beamSize,
-                    epos.x + beamSize, mc.world.getHeight(), epos.z + beamSize
-                );
+                Box entityBox = endermite.getBoundingBox();
+                beamsToRender.add(new BeamData(entityBox, color));
 
                 if (isSpectral) {
-                    event.renderer.box(endermite.getBoundingBox(), withAlpha(color, 0), withAlpha(color, 200), ShapeMode.Lines, 0);
-                    event.renderer.box(beamBox, withAlpha(color, 20), withAlpha(color, 180), ShapeMode.Both, 0);
+                    event.renderer.box(entityBox, withAlpha(color, 0), withAlpha(color, 200), ShapeMode.Lines, 0);
                 } else if (isPulse) {
-                    renderPulseBox(event, endermite.getBoundingBox(), color);
-                    renderPulseBox(event, beamBox, color);
+                    renderPulseBox(event, entityBox, color);
                 } else {
-                    renderGlowLayers(event, endermite.getBoundingBox(), color);
-                    event.renderer.box(endermite.getBoundingBox(), withAlpha(color, 0), color, ShapeMode.Lines, 0);
-                    renderGlowLayers(event, beamBox, color);
-                    event.renderer.box(beamBox, withAlpha(color, 60), color, ShapeMode.Both, 0);
+                    renderGlowLayers(event, entityBox, color);
+                    event.renderer.box(entityBox, withAlpha(color, 0), color, ShapeMode.Lines, 0);
                 }
             }
         }
@@ -765,56 +845,180 @@ public class DungeonAssistant extends Module {
             }
         }
 
-        renderChestBeams(event, isSpectral, isPulse);
+        // Chest Beams Collection
+        if (chestBeamMode.get() != ChestBeamMode.NONE) {
+            double maxDistSq = Math.pow(range.get() * 16, 2);
+            SettingColor beamColor = chestBeamColor.get();
+            int minY = chestBeamMinY.get();
+
+            List<BlockPos> chests = targets.entrySet().stream()
+                .filter(e -> e.getValue() == TargetType.CHEST)
+                .map(Map.Entry::getKey)
+                .filter(pos -> pos.getSquaredDistance(mc.player.getPos()) <= maxDistSq)
+                .filter(pos -> pos.getY() >= minY)
+                .filter(pos -> mc.world.getChunkManager().isChunkLoaded(pos.getX() >> 4, pos.getZ() >> 4))
+                .filter(pos -> !mc.world.getBlockState(pos).isAir())
+                .sorted(Comparator.comparingDouble(pos -> pos.getSquaredDistance(mc.player.getPos())))
+                .toList();
+
+            if (!chests.isEmpty()) {
+                if (chestBeamMode.get() == ChestBeamMode.NEAREST) {
+                    beamsToRender.add(new BeamData(createPaddedBox(chests.get(0)), beamColor));
+                } else { // ALL
+                    for (BlockPos pos : chests) {
+                        beamsToRender.add(new BeamData(createPaddedBox(pos), beamColor));
+                    }
+                }
+            }
+        }
+
+        renderBeams(event, beamsToRender);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // Chest Beams Rendering
+    // Beam Dispatch & Rendering
     // ═══════════════════════════════════════════════════════════════════════════
 
-    private void renderChestBeams(Render3DEvent event, boolean isSpectral, boolean isPulse) {
-        if (chestBeamMode.get() == ChestBeamMode.NONE) return;
-        if (!trackChests.get()) return;
-        if (mc.player == null || mc.world == null) return;
-
-        double maxDistSq = Math.pow(range.get() * 16, 2);
-        SettingColor beamColor = chestBeamColor.get();
-        double beamSize = beamWidth.get() / 100.0;
-
-        List<BlockPos> chests = targets.entrySet().stream()
-            .filter(e -> e.getValue() == TargetType.CHEST)
-            .map(Map.Entry::getKey)
-            .filter(pos -> pos.getSquaredDistance(mc.player.getPos()) <= maxDistSq)
-            .filter(pos -> mc.world.getChunkManager().isChunkLoaded(pos.getX() >> 4, pos.getZ() >> 4))
-            .filter(pos -> !mc.world.getBlockState(pos).isAir())
-            .sorted(Comparator.comparingDouble(pos -> pos.getSquaredDistance(mc.player.getPos())))
-            .toList();
-
-        if (chests.isEmpty()) return;
-
-        if (chestBeamMode.get() == ChestBeamMode.NEAREST) {
-            drawChestBeam(event, chests.get(0), beamColor, beamSize, isSpectral, isPulse);
-        } else { // ALL
-            for (BlockPos pos : chests) {
-                drawChestBeam(event, pos, beamColor, beamSize, isSpectral, isPulse);
+    private void renderBeams(Render3DEvent event, List<BeamData> beams) {
+        if (beams.isEmpty()) return;
+        if (mergeBeams.get()) {
+            List<BeamData> merged = new ArrayList<>();
+            double distSq = Math.pow(mergeDistance.get(), 2);
+            for (BeamData beam : beams) {
+                boolean skip = false;
+                double bx = (beam.box.minX + beam.box.maxX) / 2.0;
+                double bz = (beam.box.minZ + beam.box.maxZ) / 2.0;
+                for (BeamData m : merged) {
+                    double mx = (m.box.minX + m.box.maxX) / 2.0;
+                    double mz = (m.box.minZ + m.box.maxZ) / 2.0;
+                    if (Math.pow(bx - mx, 2) + Math.pow(bz - mz, 2) <= distSq) { skip = true; break; }
+                }
+                if (!skip) merged.add(beam);
             }
+            beams = merged;
+        }
+        for (BeamData beam : beams) {
+            if (beamStyle.get() == BeamStyle.GUARDIAN) renderGuardianBeam(event, beam.box, beam.color);
+            else                                        renderBoxBeam(event, beam.box, beam.color);
         }
     }
 
-    private void drawChestBeam(Render3DEvent event, BlockPos pos, SettingColor color, double beamSize, boolean isSpectral, boolean isPulse) {
-        Vec3d beamPos = Vec3d.ofCenter(pos);
+    private void renderBoxBeam(Render3DEvent event, Box anchorBox, SettingColor color) {
+        double beamSize = beamWidth.get() / 100.0;
+        double centerX  = (anchorBox.minX + anchorBox.maxX) / 2.0;
+        double centerZ  = (anchorBox.minZ + anchorBox.maxZ) / 2.0;
+        int    worldBot = mc.world.getBottomY();
+        int    worldTop = worldBot + mc.world.getHeight();
         Box beamBox = new Box(
-            beamPos.x - beamSize, pos.getY(), beamPos.z - beamSize,
-            beamPos.x + beamSize, mc.world.getHeight(), beamPos.z + beamSize
-        );
+            centerX - beamSize, worldBot, centerZ - beamSize,
+            centerX + beamSize, worldTop, centerZ + beamSize);
+        event.renderer.box(beamBox, withAlpha(color, 80), color, ShapeMode.Both, 0);
+        for (int i = 1; i <= 2; i++) {
+            double exp   = beamSize * i * 1.5;
+            int    alpha = Math.max(4, 30 / i);
+            Box bloom = new Box(
+                centerX - beamSize - exp, worldBot, centerZ - beamSize - exp,
+                centerX + beamSize + exp, worldTop, centerZ + beamSize + exp);
+            event.renderer.box(bloom, withAlpha(color, alpha), withAlpha(color, 0), ShapeMode.Sides, 0);
+        }
+    }
 
-        if (isSpectral) {
-            event.renderer.box(beamBox, withAlpha(color, 20), withAlpha(color, 180), ShapeMode.Both, 0);
-        } else if (isPulse) {
-            renderPulseBox(event, beamBox, color);
-        } else {
-            renderGlowLayers(event, beamBox, color);
-            event.renderer.box(beamBox, withAlpha(color, 60), color, ShapeMode.Both, 0);
+    private void renderGuardianBeam(Render3DEvent event, Box anchorBox, SettingColor color) {
+        if (mc.world == null) return;
+
+        double cx = (anchorBox.minX + anchorBox.maxX) / 2.0;
+        double cz = (anchorBox.minZ + anchorBox.maxZ) / 2.0;
+        int worldBot = mc.world.getBottomY();
+        int worldTop = worldBot + mc.world.getHeight();
+
+        double radius  = guardianBeamRadius.get();
+        int    strands = guardianStrands.get();
+        double speed   = guardianSpinSpeed.get();
+
+        double rotationRad = (System.currentTimeMillis() % (long)(6000.0 / speed))
+                             / (6000.0 / speed) * Math.PI * 2.0;
+
+        Vec3d camPos = mc.gameRenderer.getCamera().getPos();
+        double camX  = camPos.x, camY = camPos.y, camZ = camPos.z;
+
+        float r       = color.r / 255f;
+        float g       = color.g / 255f;
+        float b       = color.b / 255f;
+        float strandA = guardianStrandAlpha.get() / 255f;
+
+        RenderSystem.enableBlend();
+        RenderSystem.defaultBlendFunc();
+        RenderSystem.disableDepthTest();
+        RenderSystem.disableCull();
+        RenderSystem.setShader(ShaderProgramKeys.POSITION_COLOR);
+
+        MatrixStack matrices = new MatrixStack();
+        matrices.push();
+
+        Tessellator tessellator = Tessellator.getInstance();
+        BufferBuilder buf = tessellator.begin(
+            VertexFormat.DrawMode.TRIANGLES, VertexFormats.POSITION_COLOR);
+
+        org.joml.Matrix4f matrix = matrices.peek().getPositionMatrix();
+
+        double relCx  = cx      - camX;
+        double relCz  = cz      - camZ;
+        double relBot = worldBot - camY;
+        double relTop = worldTop - camY;
+
+        for (int i = 0; i < strands; i++) {
+            double angle = rotationRad + (Math.PI * 2.0 / strands) * i;
+            double cos   = Math.cos(angle);
+            double sin   = Math.sin(angle);
+
+            double lx = relCx + cos * radius, lz = relCz + sin * radius;
+            double rx = relCx - cos * radius, rz = relCz - sin * radius;
+
+            float lxf = (float) lx, lzf = (float) lz;
+            float rxf = (float) rx, rzf = (float) rz;
+            float botF = (float) relBot, topF = (float) relTop;
+
+            buf.vertex(matrix, lxf, botF, lzf).color(r, g, b, strandA);
+            buf.vertex(matrix, rxf, botF, rzf).color(r, g, b, strandA);
+            buf.vertex(matrix, lxf, topF, lzf).color(r, g, b, strandA);
+
+            buf.vertex(matrix, rxf, botF, rzf).color(r, g, b, strandA);
+            buf.vertex(matrix, rxf, topF, rzf).color(r, g, b, strandA);
+            buf.vertex(matrix, lxf, topF, lzf).color(r, g, b, strandA);
+        }
+
+        BufferRenderer.drawWithGlobalProgram(buf.end());
+        matrices.pop();
+
+        RenderSystem.enableDepthTest();
+        RenderSystem.enableCull();
+        RenderSystem.disableBlend();
+
+        int coreAlpha = guardianCoreAlpha.get();
+        if (coreAlpha > 0) {
+            double coreR = radius * 0.25;
+            Box coreBox = new Box(
+                cx - coreR, worldBot, cz - coreR,
+                cx + coreR, worldTop, cz + coreR);
+            event.renderer.box(coreBox,
+                withAlpha(color, coreAlpha),
+                withAlpha(color, Math.min(255, coreAlpha + 40)),
+                ShapeMode.Both, 0);
+        }
+
+        if (guardianGlow.get()) {
+            double glowR = guardianGlowRadius.get();
+            for (int ring = 1; ring <= 2; ring++) {
+                double expansion = glowR * ring;
+                int    alpha     = Math.max(4, 22 / ring);
+                Box bloomBox = new Box(
+                    cx - radius - expansion, worldBot, cz - radius - expansion,
+                    cx + radius + expansion, worldTop, cz + radius + expansion);
+                event.renderer.box(bloomBox,
+                    withAlpha(color, alpha),
+                    withAlpha(color, 0),
+                    ShapeMode.Sides, 0);
+            }
         }
     }
 
@@ -1848,4 +2052,10 @@ public class DungeonAssistant extends Module {
 
         return counts;
     }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Internal Data Classes
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    private record BeamData(Box box, SettingColor color) {}
 }

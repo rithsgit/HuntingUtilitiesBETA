@@ -48,8 +48,9 @@ public class Tunnelers extends Module {
     // Constants
     // ═══════════════════════════════════════════════════════════════════════════
 
-    private static final int[][] HORIZONTAL_DIRS = {
+    private static final int[][] ALL_DIRS_6 = {
         { 1, 0, 0}, {-1, 0, 0},
+        { 0, 1, 0}, { 0,-1, 0},
         { 0, 0, 1}, { 0, 0,-1}
     };
 
@@ -522,7 +523,7 @@ public class Tunnelers extends Module {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // Merge Scheduling & Greedy Meshing
+    // Merge Scheduling & Connected-Component Bounding Boxes
     // ═══════════════════════════════════════════════════════════════════════════
 
     private void scheduleMerge() {
@@ -548,145 +549,116 @@ public class Tunnelers extends Module {
         });
     }
 
+    /**
+     * Groups all detected blocks by type, then for each type runs a 6-way
+     * flood-fill to find connected components. Each component becomes a single
+     * bounding-box highlight — one box per tunnel/hole structure, regardless
+     * of whether it bends or has an irregular shape.
+     */
     private static List<MergedBox> buildMergedBoxes(
             Map<BlockPos, TunnelType> locs, int px, int py, int pz, double maxDistSq,
             int min1, int minOther) {
 
         if (locs.isEmpty()) return Collections.emptyList();
 
-        EnumMap<TunnelType, Set<Long>> remaining = new EnumMap<>(TunnelType.class);
-        EnumMap<TunnelType, List<int[]>> coordsByType = new EnumMap<>(TunnelType.class);
-
+        EnumMap<TunnelType, Set<Long>> blocksByType = new EnumMap<>(TunnelType.class);
         for (TunnelType t : TunnelType.values()) {
-            remaining.put(t, new HashSet<>());
-            coordsByType.put(t, new ArrayList<>());
+            blocksByType.put(t, new HashSet<>());
         }
 
         for (Map.Entry<BlockPos, TunnelType> e : locs.entrySet()) {
             BlockPos p = e.getKey();
-            TunnelType t = e.getValue();
-            remaining.get(t).add(pack(p.getX(), p.getY(), p.getZ()));
-            coordsByType.get(t).add(new int[]{ p.getX(), p.getY(), p.getZ() });
+            blocksByType.get(e.getValue()).add(pack(p.getX(), p.getY(), p.getZ()));
         }
-
-        // Filter lengths
-        filterTunnelTypeByLength(TunnelType.TUNNEL_1x1, min1, coordsByType, remaining);
-        filterTunnelTypeByLength(TunnelType.OTHER_TUNNEL, minOther, coordsByType, remaining);
 
         List<MergedBox> boxes = new ArrayList<>();
 
-        boxes.addAll(mergeBlockSet(remaining.get(TunnelType.TUNNEL_1x1), coordsByType.get(TunnelType.TUNNEL_1x1), px, py, pz, maxDistSq, TunnelType.TUNNEL_1x1));
-        boxes.addAll(mergeBlockSet(remaining.get(TunnelType.OTHER_TUNNEL), coordsByType.get(TunnelType.OTHER_TUNNEL), px, py, pz, maxDistSq, TunnelType.OTHER_TUNNEL));
-        boxes.addAll(mergeBlockSet(remaining.get(TunnelType.HOLE), coordsByType.get(TunnelType.HOLE), px, py, pz, maxDistSq, TunnelType.HOLE));
-        boxes.addAll(mergeBlockSet(remaining.get(TunnelType.LADDER_SHAFT), coordsByType.get(TunnelType.LADDER_SHAFT), px, py, pz, maxDistSq, TunnelType.LADDER_SHAFT));
+        boxes.addAll(buildComponentBoxes(blocksByType.get(TunnelType.TUNNEL_1x1),   px, py, pz, maxDistSq, TunnelType.TUNNEL_1x1,   min1));
+        boxes.addAll(buildComponentBoxes(blocksByType.get(TunnelType.OTHER_TUNNEL),  px, py, pz, maxDistSq, TunnelType.OTHER_TUNNEL,  minOther));
+        boxes.addAll(buildComponentBoxes(blocksByType.get(TunnelType.HOLE),          px, py, pz, maxDistSq, TunnelType.HOLE,          1));
+        boxes.addAll(buildComponentBoxes(blocksByType.get(TunnelType.LADDER_SHAFT),  px, py, pz, maxDistSq, TunnelType.LADDER_SHAFT,  1));
 
         boxes.sort(Comparator.comparingDouble(b -> b.distSq));
         return boxes;
     }
 
-    private static List<MergedBox> mergeBlockSet(
-            Set<Long> blocksToMerge, List<int[]> coordList,
-            int px, int py, int pz, double maxDistSq, TunnelType type) {
+    /**
+     * Flood-fills connected components (6-way) from the block set and produces
+     * exactly one bounding-box MergedBox per component.
+     */
+    private static List<MergedBox> buildComponentBoxes(
+            Set<Long> blocks, int px, int py, int pz, double maxDistSq,
+            TunnelType type, int minBlocks) {
 
         List<MergedBox> boxes = new ArrayList<>();
-        if (blocksToMerge.isEmpty() || coordList.isEmpty()) return boxes;
+        if (blocks.isEmpty()) return boxes;
 
-        Set<Long> rem = new HashSet<>(blocksToMerge);
+        Set<Long> visited = new HashSet<>(blocks.size());
 
-        for (int[] origin : coordList) {
-            int ox = origin[0], oy = origin[1], oz = origin[2];
-            if (!rem.contains(pack(ox, oy, oz))) continue;
+        for (Long startKey : blocks) {
+            if (visited.contains(startKey)) continue;
 
-            int x2 = ox;
-            while (rem.contains(pack(x2 + 1, oy, oz))) x2++;
+            // ── BFS flood-fill to find the entire connected component ──────────
+            Queue<Long> queue = new LinkedList<>();
+            queue.add(startKey);
+            visited.add(startKey);
 
-            int z2 = oz;
-            while (canExtendZ(rem, ox, x2, oy, z2 + 1)) z2++;
+            int minX = Integer.MAX_VALUE, minY = Integer.MAX_VALUE, minZ = Integer.MAX_VALUE;
+            int maxX = Integer.MIN_VALUE, maxY = Integer.MIN_VALUE, maxZ = Integer.MIN_VALUE;
+            int blockCount = 0;
 
-            int y2 = oy;
-            while (canExtendY(rem, ox, x2, y2 + 1, oz, z2)) y2++;
+            while (!queue.isEmpty()) {
+                long key = queue.poll();
+                int cx = unpackX(key), cy = unpackY(key), cz = unpackZ(key);
+                blockCount++;
 
-            for (int x = ox; x <= x2; x++)
-                for (int y = oy; y <= y2; y++)
-                    for (int z = oz; z <= z2; z++)
-                        rem.remove(pack(x, y, z));
+                minX = Math.min(minX, cx); maxX = Math.max(maxX, cx);
+                minY = Math.min(minY, cy); maxY = Math.max(maxY, cy);
+                minZ = Math.min(minZ, cz); maxZ = Math.max(maxZ, cz);
 
-            double nearestX = Math.max(ox, Math.min(px, x2));
-            double nearestY = Math.max(oy, Math.min(py, y2));
-            double nearestZ = Math.max(oz, Math.min(pz, z2));
+                for (int[] d : ALL_DIRS_6) {
+                    long nk = pack(cx + d[0], cy + d[1], cz + d[2]);
+                    if (blocks.contains(nk) && visited.add(nk)) {
+                        queue.add(nk);
+                    }
+                }
+            }
 
+            // ── Filter by minimum block count (tunnel length) ──────────────────
+            if (minBlocks > 1 && blockCount < minBlocks) continue;
+
+            // ── Compute nearest-point distance to player ───────────────────────
+            double nearestX = Math.max(minX, Math.min(px, maxX));
+            double nearestY = Math.max(minY, Math.min(py, maxY));
+            double nearestZ = Math.max(minZ, Math.min(pz, maxZ));
             double ddx = nearestX - px, ddy = nearestY - py, ddz = nearestZ - pz;
             double distSq = Math.min(ddx * ddx + ddy * ddy + ddz * ddz, maxDistSq);
 
-            boxes.add(new MergedBox(ox, oy, oz, x2 + 1, y2 + 1, z2 + 1, type, distSq));
+            // ── One bounding box for the entire component ──────────────────────
+            boxes.add(new MergedBox(minX, minY, minZ, maxX + 1, maxY + 1, maxZ + 1, type, distSq));
         }
 
         return boxes;
     }
 
-    private static void filterTunnelTypeByLength(
-            TunnelType type, int minLength,
-            EnumMap<TunnelType, List<int[]>> coordsByType,
-            EnumMap<TunnelType, Set<Long>> remaining) {
-
-        if (minLength <= 1) return;
-
-        List<int[]> coords = coordsByType.get(type);
-        if (coords == null || coords.isEmpty()) return;
-
-        Set<Long> allBlocks = new HashSet<>(coords.size());
-        for (int[] c : coords) allBlocks.add(pack(c[0], c[1], c[2]));
-
-        Set<Long> blocksToKeep = new HashSet<>();
-        Set<Long> visited = new HashSet<>();
-
-        for (int[] startCoord : coords) {
-            long startKey = pack(startCoord[0], startCoord[1], startCoord[2]);
-            if (visited.contains(startKey)) continue;
-
-            List<long[]> component = new ArrayList<>();
-            Queue<long[]> queue = new LinkedList<>();
-            queue.add(new long[]{ startCoord[0], startCoord[1], startCoord[2], startKey });
-            visited.add(startKey);
-
-            while (!queue.isEmpty()) {
-                long[] cur = queue.poll();
-                component.add(cur);
-                int cx = (int) cur[0], cy = (int) cur[1], cz = (int) cur[2];
-
-                for (int[] d : HORIZONTAL_DIRS) {
-                    int nx = cx + d[0], ny = cy + d[1], nz = cz + d[2];
-                    long nk = pack(nx, ny, nz);
-                    if (allBlocks.contains(nk) && visited.add(nk)) {
-                        queue.add(new long[]{ nx, ny, nz, nk });
-                    }
-                }
-            }
-
-            if (component.size() >= minLength) {
-                for (long[] entry : component) blocksToKeep.add(entry[3]);
-            }
-        }
-
-        coords.removeIf(c -> !blocksToKeep.contains(pack(c[0], c[1], c[2])));
-        remaining.put(type, blocksToKeep);
-    }
-
-    private static boolean canExtendZ(Set<Long> rem, int ox, int x2, int y, int z) {
-        for (int x = ox; x <= x2; x++)
-            if (!rem.contains(pack(x, y, z))) return false;
-        return true;
-    }
-
-    private static boolean canExtendY(Set<Long> rem, int ox, int x2, int y, int oz, int z2) {
-        for (int x = ox; x <= x2; x++)
-            for (int z = oz; z <= z2; z++)
-                if (!rem.contains(pack(x, y, z))) return false;
-        return true;
-    }
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Pack / Unpack
+    // ═══════════════════════════════════════════════════════════════════════════
 
     private static long pack(int x, int y, int z) {
         return ((long)(x + 33_554_432) << 38) | ((long)(y + 2_048) << 26) | (z + 33_554_432);
+    }
+
+    private static int unpackX(long key) {
+        return (int)(key >>> 38) - 33_554_432;
+    }
+
+    private static int unpackY(long key) {
+        return (int)((key >>> 26) & 0xFFF) - 2_048;
+    }
+
+    private static int unpackZ(long key) {
+        return (int)(key & 0x3FFFFFF) - 33_554_432;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
