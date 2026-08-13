@@ -142,7 +142,7 @@ public class ElytraAssistant extends Module {
     // ═══════════════════════════════════════════════════════════════════════════
 
     private final Setting<Boolean> rocketReplenishEnabled = sgRocketReplenish.add(new BoolSetting.Builder()
-        .name("enabled")
+        .name("rocket-replenish")
         .description("Enables the rocket replenish keybind.")
         .defaultValue(true)
         .build()
