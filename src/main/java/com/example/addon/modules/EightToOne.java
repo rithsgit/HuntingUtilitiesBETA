@@ -210,9 +210,9 @@ public class EightToOne extends Module {
         .visible(() -> showBeam.get() && beamStyle.get() == BeamStyle.GUARDIAN).build());
 
     // ── Replenish ──
-    private final Setting<Boolean> replenishEnabled = sgReplenish.add(new BoolSetting.Builder()
-        .name("replenish-enabled")
-        .description("Enables the replenish keybind.")
+    private final Setting<Boolean> replenishMode = sgReplenish.add(new BoolSetting.Builder()
+        .name("replenish-mode")
+        .description("Toggles the replenish keybind.")
         .defaultValue(false)
         .build());
 
@@ -220,14 +220,14 @@ public class EightToOne extends Module {
         .name("replenish-item")
         .description("The item to replenish.")
         .defaultValue(ReplenishItem.Obsidian)
-        .visible(replenishEnabled::get)
+        .visible(replenishMode::get)
         .build());
 
     private final Setting<Boolean> useSelectedSlot = sgReplenish.add(new BoolSetting.Builder()
         .name("use-selected-slot")
         .description("Replenishes the currently selected hotbar slot instead of a specific one.")
         .defaultValue(false)
-        .visible(replenishEnabled::get)
+        .visible(replenishMode::get)
         .build());
 
     private final Setting<Integer> targetSlot = sgReplenish.add(new IntSetting.Builder()
@@ -236,18 +236,18 @@ public class EightToOne extends Module {
         .defaultValue(1)
         .min(1)
         .max(9)
-        .visible(() -> replenishEnabled.get() && !useSelectedSlot.get())
+        .visible(() -> replenishMode.get() && !useSelectedSlot.get())
         .build());
 
     private final Setting<Keybind> replenishKey = sgReplenish.add(new KeybindSetting.Builder()
         .name("replenish-key")
         .description("Replenishes the target hotbar slot's item to its max stack size from the main inventory.")
         .defaultValue(Keybind.none())
-        .visible(replenishEnabled::get)
+        .visible(replenishMode::get)
         .action(() -> {
             if (mc.currentScreen != null) return;
             if (mc.player == null || mc.world == null) return;
-            if (!replenishEnabled.get()) return;
+            if (!replenishMode.get()) return;
             handleReplenish();
         })
         .build());
