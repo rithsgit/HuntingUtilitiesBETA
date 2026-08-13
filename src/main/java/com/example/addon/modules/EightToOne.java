@@ -20,14 +20,21 @@ import meteordevelopment.meteorclient.settings.ColorSetting;
 import meteordevelopment.meteorclient.settings.DoubleSetting;
 import meteordevelopment.meteorclient.settings.EnumSetting;
 import meteordevelopment.meteorclient.settings.IntSetting;
+import meteordevelopment.meteorclient.settings.KeybindSetting;
 import meteordevelopment.meteorclient.settings.Setting;
 import meteordevelopment.meteorclient.settings.SettingGroup;
 import meteordevelopment.meteorclient.systems.modules.Module;
+import meteordevelopment.meteorclient.utils.misc.Keybind;
+import meteordevelopment.meteorclient.utils.player.InvUtils;
 import meteordevelopment.meteorclient.utils.render.color.SettingColor;
 import meteordevelopment.orbit.EventHandler;
 import net.minecraft.block.Block;
 import net.minecraft.block.Blocks;
 import net.minecraft.block.RespawnAnchorBlock;
+import net.minecraft.item.Item;
+import net.minecraft.item.ItemStack;
+import net.minecraft.item.Items;
+import net.minecraft.sound.SoundEvents;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Box;
 import net.minecraft.util.math.ChunkPos;
@@ -48,12 +55,14 @@ public class EightToOne extends Module {
     public enum HighlightStyle { GLOW, SPECTRAL, PULSE }
     public enum CoordVisibility { Visible, Censored, Hidden }
     public enum BeamStyle { BOX, GUARDIAN }
+    public enum ReplenishItem { Obsidian, EnderChest }
 
     private final SettingGroup sgGeneral       = settings.getDefaultGroup();
     private final SettingGroup sgNetherPortals = settings.createGroup("Nether Portals");
     private final SettingGroup sgAnchors       = settings.createGroup("Respawn Anchors");
     private final SettingGroup sgRender        = settings.createGroup("Render");
     private final SettingGroup sgBeam          = settings.createGroup("Beam");
+    private final SettingGroup sgReplenish     = settings.createGroup("Replenish");
 
     // ── Toggles ──
     private final Setting<Boolean> scanNetherPortals = sgNetherPortals.add(new BoolSetting.Builder()
@@ -199,6 +208,49 @@ public class EightToOne extends Module {
     private final Setting<Integer> guardianStrandAlpha = sgBeam.add(new IntSetting.Builder()
         .name("guardian-strand-alpha").defaultValue(160).min(4).sliderMax(255)
         .visible(() -> showBeam.get() && beamStyle.get() == BeamStyle.GUARDIAN).build());
+
+    // ── Replenish ──
+    private final Setting<Boolean> replenishEnabled = sgReplenish.add(new BoolSetting.Builder()
+        .name("replenish-enabled")
+        .description("Enables the replenish keybind.")
+        .defaultValue(false)
+        .build());
+
+    private final Setting<ReplenishItem> replenishItem = sgReplenish.add(new EnumSetting.Builder<ReplenishItem>()
+        .name("replenish-item")
+        .description("The item to replenish.")
+        .defaultValue(ReplenishItem.Obsidian)
+        .visible(replenishEnabled::get)
+        .build());
+
+    private final Setting<Boolean> useSelectedSlot = sgReplenish.add(new BoolSetting.Builder()
+        .name("use-selected-slot")
+        .description("Replenishes the currently selected hotbar slot instead of a specific one.")
+        .defaultValue(false)
+        .visible(replenishEnabled::get)
+        .build());
+
+    private final Setting<Integer> targetSlot = sgReplenish.add(new IntSetting.Builder()
+        .name("target-slot")
+        .description("The specific hotbar slot to replenish (1-9).")
+        .defaultValue(1)
+        .min(1)
+        .max(9)
+        .visible(() -> replenishEnabled.get() && !useSelectedSlot.get())
+        .build());
+
+    private final Setting<Keybind> replenishKey = sgReplenish.add(new KeybindSetting.Builder()
+        .name("replenish-key")
+        .description("Replenishes the target hotbar slot's item to its max stack size from the main inventory.")
+        .defaultValue(Keybind.none())
+        .visible(replenishEnabled::get)
+        .action(() -> {
+            if (mc.currentScreen != null) return;
+            if (mc.player == null || mc.world == null) return;
+            if (!replenishEnabled.get()) return;
+            handleReplenish();
+        })
+        .build());
 
     // ── State ──
     private final Map<BlockPos, PortalType> portals = new ConcurrentHashMap<>();
@@ -746,6 +798,58 @@ public class EightToOne extends Module {
         if (now - messageCooldowns.getOrDefault(message, 0L) > MESSAGE_COOLDOWN_MS) {
             info(message); 
             messageCooldowns.put(message, now);
+        }
+    }
+
+    // ── Replenish Feature ──
+    private void handleReplenish() {
+        int selectedSlot = useSelectedSlot.get() 
+            ? mc.player.getInventory().selectedSlot 
+            : targetSlot.get() - 1; // Convert 1-9 to 0-8
+
+        ItemStack targetStack = mc.player.getInventory().getStack(selectedSlot);
+        Item targetItem = replenishItem.get() == ReplenishItem.Obsidian 
+            ? Items.OBSIDIAN 
+            : Items.ENDER_CHEST;
+
+        // Abort if the slot is already occupied by a different item
+        if (!targetStack.isEmpty() && targetStack.getItem() != targetItem) {
+            info("Target slot has a different item — cannot replenish.");
+            return;
+        }
+
+        int maxCount = targetItem.getMaxCount();
+        int currentCount = targetStack.getCount();
+        int needed = maxCount - currentCount;
+
+        if (needed <= 0) {
+            info("Stack is already full (" + maxCount + ").");
+            return;
+        }
+
+        // Search main inventory (slots 9–35) for matching items and move them
+        // into the target hotbar slot until it reaches max stack size.
+        for (int i = 9; i < 36 && needed > 0; i++) {
+            ItemStack sourceStack = mc.player.getInventory().getStack(i);
+            if (sourceStack.isEmpty()) continue;
+            if (sourceStack.getItem() != targetItem) continue;
+
+            int available = sourceStack.getCount();
+
+            InvUtils.move().from(i).toHotbar(selectedSlot);
+
+            needed -= Math.min(needed, available);
+        }
+
+        int finalCount = maxCount - needed;
+
+        if (needed > 0) {
+            info("Replenished " + targetItem.getName().getString()
+                + " to " + finalCount + " (not enough items in inventory).");
+        } else {
+            info("Replenished " + targetItem.getName().getString()
+                + " to " + maxCount + ".");
+            mc.player.playSound(SoundEvents.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
         }
     }
 

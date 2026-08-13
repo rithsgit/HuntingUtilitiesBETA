@@ -148,9 +148,27 @@ public class ElytraAssistant extends Module {
         .build()
     );
 
+    private final Setting<Boolean> useSelectedSlot = sgRocketReplenish.add(new BoolSetting.Builder()
+        .name("use-selected-slot")
+        .description("Replenishes the currently selected hotbar slot instead of a specific one.")
+        .defaultValue(false)
+        .visible(rocketReplenishEnabled::get)
+        .build()
+    );
+
+    private final Setting<Integer> targetSlot = sgRocketReplenish.add(new IntSetting.Builder()
+        .name("target-slot")
+        .description("The specific hotbar slot to replenish (1-9).")
+        .defaultValue(8)
+        .min(1)
+        .max(9)
+        .visible(() -> rocketReplenishEnabled.get() && !useSelectedSlot.get())
+        .build()
+    );
+
     private final Setting<Keybind> rocketReplenishKey = sgRocketReplenish.add(new KeybindSetting.Builder()
         .name("replenish-key")
-        .description("Replenishes the selected hotbar slot's item to its max stack size from the main inventory.")
+        .description("Replenishes the target hotbar slot's item to its max stack size from the main inventory.")
         .defaultValue(Keybind.none())
         .visible(rocketReplenishEnabled::get)
         .action(() -> {
@@ -371,11 +389,15 @@ public class ElytraAssistant extends Module {
     // ═══════════════════════════════════════════════════════════════════════════
 
     private void handleRocketReplenish() {
-        int selectedSlot = mc.player.getInventory().selectedSlot;
+        // Determine which slot to target based on settings
+        int selectedSlot = useSelectedSlot.get() 
+            ? mc.player.getInventory().selectedSlot 
+            : targetSlot.get() - 1; // Convert 1-9 to 0-8
+
         ItemStack targetStack = mc.player.getInventory().getStack(selectedSlot);
 
         if (targetStack.isEmpty()) {
-            info("Selected hotbar slot is empty — nothing to replenish.");
+            info("Target hotbar slot is empty — nothing to replenish.");
             return;
         }
 
@@ -395,7 +417,7 @@ public class ElytraAssistant extends Module {
         }
 
         // Search main inventory (slots 9–35) for matching items and move them
-        // into the selected hotbar slot until it reaches max stack size.
+        // into the target hotbar slot until it reaches max stack size.
         for (int i = 9; i < 36 && needed > 0; i++) {
             ItemStack sourceStack = mc.player.getInventory().getStack(i);
             if (sourceStack.isEmpty()) continue;
