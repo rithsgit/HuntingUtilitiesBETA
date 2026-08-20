@@ -275,7 +275,7 @@ public class ServerHealthcareSystem extends Module {
     private int     eatStartupTicks       = 0;
     private int     eatTicksRemaining     = 0;
     private float   lastHealth            = -1;
-    private int     highestHungerSeen     = -1; 
+    private int     highestHungerSeen     = -1;
     private int     eatCooldownTimer      = 0;
     private boolean tookDamageRecently    = false;
     private int     damageTimer           = 0;
@@ -291,7 +291,7 @@ public class ServerHealthcareSystem extends Module {
     public ServerHealthcareSystem() {
         super(Tim.CATEGORY, "server-healthcare-system",
             "SHS — Manages health, safety, tracking, and server monitoring.");
-        
+
         // Register Baritone pause process safely
         try {
             BaritoneAPI.getProvider().getPrimaryBaritone().getPathingControlManager().registerProcess(EatProcess.INSTANCE);
@@ -382,7 +382,7 @@ public class ServerHealthcareSystem extends Module {
         eatStartupTicks       = 0;
         eatTicksRemaining     = 0;
         eatCooldownTimer      = eatCooldown.get();
-        highestHungerSeen     = -1; 
+        highestHungerSeen     = -1;
     }
 
     private void sendUseItemPacket() {
@@ -408,7 +408,7 @@ public class ServerHealthcareSystem extends Module {
             case Default -> {
                 tickAutoTotem();
                 tickAutoArmor();
-                tickAutoEat(); 
+                tickAutoEat();
                 tickHealthTracking();
                 tickAutoRespawn();
             }
@@ -422,9 +422,9 @@ public class ServerHealthcareSystem extends Module {
 
     private void tickHealthTracking() {
         if (mc.player == null) return;
-        
+
         if (lastHealth == -1) lastHealth = mc.player.getHealth();
-        
+
         float health = mc.player.getHealth();
 
         if (health < lastHealth) {
@@ -438,7 +438,7 @@ public class ServerHealthcareSystem extends Module {
             ateForFire            = false;
             tookDamageWhileOnFire = false;
         }
-        
+
         lastHealth = health;
 
         if (tookDamageRecently) {
@@ -516,7 +516,7 @@ public class ServerHealthcareSystem extends Module {
         EquipmentSlot[] slots = { EquipmentSlot.FEET, EquipmentSlot.LEGS, EquipmentSlot.CHEST, EquipmentSlot.HEAD };
         for (int i = 0; i < 4; i++) {
             EquipmentSlot slot = slots[i];
-            
+
             if (ignoredArmorSlot.get() == IgnoredArmorSlot.All) continue;
             if (slot == EquipmentSlot.HEAD && ignoredArmorSlot.get() == IgnoredArmorSlot.Helmet) continue;
             if (slot == EquipmentSlot.CHEST && ignoredArmorSlot.get() == IgnoredArmorSlot.Chestplate) continue;
@@ -580,15 +580,15 @@ public class ServerHealthcareSystem extends Module {
 
         if (!isEating) {
             boolean needsHealth = healthThreshold.get() > 0 && mc.player.getHealth() <= healthThreshold.get();
-                
+
             int currentHunger = mc.player.getHungerManager().getFoodLevel();
-            
+
             if (highestHungerSeen == -1 || currentHunger > highestHungerSeen) {
                 highestHungerSeen = currentHunger;
             }
-            
+
             boolean needsHunger = highestHungerSeen != -1 && (highestHungerSeen - currentHunger) >= hungerLoss.get();
-            
+
             boolean needsFireEat = eatOnFire.get() && mc.player.isOnFire() && tookDamageWhileOnFire && !ateForFire;
             boolean isHealthEmergency = needsHealth || needsFireEat;
 
@@ -606,7 +606,7 @@ public class ServerHealthcareSystem extends Module {
 
             if (skipIfRegen.get() && !isHealthEmergency && (foodStack.isOf(Items.GOLDEN_APPLE) || foodStack.isOf(Items.ENCHANTED_GOLDEN_APPLE))) {
                 if (mc.player.hasStatusEffect(StatusEffects.REGENERATION)) {
-                    return; 
+                    return;
                 }
             }
 
@@ -660,7 +660,7 @@ public class ServerHealthcareSystem extends Module {
             if (!mc.player.isUsingItem() && hotbarHasFood) {
                 sendUseItemPacket();
                 eatTicksRemaining = hotbarStack.getItem().getMaxUseTime(hotbarStack, mc.player);
-                return; 
+                return;
             }
 
             if (eatTicksRemaining > 0) {
@@ -704,7 +704,7 @@ public class ServerHealthcareSystem extends Module {
         if (isHealthEmergency) {
             int egapple = findBestEnchantedGapple();
             if (egapple != -1) return egapple;
-            
+
             int gapple = findBestGapple();
             if (gapple != -1) return gapple;
 
@@ -713,7 +713,7 @@ public class ServerHealthcareSystem extends Module {
 
         int food = findBestNormalFood();
         if (food != -1) return food;
-        
+
         return findBestGapple();
     }
 
@@ -938,14 +938,14 @@ public class ServerHealthcareSystem extends Module {
 
         @Override
         public boolean isTemporary() {
-            return false; // Set to false to ensure it overrides active pathing commands like 'goto'
+            return false;
         }
 
         @Override
         public void onLostControl() {}
 
         @Override
-        public String displayName0() { // Restored to displayName0 to match your Baritone version
+        public String displayName0() {
             return "SHS Auto Eat";
         }
     }

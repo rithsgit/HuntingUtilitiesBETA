@@ -333,12 +333,12 @@ public class Datamine extends Module {
     private Target primary;
     private Target secondary;
     private Request last;
-    
+
     private int tick = 0;
     private int lastBreakTick = 0;
     private long lastMineTime = 0;
     private long stopped = 0;
-    
+
     private final Set<Integer> seenItems = new HashSet<>();
     private boolean sendingCustomPacket = false;
     private boolean swapped = false;
@@ -380,11 +380,11 @@ public class Datamine extends Module {
             if (action == PlayerActionC2SPacket.Action.START_DESTROY_BLOCK ||
                 action == PlayerActionC2SPacket.Action.STOP_DESTROY_BLOCK ||
                 action == PlayerActionC2SPacket.Action.ABORT_DESTROY_BLOCK) {
-                
+
                 if (this.isTracked(packet.getPos())) {
                     event.cancel();
                 }
-                
+
                 // Prevent STOP_DESTROY_BLOCK from being sent for the last broken block while instant remine is active
                 if (this.instantRemine.get() && this.last != null && action == PlayerActionC2SPacket.Action.STOP_DESTROY_BLOCK && packet.getPos().equals(this.last.pos)) {
                     event.cancel();
@@ -508,6 +508,46 @@ public class Datamine extends Module {
         }
         return false;
     }
+
+    // --- Server Block Update Hook ---
+    // Called by ClientPlayNetworkHandlerMixin when the server confirms a block change.
+    // Lets us react immediately to server-confirmed state changes rather than
+    // waiting for the tick loop's validation cycle.
+    public void onServerBlockUpdate(BlockPos pos, BlockState state) {
+    if (pos == null || state == null) return;
+    BlockPos immutablePos = pos.toImmutable();  // never reassigned → effectively final
+
+    // --- Primary target check ---
+    if (this.primary != null && this.primary.pos.equals(immutablePos)) {
+        if (state.isAir()) {
+            this.confirm(this.primary);
+        } else if (!this.breakable(immutablePos, state)) {
+            this.remove(this.primary);
+        }
+    }
+
+    // --- Secondary (parked) target check ---
+    if (this.secondary != null && this.secondary.pos.equals(immutablePos)) {
+        if (state.isAir()) {
+            this.confirm(this.secondary);
+        } else if (!this.breakable(immutablePos, state)) {
+            this.remove(this.secondary);
+        }
+    }
+
+    // --- Prune queued requests that became unbreakable ---
+    this.queue.removeIf(request ->
+        request.pos.equals(immutablePos) && !this.breakable(immutablePos, state)
+    );
+
+    // --- Instant-remine trigger ---
+    if (this.instantRemine.get()
+            && this.last != null
+            && this.last.pos.equals(immutablePos)
+            && this.breakable(immutablePos, state)) {
+        this.remine();
+    }
+}
 
     private boolean breakable(BlockPos pos, BlockState state) {
         return !state.isAir() && state.getHardness(this.mc.world, pos) >= 0;
@@ -707,7 +747,7 @@ public class Datamine extends Module {
         try {
             for (int idx = 0; idx < 9; idx++) {
                 ItemStack stack = inv.getStack(idx);
-                
+
                 if (this.durabilityProtection.get() && stack.isDamageable()) {
                     int remaining = stack.getMaxDamage() - stack.getDamage();
                     if (remaining <= this.durabilityThreshold.get()) continue;
@@ -792,7 +832,7 @@ public class Datamine extends Module {
         if (!this.autoCollect.get() || this.mc.player == null || this.mc.world == null) return;
 
         boolean foundNew = false;
-        List<ItemEntity> items = this.mc.world.getEntitiesByClass(ItemEntity.class, 
+        List<ItemEntity> items = this.mc.world.getEntitiesByClass(ItemEntity.class,
             this.mc.player.getBoundingBox().expand(this.collectRange.get()), e -> {
                 if (this.collectWhitelist.get().isEmpty()) return true;
                 return this.collectWhitelist.get().contains(e.getStack().getItem());
@@ -850,7 +890,7 @@ public class Datamine extends Module {
         ItemEntity closestItem = null;
         double closestDist = this.collectRange.get() * this.collectRange.get();
 
-        List<ItemEntity> items = this.mc.world.getEntitiesByClass(ItemEntity.class, 
+        List<ItemEntity> items = this.mc.world.getEntitiesByClass(ItemEntity.class,
             this.mc.player.getBoundingBox().expand(this.collectRange.get()), e -> {
                 if (this.collectWhitelist.get().isEmpty()) return true;
                 return this.collectWhitelist.get().contains(e.getStack().getItem());
@@ -902,10 +942,10 @@ public class Datamine extends Module {
     }
 
     private void renderGlowLayers(Render3DEvent event, Box box, SettingColor color) {
-        int layers = this.glowLayers.get(); 
-        double spread = this.glowSpread.get(); 
+        int layers = this.glowLayers.get();
+        double spread = this.glowSpread.get();
         int baseAlpha = this.glowBaseAlpha.get();
-        
+
         for (int i = layers; i >= 1; i--) {
             int layerAlpha = Math.max(4, (int)(baseAlpha * (1.0 - (double)(i-1) / layers)));
             event.renderer.box(box.expand(spread * i), this.withAlpha(color, layerAlpha), this.withAlpha(color, 0), ShapeMode.Sides, 0);

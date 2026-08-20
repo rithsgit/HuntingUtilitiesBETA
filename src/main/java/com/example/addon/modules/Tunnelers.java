@@ -261,20 +261,6 @@ public class Tunnelers extends Module {
         .visible(findOtherTunnels::get)
         .build());
 
-    // ── Fluids in Tunnels ──────────────────────────────────────────────────────
-
-    private final Setting<Boolean> includeWater = sgTunnels.add(new BoolSetting.Builder()
-        .name("include-water")
-        .description("Detect tunnels even if they contain water instead of air.")
-        .defaultValue(true)
-        .build());
-
-    private final Setting<Boolean> includeLava = sgTunnels.add(new BoolSetting.Builder()
-        .name("include-lava")
-        .description("Detect tunnels even if they contain lava instead of air.")
-        .defaultValue(true)
-        .build());
-
     // ═══════════════════════════════════════════════════════════════════════════
     // Settings — Shafts
     // ═══════════════════════════════════════════════════════════════════════════
@@ -675,8 +661,7 @@ public class Tunnelers extends Module {
             ft, ft, ft,
             doHoles, doLadders,
             minHoleHeight.get(), minLadderHeight.get(),
-            mc.world.getBottomY(), mc.world.getBottomY() + mc.world.getHeight(),
-            includeWater.get(), includeLava.get()
+            mc.world.getBottomY(), mc.world.getBottomY() + mc.world.getHeight()
         );
     }
 
@@ -702,7 +687,7 @@ public class Tunnelers extends Module {
         Map<BlockPos, TunnelType> results = new HashMap<>();
         int baseX = cp.x << 4, baseZ = cp.z << 4;
         ScanContext ctx = new ScanContext(snapshot, bottomCoord, config.minY, config.maxY,
-            baseX, baseZ, config.includeWater, config.includeLava);
+            baseX, baseZ);
 
         for (int si = 0; si < snapshot.length; si++) {
             if (snapshot[si] == null) continue;
@@ -1081,18 +1066,14 @@ public class Tunnelers extends Module {
     private static final class ScanContext {
         private final BlockState[][] snapshot;
         private final int bottomCoord, minY, maxY, baseX, baseZ;
-        private final boolean includeWater, includeLava;
 
-        ScanContext(BlockState[][] s, int bc, int minY, int maxY, int bx, int bz,
-                    boolean includeWater, boolean includeLava) {
+        ScanContext(BlockState[][] s, int bc, int minY, int maxY, int bx, int bz) {
             this.snapshot = s;
             this.bottomCoord = bc;
             this.minY = minY;
             this.maxY = maxY;
             this.baseX = bx;
             this.baseZ = bz;
-            this.includeWater = includeWater;
-            this.includeLava = includeLava;
         }
 
         BlockState get(int x, int y, int z) {
@@ -1125,8 +1106,7 @@ public class Tunnelers extends Module {
         boolean isTunnelInterior(int x, int y, int z) {
             BlockState s = get(x, y, z);
             if (s == null || s.isAir()) return true;
-            if (includeWater && s.isOf(Blocks.WATER)) return true;
-            if (includeLava && s.isOf(Blocks.LAVA)) return true;
+            if (s.isOf(Blocks.WATER) || s.isOf(Blocks.LAVA)) return true;
             return false;
         }
     }
@@ -1134,11 +1114,10 @@ public class Tunnelers extends Module {
     private static final class ScanConfig {
         final boolean do1x1, do1x2, do2x2, doAbnormal, doHoles, doLadder;
         final int holeDepth, ladderMin, minY, maxY;
-        final boolean includeWater, includeLava;
 
         ScanConfig(boolean do1x1, boolean do1x2, boolean do2x2,
                    boolean doAbnormal, boolean doHoles, boolean doLadder, int holeDepth,
-                   int ladderMin, int minY, int maxY, boolean includeWater, boolean includeLava) {
+                   int ladderMin, int minY, int maxY) {
             this.do1x1 = do1x1;
             this.do1x2 = do1x2;
             this.do2x2 = do2x2;
@@ -1149,8 +1128,6 @@ public class Tunnelers extends Module {
             this.ladderMin = ladderMin;
             this.minY = minY;
             this.maxY = maxY;
-            this.includeWater = includeWater;
-            this.includeLava = includeLava;
         }
     }
 

@@ -511,4 +511,4 @@ public class ElytraAssistant extends Module {
     // ═══════════════════════════════════════════════════════════════════════════
 
     private record ItemUsage(net.minecraft.item.Item item) {}
-}
+} 
