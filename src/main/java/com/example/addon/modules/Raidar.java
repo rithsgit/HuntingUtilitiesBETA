@@ -47,6 +47,7 @@ import net.minecraft.util.math.Box;
 import net.minecraft.util.math.ChunkPos;
 import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.Vec3d;
+import net.minecraft.world.World;
 import net.minecraft.world.chunk.ChunkSection;
 import net.minecraft.world.chunk.WorldChunk;
 
@@ -61,6 +62,7 @@ public class Raidar extends Module {
 
     private final SettingGroup sgGeneral  = settings.getDefaultGroup();
     private final SettingGroup sgStorage  = settings.createGroup("Storage");
+    private final SettingGroup sgObsidian = settings.createGroup("Obsidian");
     private final SettingGroup sgUtility  = settings.createGroup("Utility");
     private final SettingGroup sgRender   = settings.createGroup("Render");
     private final SettingGroup sgBeam     = settings.createGroup("Beam");
@@ -103,6 +105,20 @@ public class Raidar extends Module {
         .name("ender-chests").description("Scan for ender chests.").defaultValue(true).build());
     private final Setting<SettingColor> enderColor = sgStorage.add(new ColorSetting.Builder()
         .name("ender-color").defaultValue(new SettingColor(75, 0, 130, 255)).visible(scanEnderChests::get).build());
+
+    // ── Obsidian ESP ──
+    private final Setting<Boolean> scanObsidian = sgObsidian.add(new BoolSetting.Builder()
+        .name("nether-obsidian")
+        .description("Detects unnatural obsidian clusters in the Nether only. Ignores ruined portals automatically.")
+        .defaultValue(true).build());
+    
+    private final Setting<SettingColor> obsidianColor = sgObsidian.add(new ColorSetting.Builder()
+        .name("obsidian-color").defaultValue(new SettingColor(30, 30, 30, 255)).visible(scanObsidian::get).build());
+
+    private final Setting<Integer> maxObsidianCluster = sgObsidian.add(new IntSetting.Builder()
+        .name("max-cluster-size")
+        .description("Maximum obsidian in a cluster before ignoring it (e.g. nether highways). 15 matches a full portal. 0 to disable.")
+        .defaultValue(15).min(0).sliderMax(50).visible(scanObsidian::get).build());
 
     // ── Utility & Decorative ──
     private final Setting<Boolean> scanUtility = sgUtility.add(new BoolSetting.Builder()
@@ -166,6 +182,9 @@ public class Raidar extends Module {
 
     private final Setting<Integer> minEnderChestsForBeam = sgBeam.add(new IntSetting.Builder()
         .name("min-ender-chests-for-beam").description("Minimum ender chests in a cluster to trigger a beam.").defaultValue(2).min(1).sliderMax(20).build());
+
+    private final Setting<Integer> minObsidianForBeam = sgBeam.add(new IntSetting.Builder()
+        .name("min-obsidian-for-beam").description("Minimum obsidian blocks in a cluster to trigger a beam.").defaultValue(1).min(1).sliderMax(20).build());
 
     private final Setting<Boolean> mergeBeams = sgBeam.add(new BoolSetting.Builder()
         .name("merge-beams").description("Merge beams for nearby clusters to reduce clutter.").defaultValue(true).build());
@@ -344,6 +363,13 @@ public class Raidar extends Module {
         if (scanShulkers.get() && block instanceof ShulkerBoxBlock) return StashType.SHULKER;
         if (scanUtility.get() && (block == Blocks.FURNACE || block == Blocks.BLAST_FURNACE || block == Blocks.SMOKER || block == Blocks.HOPPER || block == Blocks.DISPENSER || block == Blocks.DROPPER)) return StashType.UTILITY;
         if (scanDecorative.get() && (block == Blocks.BREWING_STAND || block == Blocks.CRAFTER || block == Blocks.CHISELED_BOOKSHELF || block == Blocks.DECORATED_POT)) return StashType.DECORATIVE;
+        
+        // Merged Nether-only logic directly into Obsidian check
+        if (scanObsidian.get() && block == Blocks.OBSIDIAN) {
+            if (mc.world != null && mc.world.getRegistryKey().equals(World.NETHER)) {
+                return StashType.OBSIDIAN;
+            }
+        }
         return null;
     }
 
@@ -374,6 +400,16 @@ public class Raidar extends Module {
                     }
                 }
             }
+
+            // Obsidian filtering (Highways & Ruined Portals hardcoded)
+            if (type == StashType.OBSIDIAN) {
+                int maxSz = maxObsidianCluster.get();
+                if (maxSz > 0 && component.size() > maxSz) continue;
+
+                if (hasCryingObsidianNearby(structureBox.expand(8.0))) {
+                    continue;
+                }
+            }
             
             BlockPos anchor = componentAnchor(component);
             active.add(anchor);
@@ -383,6 +419,27 @@ public class Raidar extends Module {
         }
 
         stashClusterMap.keySet().retainAll(active);
+    }
+
+    private boolean hasCryingObsidianNearby(Box searchBox) {
+        int minX = (int) Math.floor(searchBox.minX);
+        int minY = (int) Math.floor(searchBox.minY);
+        int minZ = (int) Math.floor(searchBox.minZ);
+        int maxX = (int) Math.ceil(searchBox.maxX);
+        int maxY = (int) Math.ceil(searchBox.maxY);
+        int maxZ = (int) Math.ceil(searchBox.maxZ);
+        
+        BlockPos.Mutable mutable = new BlockPos.Mutable();
+        for (int x = minX; x <= maxX; x++) {
+            for (int y = minY; y <= maxY; y++) {
+                for (int z = minZ; z <= maxZ; z++) {
+                    if (mc.world.getBlockState(mutable.set(x, y, z)).getBlock() == Blocks.CRYING_OBSIDIAN) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
     }
 
     private BlockPos componentAnchor(Set<BlockPos> comp) {
@@ -418,6 +475,11 @@ public class Raidar extends Module {
             stashesDirty = true; 
         } else if (stashes.remove(event.pos) != null) { 
             stashesDirty = true; 
+        }
+
+        // If crying obsidian changes, we need to re-evaluate ruined portals
+        if (event.newState.getBlock() == Blocks.CRYING_OBSIDIAN || event.oldState.getBlock() == Blocks.CRYING_OBSIDIAN) {
+            stashesDirty = true;
         }
     }
 
@@ -481,6 +543,7 @@ public class Raidar extends Module {
                     case BARREL -> shouldBeam = count >= minBarrelsForBeam.get();
                     case SHULKER -> shouldBeam = count >= minShulkersForBeam.get();
                     case ENDER_CHEST -> shouldBeam = count >= minEnderChestsForBeam.get();
+                    case OBSIDIAN -> shouldBeam = count >= minObsidianForBeam.get();
                     default -> shouldBeam = false; // Utility and Decorative don't beam
                 }
 
@@ -653,6 +716,7 @@ public class Raidar extends Module {
             case BARREL -> barrelColor.get();
             case SHULKER -> shulkerColor.get();
             case ENDER_CHEST -> enderColor.get();
+            case OBSIDIAN -> obsidianColor.get();
             case UTILITY -> utilityColor.get();
             case DECORATIVE -> decorativeColor.get();
         };
@@ -664,7 +728,7 @@ public class Raidar extends Module {
 
     public void markChunkDirty(ChunkPos cp) { scannedChunks.remove(cp); dirtyChunks.add(cp); stashesDirty = true; }
 
-    private enum StashType { CHEST, BARREL, SHULKER, ENDER_CHEST, UTILITY, DECORATIVE }
+    private enum StashType { CHEST, BARREL, SHULKER, ENDER_CHEST, OBSIDIAN, UTILITY, DECORATIVE }
     
     private static class StashCluster {
         final Box boundingBox; 

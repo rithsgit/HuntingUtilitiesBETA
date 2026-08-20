@@ -8,6 +8,7 @@ import meteordevelopment.meteorclient.events.game.GameJoinedEvent;
 import meteordevelopment.meteorclient.events.packets.PacketEvent;
 import meteordevelopment.meteorclient.events.world.TickEvent;
 import meteordevelopment.meteorclient.settings.BoolSetting;
+import meteordevelopment.meteorclient.settings.DoubleSetting;
 import meteordevelopment.meteorclient.settings.EnchantmentListSetting;
 import meteordevelopment.meteorclient.settings.EnumSetting;
 import meteordevelopment.meteorclient.settings.IntSetting;
@@ -104,7 +105,7 @@ public class ServerHealthcareSystem extends Module {
 
     private final Setting<ChestplateMode> chestplateMode = sgAutoArmor.add(new EnumSetting.Builder<ChestplateMode>()
         .name("chestplate-mode")
-        .description("How to manage the chest slot.")
+        .description("How to manage the chest slot. Smart auto-swaps based on movement.")
         .defaultValue(ChestplateMode.Chestplate)
         .visible(() -> mode.get() == OperationMode.Default && autoArmor.get())
         .build()
@@ -112,16 +113,92 @@ public class ServerHealthcareSystem extends Module {
 
     private final Setting<Keybind> switchModeKey = sgAutoArmor.add(new KeybindSetting.Builder()
         .name("switch-preference-key")
-        .description("Switches between preferring Chestplate or Elytra.")
+        .description("Cycles chestplate mode: Chestplate -> Elytra -> Smart.")
         .defaultValue(Keybind.none())
         .action(() -> {
             if (mc.currentScreen != null) return;
             ChestplateMode current = chestplateMode.get();
-            ChestplateMode next = (current == ChestplateMode.Chestplate) ? ChestplateMode.Elytra : ChestplateMode.Chestplate;
+            ChestplateMode next = switch (current) {
+                case Chestplate -> ChestplateMode.Elytra;
+                case Elytra -> ChestplateMode.Smart;
+                case Smart -> ChestplateMode.Chestplate;
+            };
             chestplateMode.set(next);
             info("Chestplate mode set to: %s", next.name());
         })
         .visible(() -> mode.get() == OperationMode.Default && autoArmor.get())
+        .build()
+    );
+
+    private final Setting<Keybind> smartToggleKey = sgAutoArmor.add(new KeybindSetting.Builder()
+        .name("smart-toggle-key")
+        .description("Quickly toggle smart chestplate on/off.")
+        .defaultValue(Keybind.none())
+        .action(() -> {
+            if (mc.currentScreen != null) return;
+            if (chestplateMode.get() == ChestplateMode.Smart) {
+                chestplateMode.set(ChestplateMode.Chestplate);
+                info("Smart Chestplate: OFF");
+            } else {
+                chestplateMode.set(ChestplateMode.Smart);
+                info("Smart Chestplate: ON");
+            }
+        })
+        .visible(() -> mode.get() == OperationMode.Default && autoArmor.get())
+        .build()
+    );
+
+    private final Setting<Keybind> manualSwapKey = sgAutoArmor.add(new KeybindSetting.Builder()
+        .name("manual-swap-key")
+        .description("Manually swap between chestplate and elytra.")
+        .defaultValue(Keybind.none())
+        .action(() -> {
+            if (mc.currentScreen != null || mc.player == null) return;
+            manualSwapRequested = true;
+        })
+        .visible(() -> mode.get() == OperationMode.Default && autoArmor.get() && chestplateMode.get() == ChestplateMode.Smart)
+        .build()
+    );
+
+    private final Setting<Integer> swapCooldownMs = sgAutoArmor.add(new IntSetting.Builder()
+        .name("swap-cooldown-ms")
+        .description("Milliseconds to wait between swaps to prevent spam.")
+        .defaultValue(400)
+        .min(0)
+        .max(3000)
+        .sliderRange(0, 1500)
+        .visible(() -> mode.get() == OperationMode.Default && autoArmor.get() && chestplateMode.get() == ChestplateMode.Smart)
+        .build()
+    );
+
+    private final Setting<Integer> jumpDelayMs = sgAutoArmor.add(new IntSetting.Builder()
+        .name("jump-delay-ms")
+        .description("Milliseconds after jumping before swapping to elytra. "
+                   + "If you land before this expires, the swap is cancelled.")
+        .defaultValue(200)
+        .min(0)
+        .max(2000)
+        .sliderRange(0, 1000)
+        .visible(() -> mode.get() == OperationMode.Default && autoArmor.get() && chestplateMode.get() == ChestplateMode.Smart)
+        .build()
+    );
+
+    private final Setting<Double> fallDistanceTrigger = sgAutoArmor.add(new DoubleSetting.Builder()
+        .name("fall-distance-trigger")
+        .description("Fall distance that forces an elytra swap (even without jumping).")
+        .defaultValue(3.5)
+        .min(0)
+        .max(20)
+        .sliderRange(0, 10)
+        .visible(() -> mode.get() == OperationMode.Default && autoArmor.get() && chestplateMode.get() == ChestplateMode.Smart)
+        .build()
+    );
+
+    private final Setting<Boolean> swapBackOnLand = sgAutoArmor.add(new BoolSetting.Builder()
+        .name("swap-back-on-land")
+        .description("Swap back to chestplate when you touch the ground.")
+        .defaultValue(true)
+        .visible(() -> mode.get() == OperationMode.Default && autoArmor.get() && chestplateMode.get() == ChestplateMode.Smart)
         .build()
     );
 
@@ -286,6 +363,12 @@ public class ServerHealthcareSystem extends Module {
     private int breakTickCounter = 0;
     private int bedOriginalHotbarSlot = -1;
 
+    // Smart Chestplate
+    private long    lastSwapTime      = 0;
+    private long    jumpTime          = -1;
+    private boolean wasOnGround       = true;
+    private boolean manualSwapRequested = false;
+
     // ── Constructor ───────────────────────────────────────────────────────────
 
     public ServerHealthcareSystem() {
@@ -355,6 +438,12 @@ public class ServerHealthcareSystem extends Module {
         bedOriginalHotbarSlot = -1;
         highestHungerSeen     = -1;
         moveWaitTicks         = 0;
+        
+        // Smart Chestplate resets
+        lastSwapTime = 0;
+        jumpTime = -1;
+        wasOnGround = true;
+        manualSwapRequested = false;
     }
 
     private void stopEating() {
@@ -408,6 +497,7 @@ public class ServerHealthcareSystem extends Module {
             case Default -> {
                 tickAutoTotem();
                 tickAutoArmor();
+                tickSmartChestplate();
                 tickAutoEat();
                 tickHealthTracking();
                 tickAutoRespawn();
@@ -519,7 +609,8 @@ public class ServerHealthcareSystem extends Module {
 
             if (ignoredArmorSlot.get() == IgnoredArmorSlot.All) continue;
             if (slot == EquipmentSlot.HEAD && ignoredArmorSlot.get() == IgnoredArmorSlot.Helmet) continue;
-            if (slot == EquipmentSlot.CHEST && ignoredArmorSlot.get() == IgnoredArmorSlot.Chestplate) continue;
+            // Skip chestplate handling if set to Smart to prevent override conflicts
+            if (slot == EquipmentSlot.CHEST && (ignoredArmorSlot.get() == IgnoredArmorSlot.Chestplate || chestplateMode.get() == ChestplateMode.Smart)) continue;
             if (slot == EquipmentSlot.LEGS && ignoredArmorSlot.get() == IgnoredArmorSlot.Leggings) continue;
             if (slot == EquipmentSlot.FEET && ignoredArmorSlot.get() == IgnoredArmorSlot.Boots) continue;
 
@@ -549,6 +640,103 @@ public class ServerHealthcareSystem extends Module {
             }
 
             if (bestSlot != -1) InvUtils.move().from(bestSlot).toArmor(i);
+        }
+    }
+
+    private void tickSmartChestplate() {
+        if (chestplateMode.get() != ChestplateMode.Smart || mc.player == null) return;
+
+        long now = System.currentTimeMillis();
+        boolean onGround = mc.player.isOnGround();
+
+        // Detect jump (transition from ground to air while moving up)
+        if (wasOnGround && !onGround && mc.player.getY() > mc.player.prevY + 0.1) {
+            jumpTime = now;
+        }
+
+        // Cancel pending elytra swap if we landed quickly
+        if (onGround && jumpTime != -1 && (now - jumpTime) < jumpDelayMs.get()) {
+            jumpTime = -1;
+        }
+
+        ItemStack chest = mc.player.getEquippedStack(EquipmentSlot.CHEST);
+        long timeSinceLastSwap = now - lastSwapTime;
+
+        // Manual swap override
+        if (manualSwapRequested) {
+            manualSwapRequested = false;
+            if (timeSinceLastSwap >= swapCooldownMs.get()) {
+                if (chest.isOf(Items.ELYTRA)) {
+                    swapToChestplate();
+                } else {
+                    swapToElytra();
+                }
+                lastSwapTime = now;
+            }
+            wasOnGround = onGround;
+            return;
+        }
+
+        // Swap to ELYTRA conditions
+        boolean shouldElytra = false;
+
+        // Jump + delay expired (still in air)
+        if (jumpTime != -1 && (now - jumpTime) >= jumpDelayMs.get() && !onGround) {
+            shouldElytra = true;
+            jumpTime = -1;
+        }
+
+        // Fall distance backup trigger
+        if (fallDistanceTrigger.get() > 0 && mc.player.fallDistance >= fallDistanceTrigger.get()) {
+            shouldElytra = true;
+        }
+
+        if (shouldElytra && !chest.isOf(Items.ELYTRA) && timeSinceLastSwap >= swapCooldownMs.get()) {
+            swapToElytra();
+            lastSwapTime = now;
+        }
+
+        // Swap back to CHESTPLATE on landing
+        if (swapBackOnLand.get() && onGround && !wasOnGround
+                && chest.isOf(Items.ELYTRA)
+                && timeSinceLastSwap >= swapCooldownMs.get()) {
+            swapToChestplate();
+            lastSwapTime = now;
+        }
+
+        wasOnGround = onGround;
+    }
+
+    private void swapToElytra() {
+        FindItemResult elytra = InvUtils.find(Items.ELYTRA);
+        if (elytra.found()) {
+            InvUtils.move().from(elytra.slot()).toArmor(2);
+            info("Swapped to Elytra.");
+        } else {
+            warning("No elytra found in inventory.");
+        }
+    }
+
+    private void swapToChestplate() {
+        int bestSlot = -1;
+        int bestValue = -1;
+
+        for (int i = 0; i < 36; i++) {
+            ItemStack stack = mc.player.getInventory().getStack(i);
+            if (stack.isEmpty() || hasIgnoredEnchantment(stack)) continue;
+            var equippable = stack.get(DataComponentTypes.EQUIPPABLE);
+            if (equippable == null || equippable.slot() != EquipmentSlot.CHEST) continue;
+            if (stack.isOf(Items.ELYTRA)) continue;
+
+            int value = getArmorValue(stack);
+            if (value > bestValue) { bestValue = value; bestSlot = i; }
+        }
+
+        if (bestSlot != -1) {
+            InvUtils.move().from(bestSlot).toArmor(2);
+            info("Swapped to Chestplate.");
+        } else {
+            info("No chestplate available to swap to.");
         }
     }
 
@@ -908,7 +1096,8 @@ public class ServerHealthcareSystem extends Module {
 
     public enum ChestplateMode {
         Chestplate,
-        Elytra
+        Elytra,
+        Smart
     }
 
     public enum IgnoredArmorSlot {
