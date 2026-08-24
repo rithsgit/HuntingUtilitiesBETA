@@ -20,6 +20,7 @@ import meteordevelopment.meteorclient.utils.player.FindItemResult;
 import meteordevelopment.meteorclient.utils.player.InvUtils;
 import meteordevelopment.orbit.EventHandler;
 import net.minecraft.entity.EquipmentSlot;
+import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
 import net.minecraft.item.Items;
 import net.minecraft.sound.SoundEvent;
@@ -360,7 +361,7 @@ public class ElytraAssistant extends Module {
         useItemFromInventory(target.item());
     }
 
-    private void useItemFromInventory(net.minecraft.item.Item item) {
+    private void useItemFromInventory(Item item) {
         FindItemResult result = InvUtils.find(item);
         if (!result.found()) return;
 
@@ -395,9 +396,11 @@ public class ElytraAssistant extends Module {
             : targetSlot.get() - 1; // Convert 1-9 to 0-8
 
         ItemStack targetStack = mc.player.getInventory().getStack(selectedSlot);
+        Item targetItem = Items.FIREWORK_ROCKET;
 
-        if (targetStack.isEmpty()) {
-            info("Target hotbar slot is empty — nothing to replenish.");
+        // Abort if the slot is occupied by a different item
+        if (!targetStack.isEmpty() && targetStack.getItem() != targetItem) {
+            info("Target slot has a different item — cannot replenish.");
             return;
         }
 
@@ -407,7 +410,7 @@ public class ElytraAssistant extends Module {
             return;
         }
 
-        int maxCount = targetStack.getMaxCount();
+        int maxCount = targetItem.getMaxCount();
         int currentCount = targetStack.getCount();
         int needed = maxCount - currentCount;
 
@@ -421,7 +424,7 @@ public class ElytraAssistant extends Module {
         for (int i = 9; i < 36 && needed > 0; i++) {
             ItemStack sourceStack = mc.player.getInventory().getStack(i);
             if (sourceStack.isEmpty()) continue;
-            if (!ItemStack.areItemsEqual(targetStack, sourceStack)) continue;
+            if (sourceStack.getItem() != targetItem) continue;
 
             int available = sourceStack.getCount();
 
@@ -436,10 +439,10 @@ public class ElytraAssistant extends Module {
         int finalCount = maxCount - needed;
 
         if (needed > 0) {
-            info("Replenished " + targetStack.getName().getString()
+            info("Replenished " + targetItem.getName().getString()
                 + " to " + finalCount + " (not enough items in inventory).");
         } else {
-            info("Replenished " + targetStack.getName().getString()
+            info("Replenished " + targetItem.getName().getString()
                 + " to " + maxCount + ".");
             mc.player.playSound(SoundEvents.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
         }
@@ -510,5 +513,5 @@ public class ElytraAssistant extends Module {
     // Inner Classes
     // ═══════════════════════════════════════════════════════════════════════════
 
-    private record ItemUsage(net.minecraft.item.Item item) {}
-} 
+    private record ItemUsage(Item item) {}
+}

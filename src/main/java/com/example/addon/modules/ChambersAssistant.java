@@ -230,7 +230,7 @@ public class ChambersAssistant extends Module {
     private final Setting<Integer> pulseMaxAlpha = sgGeneral.add(new IntSetting.Builder()
         .name("pulse-max-alpha")
         .description("Peak alpha reached during the pulse.")
-        .defaultValue(220).min(50).max(255).sliderMax(255)
+        .defaultValue(220).min(15).max(255).sliderMax(255)
         .visible(() -> renderMode.get() == RenderMode.PULSE).build()
     );
 

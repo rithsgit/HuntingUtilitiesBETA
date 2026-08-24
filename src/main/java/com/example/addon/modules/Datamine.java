@@ -270,7 +270,7 @@ public class Datamine extends Module {
         .name("pulse-max-alpha")
         .description("Peak alpha reached during the pulse.")
         .defaultValue(220)
-        .min(50)
+        .min(15)
         .max(255)
         .sliderMax(255)
         .visible(() -> render.get() && highlightStyle.get() == HighlightStyle.PULSE)

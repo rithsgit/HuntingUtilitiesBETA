@@ -167,7 +167,7 @@ public class Raidar extends Module {
         .visible(() -> highlightStyle.get() == HighlightStyle.PULSE).build());
 
     private final Setting<Integer> pulseMaxAlpha = sgRender.add(new IntSetting.Builder()
-        .name("pulse-max-alpha").defaultValue(220).min(50).max(255).sliderMax(255)
+        .name("pulse-max-alpha").defaultValue(220).min(0).max(255).sliderMax(255)
         .visible(() -> highlightStyle.get() == HighlightStyle.PULSE).build());
 
     // ── Beam Triggers ──

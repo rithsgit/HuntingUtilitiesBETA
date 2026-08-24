@@ -20,6 +20,8 @@ import java.util.concurrent.atomic.AtomicReference;
 import com.example.addon.Tim;
 import com.example.addon.utils.GlowingRegistry;
 
+import meteordevelopment.meteorclient.events.entity.EntityAddedEvent;
+import meteordevelopment.meteorclient.events.game.GameJoinedEvent;
 import meteordevelopment.meteorclient.events.game.ReceiveMessageEvent;
 import meteordevelopment.meteorclient.events.render.Render3DEvent;
 import meteordevelopment.meteorclient.events.world.TickEvent;
@@ -35,6 +37,7 @@ import meteordevelopment.meteorclient.settings.SettingGroup;
 import meteordevelopment.meteorclient.settings.StringListSetting;
 import meteordevelopment.meteorclient.settings.StringSetting;
 import meteordevelopment.meteorclient.systems.modules.Module;
+import meteordevelopment.meteorclient.systems.modules.Modules;
 import meteordevelopment.meteorclient.utils.misc.Keybind;
 import meteordevelopment.meteorclient.utils.player.Rotations;
 import meteordevelopment.meteorclient.utils.render.color.SettingColor;
@@ -43,6 +46,7 @@ import net.minecraft.block.Block;
 import net.minecraft.block.BlockState;
 import net.minecraft.block.Blocks;
 import net.minecraft.block.TrapdoorBlock;
+import net.minecraft.client.network.PlayerListEntry;
 import net.minecraft.client.render.Camera;
 import net.minecraft.client.render.VertexConsumerProvider;
 import net.minecraft.client.render.block.entity.BeaconBlockEntityRenderer;
@@ -50,6 +54,7 @@ import net.minecraft.client.sound.PositionedSoundInstance;
 import net.minecraft.client.util.math.MatrixStack;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.EntityType;
+import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.entity.projectile.thrown.EnderPearlEntity;
 import net.minecraft.registry.Registries;
 import net.minecraft.sound.SoundEvent;
@@ -120,6 +125,7 @@ public class Waypearl extends Module {
     private final SettingGroup sgBot        = settings.createGroup("Bot Assistant");
     private final SettingGroup sgWalker     = settings.createGroup("Walker");
     private final SettingGroup sgPearlsOnly = settings.createGroup("Pearls Only");
+    private final SettingGroup sgDisconnect = settings.createGroup("Auto Disconnect");
 
     // ═════════════════════════════════════════════════════════════════════
     // Settings — General
@@ -411,6 +417,55 @@ public class Waypearl extends Module {
         .visible(() -> renderMode.get() == RenderMode.PearlsOnly && poOwnBeamEnabled.get()).build());
 
     // ═══════════════════════════════════════════════════════════════
+    // Settings — Auto Disconnect
+    // ═══════════════════════════════════════════════════════════════
+
+    private final Setting<Boolean> disconnectEnabled = sgDisconnect.add(new BoolSetting.Builder()
+        .name("disconnect-enabled")
+        .description("Disconnects when another player enters render distance.")
+        .defaultValue(false)
+        .build());
+
+    private final Setting<Boolean> ignoreFriendsOnDisconnect = sgDisconnect.add(new BoolSetting.Builder()
+        .name("ignore-friends")
+        .description("Doesn't disconnect if the entering player is a friend (checked via NeighbourhoodWatch).")
+        .defaultValue(true)
+        .visible(disconnectEnabled::get)
+        .build());
+
+    private final Setting<Boolean> ignoreBotUser = sgDisconnect.add(new BoolSetting.Builder()
+        .name("ignore-bot-user")
+        .description("Doesn't trigger if the entering player is the configured bot username.")
+        .defaultValue(true)
+        .visible(disconnectEnabled::get)
+        .build());
+
+    private final Setting<String> disconnectUser = sgDisconnect.add(new StringSetting.Builder()
+        .name("disconnect-notify-user")
+        .description("Username to notify before disconnecting. If offline, the bot leaves immediately. "
+                   + "Only active in Bot Assistant mode.")
+        .defaultValue("")
+        .visible(() -> disconnectEnabled.get() && moduleMode.get() == ModuleMode.Assistant)
+        .build());
+
+    private final Setting<String> disconnectMessage = sgDisconnect.add(new StringSetting.Builder()
+        .name("disconnect-message")
+        .description("Message sent to the notify user. Use {player} for the triggering player's name. "
+                   + "Only active in Bot Assistant mode.")
+        .defaultValue("Disconnecting — {player} entered render distance.")
+        .visible(() -> disconnectEnabled.get() && moduleMode.get() == ModuleMode.Assistant)
+        .build());
+
+    private final Setting<Integer> disconnectAntiSpam = sgDisconnect.add(new IntSetting.Builder()
+        .name("anti-spam-interval")
+        .description("Minimum seconds between outgoing disconnect notifications to prevent chat spam.")
+        .defaultValue(5)
+        .min(1)
+        .sliderMax(60)
+        .visible(() -> disconnectEnabled.get() && moduleMode.get() == ModuleMode.Assistant)
+        .build());
+
+    // ═══════════════════════════════════════════════════════════════
     // Pearl memory record
     // ═══════════════════════════════════════════════════════════════
 
@@ -444,6 +499,10 @@ public class Waypearl extends Module {
     
     private final Set<Integer> trackedGlowIds = Collections.synchronizedSet(new HashSet<>());
 
+    // Auto-disconnect anti-spam state
+    private volatile long lastDisconnectMsgMs = 0L;
+    private volatile boolean disconnectArmed  = true;
+
     // ═══════════════════════════════════════════════════════════════
     // Constructor
     // ═══════════════════════════════════════════════════════════════
@@ -459,7 +518,7 @@ public class Waypearl extends Module {
     public int getRange() { return range.get(); }
     public Set<Integer> getSeenPearlIds() { return seenPearlIds; }
 
-    // ═════════════════════════════════════════════════════════════════
+    // ═════════════════════════════════════════════════════════════════════
     // Lifecycle
 
     @Override
@@ -475,7 +534,10 @@ public class Waypearl extends Module {
         tickCounter = 0;
         resetWalker();
         wasSelfTriggerPressed = false;
-        
+
+        lastDisconnectMsgMs = 0L;
+        disconnectArmed = true;
+
         for (int id : trackedGlowIds) GlowingRegistry.remove(id);
         trackedGlowIds.clear();
         BEAM_POS_CACHE.clear();
@@ -491,10 +553,20 @@ public class Waypearl extends Module {
         scanPending.set(false);
         stopMovement();
         resetWalker();
-        
+
+        lastDisconnectMsgMs = 0L;
+        disconnectArmed = true;
+
         for (int id : trackedGlowIds) GlowingRegistry.remove(id);
         trackedGlowIds.clear();
         BEAM_POS_CACHE.clear();
+    }
+
+    @EventHandler
+    private void onGameJoined(GameJoinedEvent event) {
+        // Re-arm the disconnect detector after a fresh join/relog
+        disconnectArmed = true;
+        lastDisconnectMsgMs = 0L;
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -583,6 +655,108 @@ public class Waypearl extends Module {
         pendingNotifyTarget = senderName;
         pullQueued.set(true);
         mc.player.sendMessage(Text.literal("[Waypearl] Pull triggered by " + senderName + "."), false);
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Player proximity → Disconnect
+    // ═══════════════════════════════════════════════════════════════
+
+    @EventHandler
+    private void onEntityAdded(EntityAddedEvent event) {
+        if (!disconnectEnabled.get()) return;
+        if (mc.world == null || mc.player == null) return;
+        if (mc.player.networkHandler == null) return;
+
+        if (!(event.entity instanceof PlayerEntity enteringPlayer)) return;
+        if (enteringPlayer == mc.player) return;
+        if (enteringPlayer.getId() == mc.player.getId()) return;
+
+        String enteringName = enteringPlayer.getName().getString();
+
+        // Ignore the configured bot username
+        String botName = botUsername.get().trim();
+        if (ignoreBotUser.get() && !botName.isEmpty() && enteringName.equalsIgnoreCase(botName)) return;
+
+        // ── NeighbourhoodWatch integration ──
+        // Check if the entering player is on the friends list.
+        if (ignoreFriendsOnDisconnect.get()) {
+            NeighbourhoodWatch nw = getNeighbourhoodWatch();
+            if (nw != null && nw.isActive()) {
+                if (nw.isFriend(enteringName)) {
+                    return; // Friend detected — do NOT disconnect
+                }
+            }
+        }
+
+        // Anti-spam #2 (armed flag): guarantees only ONE disconnect per encounter,
+        // even if multiple players walk in simultaneously.
+        if (!disconnectArmed) return;
+        disconnectArmed = false;
+
+        long now = System.currentTimeMillis();
+        boolean isAssistant = moduleMode.get() == ModuleMode.Assistant;
+
+        if (isAssistant) {
+            // ── Bot Assistant mode: send message to custom user before leaving ──
+            String targetUser = disconnectUser.get().trim();
+
+            if (targetUser.isEmpty()) {
+                info("No target user configured — leaving immediately.");
+            } else if (isPlayerOnline(targetUser)) {
+                // Anti-spam #1 (time-based): minimum interval between messages
+                long minMs = disconnectAntiSpam.get() * 1000L;
+                if (now - lastDisconnectMsgMs < minMs) {
+                    info("Anti-spam active — skipping message, disconnecting.");
+                } else {
+                    lastDisconnectMsgMs = now;
+                    try {
+                        String msg = disconnectMessage.get().replace("{player}", enteringName);
+                        mc.player.networkHandler.sendChatMessage("/msg " + targetUser + " " + msg);
+                        info("Sent disconnect notice to §b" + targetUser + "§r — "
+                            + enteringName + " entered render distance.");
+                    } catch (Exception ignored) {
+                        // Fall through to disconnect even if the message send fails
+                    }
+                }
+            } else {
+                info("Target user §b" + targetUser + "§r is offline — leaving immediately.");
+            }
+        } else {
+            // ── Requester mode: message feature disabled — just disconnect ──
+            info("Requester mode — disconnecting without message (" + enteringName + " entered render distance).");
+        }
+
+        // Delayed disconnect so the /msg packet flushes before we tear the world down.
+        Thread.ofVirtual().name("Waypearl-disconnect").start(() -> {
+            try {
+                Thread.sleep(150L);
+                if (mc.world != null && mc.player != null) {
+                    mc.world.disconnect();
+                }
+            } catch (InterruptedException ignored) {
+                Thread.currentThread().interrupt();
+            }
+        });
+    }
+
+    private NeighbourhoodWatch getNeighbourhoodWatch() {
+        return Modules.get().get(NeighbourhoodWatch.class);
+    }
+
+    private boolean isPlayerOnline(String username) {
+        if (username == null || username.isEmpty()) return false;
+        if (mc.player == null || mc.player.networkHandler == null) return false;
+
+        PlayerListEntry entry = mc.player.networkHandler.getPlayerListEntry(username);
+        if (entry != null) return true;
+
+        for (PlayerListEntry ple : mc.player.networkHandler.getPlayerList()) {
+            if (ple != null && ple.getProfile() != null
+                && username.equalsIgnoreCase(ple.getProfile().getName())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -1296,9 +1470,7 @@ public class Waypearl extends Module {
         int r = range.get();
         Map<String, Vec3d[]> lines = columnLines.get();
         
-        // Stores the exact X, Y, Z of the pearl to dynamically center the beam
         Map<String, Vec3d> activePearlPos = new HashMap<>();
-        // Track the actual Entity IDs that are active so we can manage outlines correctly
         Set<Integer> activePearlIds = new HashSet<>();
 
         for (Entity e : mc.world.getEntities()) {
@@ -1311,10 +1483,9 @@ public class Waypearl extends Module {
             String key = px + "," + pz;
             Vec3d[] line = lines.get(key);
 
-            // Only track pearls that are actually inside a valid bubble column
             if (line != null && pos.y >= line[0].y) {
                 activePearlPos.put(key, pos);
-                activePearlIds.add(e.getId()); // Track by ID
+                activePearlIds.add(e.getId());
             }
         }
 
@@ -1337,7 +1508,6 @@ public class Waypearl extends Module {
 
             Vec3d[] line = entry.getValue();
             
-            // DYNAMIC ALIGNMENT: Use the pearl's exact X and Z to center the beam
             double cx = pearlPos.x;
             double cz = pearlPos.z;
             double botY = line[0].y;
@@ -1362,12 +1532,10 @@ public class Waypearl extends Module {
             }
         }
 
-        // Apply entity outlines to pearls actively inside the beam to align with bobbing
         for (Entity e : mc.world.getEntities()) {
             if (!(e instanceof EnderPearlEntity pearl)) continue;
             if (mc.player.distanceTo(e) > r) continue;
             
-            // Check against the Integer Set instead of the String Map
             if (!activePearlIds.contains(pearl.getId())) continue;
 
             boolean isOwn = pearl.getOwner() != null && pearl.getOwner().equals(mc.player);
@@ -1381,10 +1549,8 @@ public class Waypearl extends Module {
             }
         }
 
-        // Cleanup ghost outlines if pearl is pulled or moves out of beam
         for (Iterator<Integer> it = trackedGlowIds.iterator(); it.hasNext(); ) {
             int id = it.next();
-            // Check against the Integer Set instead of the String Map
             if (!activePearlIds.contains(id) || mc.world.getEntityById(id) == null) {
                 GlowingRegistry.remove(id);
                 it.remove();

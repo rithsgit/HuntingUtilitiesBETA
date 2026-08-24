@@ -31,6 +31,7 @@ import meteordevelopment.meteorclient.utils.render.color.SettingColor;
 import meteordevelopment.orbit.EventHandler;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.network.packet.s2c.play.PlayerListS2CPacket;
+import net.minecraft.sound.SoundEvent;
 import net.minecraft.sound.SoundEvents;
 import net.minecraft.text.Text;
 
@@ -54,6 +55,19 @@ public class NeighbourhoodWatch extends Module {
         HighlightMode(String title) { this.title = title; }
 
         @Override public String toString() { return title; }
+    }
+
+    public enum DangerSound {
+        Off(null),
+        WardenRoar(SoundEvents.ENTITY_WARDEN_ROAR),
+        DragonGrowl(SoundEvents.ENTITY_ENDER_DRAGON_GROWL),
+        RavagerRoar(SoundEvents.ENTITY_RAVAGER_ROAR),
+        EndermanStare(SoundEvents.ENTITY_ENDERMAN_STARE),
+        ElderGuardianCurse(SoundEvents.ENTITY_ELDER_GUARDIAN_CURSE),
+        WitherDeath(SoundEvents.ENTITY_WITHER_DEATH);
+
+        public final SoundEvent event;
+        DangerSound(SoundEvent event) { this.event = event; }
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -160,9 +174,27 @@ public class NeighbourhoodWatch extends Module {
         .build()
     );
 
-    private final Setting<Boolean> playSound = sgTracking.add(new BoolSetting.Builder()
-        .name("play-sound").description("Play a sound when a player enters range.")
-        .defaultValue(false).visible(trackPlayers::get)
+    private final Setting<DangerSound> dangerSound = sgTracking.add(new EnumSetting.Builder<DangerSound>()
+        .name("danger-sound")
+        .description("Sound played when a matching player enters visual range. Off = silent.")
+        .defaultValue(DangerSound.Off)
+        .visible(trackPlayers::get)
+        .build()
+    );
+
+    private final Setting<Double> soundVolume = sgTracking.add(new DoubleSetting.Builder()
+        .name("sound-volume")
+        .description("Volume of the danger sound.")
+        .defaultValue(1.0).min(0.1).sliderMax(2.5)
+        .visible(() -> trackPlayers.get() && dangerSound.get() != DangerSound.Off)
+        .build()
+    );
+
+    private final Setting<Double> soundPitch = sgTracking.add(new DoubleSetting.Builder()
+        .name("sound-pitch")
+        .description("Pitch of the danger sound. 1.0 = normal.")
+        .defaultValue(1.0).min(0.5).sliderMax(2.0)
+        .visible(() -> trackPlayers.get() && dangerSound.get() != DangerSound.Off)
         .build()
     );
 
@@ -510,8 +542,14 @@ public class NeighbourhoodWatch extends Module {
                         .replace("{status}", statusStr);
                     info(msg);
                 }
-                if (playSound.get()) {
-                    mc.player.playSound(SoundEvents.BLOCK_NOTE_BLOCK_BELL.value(), 1.0f, 1.0f);
+
+                DangerSound sound = dangerSound.get();
+                if (sound != DangerSound.Off && sound.event != null) {
+                    mc.player.playSound(
+                        sound.event,
+                        soundVolume.get().floatValue(),
+                        soundPitch.get().floatValue()
+                    );
                 }
             }
         }

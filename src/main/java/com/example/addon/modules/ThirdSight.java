@@ -2,6 +2,7 @@ package com.example.addon.modules;
 
 import com.example.addon.Tim;
 
+import meteordevelopment.meteorclient.events.meteor.MouseScrollEvent;
 import meteordevelopment.meteorclient.events.render.Render3DEvent;
 import meteordevelopment.meteorclient.events.world.TickEvent;
 import meteordevelopment.meteorclient.settings.BoolSetting;
@@ -95,6 +96,34 @@ public class ThirdSight extends Module {
         .build()
     );
 
+    // ── Scroll-Wheel Adjustment ───────────────────────────────────────────────
+
+    public final Setting<Boolean> scrollWheelAdjust = sgGeneral.add(new BoolSetting.Builder()
+        .name("scroll-wheel-adjust")
+        .description("Use the mouse scroll wheel to adjust the third-person camera distance on the fly. "
+                   + "Only active while in third person and not zooming. Disabling reverts to the slider value.")
+        .defaultValue(false)
+        .build()
+    );
+
+    public final Setting<Keybind> scrollWheelKey = sgGeneral.add(new KeybindSetting.Builder()
+        .name("Scroll Wheel")
+        .description("Keybind to toggle the scroll wheel camera distance adjustment on or off.")
+        .defaultValue(Keybind.none())
+        .build()
+    );
+
+    public final Setting<Double> scrollSpeed = sgGeneral.add(new DoubleSetting.Builder()
+        .name("scroll-speed")
+        .description("Distance added/removed per scroll click. Positive scroll = zoom in, negative = zoom out.")
+        .defaultValue(1.0)
+        .min(0.1)
+        .max(5.0)
+        .sliderRange(0.1, 5.0)
+        .visible(scrollWheelAdjust::get)
+        .build()
+    );
+
     // ── Zoom ─────────────────────────────────────────────────────────────────
 
     public final Setting<Double> zoomDistance = sgZoom.add(new DoubleSetting.Builder()
@@ -145,6 +174,11 @@ public class ThirdSight extends Module {
     private double  originalFov             = -1;
     private double  currentFov              = 0;
 
+    // Scroll-wheel adjustment state
+    private double scrollTargetDistance     = 4.0;
+    private double lastKnownSliderDistance   = 4.0;
+    private boolean wasScrollKeyPressed     = false;
+
     private Perspective previousPerspective = null;
 
     // ── Constructor ───────────────────────────────────────────────────────────
@@ -175,8 +209,13 @@ public class ThirdSight extends Module {
         wasZoomKeyPressed       = false;
         noDistanceActive        = false;
         wasNoDistanceKeyPressed = false;
+        wasScrollKeyPressed     = false;
         
         originalFov = -1;
+
+        // Sync scroll state on enable
+        scrollTargetDistance   = distance.get();
+        lastKnownSliderDistance = distance.get();
     }
 
     @Override
@@ -216,10 +255,27 @@ public class ThirdSight extends Module {
             }
             wasZoomKeyPressed = zoomPressed;
 
+            // ── Scroll Wheel toggle keybind ──────────────────────────────────
+            boolean scrollPressed = scrollWheelKey.get().isPressed();
+            if (scrollPressed && !wasScrollKeyPressed) {
+                scrollWheelAdjust.set(!scrollWheelAdjust.get());
+                info("Scroll Wheel Adjust %s.", scrollWheelAdjust.get() ? "§aenabled" : "§cdisabled");
+            }
+            wasScrollKeyPressed = scrollPressed;
+
         } else {
             wasNoDistanceKeyPressed = false;
             wasZoomKeyPressed       = false;
+            wasScrollKeyPressed     = false;
             if (!zoomToggle.get()) isZooming = false;
+        }
+
+        // ── Slider / Scroll Sync ──────────────────────────────────────────────
+        // If the user changes the slider in the GUI, snap the scroll target to it
+        double currentSliderValue = distance.get();
+        if (currentSliderValue != lastKnownSliderDistance) {
+            scrollTargetDistance = currentSliderValue;
+            lastKnownSliderDistance = currentSliderValue;
         }
 
         // ── Normal camera tick ────────────────────────────────────────────────
@@ -236,13 +292,46 @@ public class ThirdSight extends Module {
         }
     }
 
+    // ── Mouse Scroll ─────────────────────────────────────────────────────────
+
+    @EventHandler
+    private void onMouseScroll(MouseScrollEvent event) {
+        if (!scrollWheelAdjust.get()) return;
+        if (mc.player == null || mc.options == null) return;
+        if (mc.currentScreen != null) return;                // don't hijack GUI scrolls
+        if (noDistanceActive) return;                         // vanilla distance in effect
+        if (isZooming) return;                                // zoom key has its own distance
+        if (mc.options.getPerspective() != Perspective.THIRD_PERSON_BACK) return;
+
+        // Cancel the vanilla hotbar scroll so the wheel only controls the camera
+        // We cancel before clamping so hitting the distance limit doesn't scroll hotbar
+        event.cancel();
+
+        double delta = event.value;
+        if (delta == 0.0) return;
+
+        // Scroll up (positive) => zoom in (decrease distance)
+        // Scroll down (negative) => zoom out (increase distance)
+        double next = scrollTargetDistance - delta * scrollSpeed.get();
+        next = Math.max(1.0, Math.min(30.0, next)); // Clamp to slider bounds
+
+        if (next == scrollTargetDistance) return;
+        
+        scrollTargetDistance = next;
+        lastKnownSliderDistance = distance.get(); // Prevent onTick from snapping it back to the slider
+    }
+
+    // ── Render ─────────────────────────────────────────────────────────────────
+
     @EventHandler
     private void onRender(Render3DEvent event) {
         double speed = transitionSpeed.get();
         double targetDist;
 
-        if (noDistanceActive) targetDist = 4.0; // Vanilla third person distance
-        else targetDist = isZooming ? zoomDistance.get() : distance.get();
+        if (noDistanceActive)             targetDist = 4.0; // Vanilla third person distance
+        else if (isZooming)               targetDist = zoomDistance.get();
+        else if (scrollWheelAdjust.get()) targetDist = scrollTargetDistance;
+        else                              targetDist = distance.get();
 
         // When free-look is off, smoothly chase the player's look direction.
         boolean shouldFollow = !freeLook.get() && mc.player != null;
@@ -299,6 +388,19 @@ public class ThirdSight extends Module {
     public void setZooming(boolean z) { this.isZooming = z; }
 
     public boolean isNoDistanceActive() { return noDistanceActive; }
+
+    /**
+     * Returns the current scroll-driven distance target.
+     */
+    public double getScrollTargetDistance() { return scrollTargetDistance; }
+
+    /**
+     * Allows external callers to reset the scroll target back to the slider value.
+     */
+    public void resetScrollDistance() {
+        scrollTargetDistance = distance.get();
+        lastKnownSliderDistance = distance.get();
+    }
 
     /**
      * Called by AbstractClientPlayerEntityMixin to counteract the vanilla FOV multiplier 

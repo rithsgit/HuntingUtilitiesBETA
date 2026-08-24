@@ -65,19 +65,12 @@ public class EightToOne extends Module {
     private final SettingGroup sgReplenish     = settings.createGroup("Replenish");
 
     // ── Toggles ──
-    private final Setting<Boolean> scanNetherPortals = sgNetherPortals.add(new BoolSetting.Builder()
-        .name("scan-nether").description("Scan lit Nether portals.").defaultValue(true).build());
-
     private final Setting<Boolean> scanAnchors = sgAnchors.add(new BoolSetting.Builder()
         .name("scan-anchors").description("Scan Respawn Anchors.").defaultValue(true).build());
 
     // ── General ──
     private final Setting<Integer> range = sgGeneral.add(new IntSetting.Builder()
         .name("range").description("Portal detection range in chunks.").defaultValue(32).min(16).max(64).build());
-
-    private final Setting<Integer> autoMarkRange = sgGeneral.add(new IntSetting.Builder()
-        .name("auto-mark-range").description("Auto-mark Nether portals within this many blocks of the player as created by you.")
-        .defaultValue(10).min(0).max(50).visible(scanNetherPortals::get).build());
 
     private final Setting<Boolean> showCreatedCount = sgGeneral.add(new BoolSetting.Builder()
         .name("show-created-count").description("Show a chat message each time a new portal you created is discovered.")
@@ -88,15 +81,21 @@ public class EightToOne extends Module {
 
     // ── Nether Portals ──
     private final Setting<Boolean> differentiatePortalSizes = sgNetherPortals.add(new BoolSetting.Builder()
-        .name("differentiate-sizes").description("Give exit portals and custom/built portals different colors.")
-        .defaultValue(true).visible(scanNetherPortals::get).build());
+        .name("different-sizes")
+        .description("Scans Nether portals and gives exit portals and custom/built portals different colors.")
+        .defaultValue(true)
+        .build());
+
+    private final Setting<Integer> autoMarkRange = sgNetherPortals.add(new IntSetting.Builder()
+        .name("auto-mark-range").description("Auto-mark Nether portals within this many blocks of the player as created by you.")
+        .defaultValue(10).min(0).max(50).visible(differentiatePortalSizes::get).build());
 
     private final Setting<SettingColor> netherColorFull = sgNetherPortals.add(new ColorSetting.Builder()
-        .name("color-exit-portal").defaultValue(new SettingColor(180, 60, 255, 255)).visible(scanNetherPortals::get).build());
+        .name("color-exit-portal").defaultValue(new SettingColor(180, 60, 255, 255)).visible(differentiatePortalSizes::get).build());
 
     private final Setting<SettingColor> netherColorCustom = sgNetherPortals.add(new ColorSetting.Builder()
         .name("color-custom-built").defaultValue(new SettingColor(255, 140, 0, 255))
-        .visible(() -> scanNetherPortals.get() && differentiatePortalSizes.get()).build());
+        .visible(() -> differentiatePortalSizes.get()).build());
 
     // ── Respawn Anchors ──
     private final Setting<SettingColor> anchorChargedColor = sgAnchors.add(new ColorSetting.Builder()
@@ -116,7 +115,7 @@ public class EightToOne extends Module {
         .name("highlight-style").defaultValue(HighlightStyle.GLOW).build());
 
     private final Setting<Boolean> highlightFrame = sgRender.add(new BoolSetting.Builder()
-        .name("highlight-frame").description("Highlights the obsidian frame of Nether portals.").defaultValue(true).visible(scanNetherPortals::get).build());
+        .name("highlight-frame").description("Highlights the obsidian frame of Nether portals.").defaultValue(true).visible(differentiatePortalSizes::get).build());
 
     private final Setting<Boolean> dynamicColors = sgRender.add(new BoolSetting.Builder()
         .name("dynamic-colors").defaultValue(false).build());
@@ -269,7 +268,8 @@ public class EightToOne extends Module {
     private BlockPos entryPortalPos = null;
     private int exclusionTimer = 0;
     private int cleanupTimer = 0;
-    private boolean isDisconnecting = false; // Tracks if we are leaving a server
+    private boolean isDisconnecting = false;
+    private int pendingCheckTimer = 0;
 
     private final Map<String, Boolean> crossDimensionSizeCache = new ConcurrentHashMap<>();
 
@@ -286,7 +286,6 @@ public class EightToOne extends Module {
     @Override
     public void onDeactivate() {
         clearAllState();
-        // Only reset totalCreated on manual disable, NOT on disconnect
         if (!isDisconnecting) {
             totalCreated = 0;
         }
@@ -295,7 +294,6 @@ public class EightToOne extends Module {
 
     @EventHandler
     private void onGameLeft(GameLeftEvent event) {
-        // Mark that we're disconnecting so onDeactivate doesn't wipe the counter
         isDisconnecting = true;
     }
 
@@ -304,12 +302,13 @@ public class EightToOne extends Module {
         anchorChargeMap.clear(); scannedChunks.clear(); dirtyChunks.clear();
         crossDimensionSizeCache.clear();
         portalsDirty = false; framesDirty = false;
+        pendingCheckTimer = 0;
     }
 
     @EventHandler
     private void onTick(TickEvent.Post event) {
         if (mc.player == null || mc.world == null) return;
-        if (isDisconnecting) isDisconnecting = false; // We're back in-game, clear disconnect flag
+        if (isDisconnecting) isDisconnecting = false;
         if (dimensionChangeCooldown > 0) { dimensionChangeCooldown--; return; }
         if (exclusionTimer > 0) exclusionTimer--;
 
@@ -322,6 +321,18 @@ public class EightToOne extends Module {
 
         BlockPos playerPos = mc.player.getBlockPos();
         scanNewChunks(playerPos.getX() >> 4, playerPos.getZ() >> 4);
+
+        // Periodically retry resolving portals stuck in PENDING state 
+        // (fixes fast flying where chunks load before corners are available)
+        if (++pendingCheckTimer >= 20) {
+            pendingCheckTimer = 0;
+            for (PortalStructure s : portalStructureMap.values()) {
+                if (s.sizeState == SizeState.PENDING) {
+                    portalsDirty = true;
+                    break;
+                }
+            }
+        }
 
         if (portalsDirty) {
             portalsDirty = false;
@@ -432,7 +443,7 @@ public class EightToOne extends Module {
             boolean hasNether = false;
             boolean hasAnchor = false;
             
-            if (scanNetherPortals.get()) {
+            if (differentiatePortalSizes.get()) {
                 try {
                     hasNether = section.hasAny(state -> state.isOf(Blocks.NETHER_PORTAL));
                 } catch (Exception e) {
@@ -472,7 +483,7 @@ public class EightToOne extends Module {
     }
 
     private PortalType classifyBlock(Block block) {
-        if (scanNetherPortals.get() && block == Blocks.NETHER_PORTAL) return PortalType.NETHER;
+        if (differentiatePortalSizes.get() && block == Blocks.NETHER_PORTAL) return PortalType.NETHER;
         if (scanAnchors.get() && block == Blocks.RESPAWN_ANCHOR) return PortalType.RESPAWN_ANCHOR;
         return null;
     }
@@ -532,12 +543,19 @@ public class EightToOne extends Module {
             if (crossCached != null) {
                 sizeState = crossCached ? SizeState.EXIT : SizeState.CUSTOM;
             } else if (dimensionChangeCooldown <= 0) {
-                boolean allCorners = hasObsidianOnAllCorners(component);
-                sizeState = allCorners ? SizeState.EXIT : SizeState.CUSTOM;
-                crossDimensionSizeCache.put(crossKey, allCorners);
+                Boolean allCorners = checkCorners(component);
+                if (allCorners != null) {
+                    sizeState = allCorners ? SizeState.EXIT : SizeState.CUSTOM;
+                    crossDimensionSizeCache.put(crossKey, allCorners);
+                } else {
+                    sizeState = SizeState.PENDING; // Chunks not loaded yet
+                }
             }
             
-            if (isCreated && showCreatedCount.get() && !portalStructureMap.containsKey(anchor)) {
+            boolean wasInMap = portalStructureMap.containsKey(anchor);
+            SizeState previousSizeState = wasInMap ? portalStructureMap.get(anchor).sizeState : null;
+
+            if (isCreated && showCreatedCount.get() && !wasInMap) {
                 totalCreated++;
                 sendMessage("§aCreated Portal #" + totalCreated + (sizeState == SizeState.EXIT ? " §8[Exit]" : " §8[Custom]"));
             }
@@ -550,7 +568,7 @@ public class EightToOne extends Module {
         framesDirty = true;
     }
 
-    private boolean hasObsidianOnAllCorners(Set<BlockPos> component) {
+    private Boolean checkCorners(Set<BlockPos> component) {
         int minX = Integer.MAX_VALUE, maxX = Integer.MIN_VALUE;
         int minY = Integer.MAX_VALUE, maxY = Integer.MIN_VALUE;
         int minZ = Integer.MAX_VALUE, maxZ = Integer.MIN_VALUE;
@@ -573,11 +591,10 @@ public class EightToOne extends Module {
         
         for (BlockPos c : corners) {
             try {
-                if (!isChunkLoaded(c) || !mc.world.getBlockState(c).isOf(Blocks.OBSIDIAN)) {
-                    return false;
-                }
+                if (!isChunkLoaded(c)) return null; // Return null if we can't verify yet
+                if (!mc.world.getBlockState(c).isOf(Blocks.OBSIDIAN)) return false;
             } catch (Exception e) {
-                return false;
+                return null; // Assume unknown on exception
             }
         }
         return true;
@@ -805,14 +822,13 @@ public class EightToOne extends Module {
     private void handleReplenish() {
         int selectedSlot = useSelectedSlot.get() 
             ? mc.player.getInventory().selectedSlot 
-            : targetSlot.get() - 1; // Convert 1-9 to 0-8
+            : targetSlot.get() - 1;
 
         ItemStack targetStack = mc.player.getInventory().getStack(selectedSlot);
         Item targetItem = replenishItem.get() == ReplenishItem.Obsidian 
             ? Items.OBSIDIAN 
             : Items.ENDER_CHEST;
 
-        // Abort if the slot is already occupied by a different item
         if (!targetStack.isEmpty() && targetStack.getItem() != targetItem) {
             info("Target slot has a different item — cannot replenish.");
             return;
@@ -827,8 +843,6 @@ public class EightToOne extends Module {
             return;
         }
 
-        // Search main inventory (slots 9–35) for matching items and move them
-        // into the target hotbar slot until it reaches max stack size.
         for (int i = 9; i < 36 && needed > 0; i++) {
             ItemStack sourceStack = mc.player.getInventory().getStack(i);
             if (sourceStack.isEmpty()) continue;
