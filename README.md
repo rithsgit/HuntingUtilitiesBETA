@@ -12,6 +12,7 @@ Modules List;
 - Elytra Assistant
 - Gatekeeper
 - Graveyard
+- Groundwork
 - Handhold
 - Handmold
 - Illushine
@@ -26,6 +27,7 @@ Modules List;
 - Penpal
 - Portal Maker
 - Raidar
+- Ringmaster
 - Rocket Pilot
 - Safety Net
 - Server Healthcare System
