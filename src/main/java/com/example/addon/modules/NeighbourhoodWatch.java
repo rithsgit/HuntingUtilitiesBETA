@@ -1,7 +1,9 @@
 package com.example.addon.modules;
 
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import com.example.addon.Tim;
@@ -22,18 +24,21 @@ import meteordevelopment.meteorclient.settings.Setting;
 import meteordevelopment.meteorclient.settings.SettingGroup;
 import meteordevelopment.meteorclient.settings.StringListSetting;
 import meteordevelopment.meteorclient.settings.StringSetting;
-import meteordevelopment.meteorclient.systems.modules.Module;
+import meteordevelopment.meteorclient.systems.Systems;
 import meteordevelopment.meteorclient.systems.hud.Hud;
 import meteordevelopment.meteorclient.systems.hud.HudElement;
-import meteordevelopment.meteorclient.systems.Systems;
+import meteordevelopment.meteorclient.systems.modules.Module;
 import meteordevelopment.meteorclient.utils.render.WireframeEntityRenderer;
 import meteordevelopment.meteorclient.utils.render.color.SettingColor;
 import meteordevelopment.orbit.EventHandler;
+import net.minecraft.entity.Entity;
 import net.minecraft.entity.player.PlayerEntity;
+import net.minecraft.network.packet.s2c.play.EntityStatusS2CPacket;
 import net.minecraft.network.packet.s2c.play.PlayerListS2CPacket;
 import net.minecraft.sound.SoundEvent;
 import net.minecraft.sound.SoundEvents;
 import net.minecraft.text.Text;
+import net.minecraft.util.Formatting;
 
 public class NeighbourhoodWatch extends Module {
 
@@ -160,8 +165,9 @@ public class NeighbourhoodWatch extends Module {
         .build()
     );
 
-    private final Setting<Boolean> notifyChat = sgTracking.add(new BoolSetting.Builder()
-        .name("notify-chat").description("Send a chat message when a player enters range.")
+    private final Setting<Boolean> alertNotifications = sgTracking.add(new BoolSetting.Builder()
+        .name("alert-notifications")
+        .description("Sends chat messages, action bar overlays, and totem pop alerts.")
         .defaultValue(true).visible(trackPlayers::get)
         .build()
     );
@@ -170,7 +176,7 @@ public class NeighbourhoodWatch extends Module {
         .name("custom-message")
         .description("Notification message. Use {player} for name and {status} for relation.")
         .defaultValue("Warning: {status} {player} is in visual range!")
-        .visible(() -> trackPlayers.get() && notifyChat.get())
+        .visible(() -> trackPlayers.get() && alertNotifications.get())
         .build()
     );
 
@@ -298,8 +304,13 @@ public class NeighbourhoodWatch extends Module {
     private final Set<String>  friendSet          = new HashSet<>();
     private final Set<String>  enemySet           = new HashSet<>();
     private final Set<String>  proxySet           = new HashSet<>();
+    private final Map<String, Integer> totemPops  = new HashMap<>();
 
     private boolean anyPlayerNearby = false;
+
+    // Action Bar State
+    private int actionBarTicks = 0;
+    private Text actionBarMessage = null;
 
     // ═══════════════════════════════════════════════════════════════════════════
     // Constructor
@@ -351,6 +362,22 @@ public class NeighbourhoodWatch extends Module {
         if (tickDisconnectOnPlayer()) return;
         tickPlayerTracking();
         tickOutlineShader();
+        tickActionBar();
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Action Bar Logic
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    private void tickActionBar() {
+        if (actionBarTicks > 0 && actionBarMessage != null) {
+            // Using the native Minecraft overlay renderer directly prevents it from being intercepted by chat processors
+            mc.inGameHud.setOverlayMessage(actionBarMessage, false);
+            actionBarTicks--;
+            if (actionBarTicks == 0) {
+                actionBarMessage = null;
+            }
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -434,11 +461,25 @@ public class NeighbourhoodWatch extends Module {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // Packet Handler — Tab list
+    // Packet Handler — Tab list & Totem Pops
     // ═══════════════════════════════════════════════════════════════════════════
 
     @EventHandler
     private void onPacketReceive(PacketEvent.Receive event) {
+        if (mc.player == null || mc.world == null) return;
+
+        // Handle Totem Pops
+        if (event.packet instanceof EntityStatusS2CPacket statusPacket) {
+            // 35 is the entity status for Totem of Undying activation
+            if (statusPacket.getStatus() == 35) {
+                Entity entity = statusPacket.getEntity(mc.world);
+                if (entity instanceof PlayerEntity player && player != mc.player) {
+                    handleTotemPop(player);
+                }
+            }
+        }
+
+        // Handle Tab List
         if (!(event.packet instanceof PlayerListS2CPacket packet)) return;
 
         for (PlayerListS2CPacket.Entry entry : packet.getEntries()) {
@@ -497,21 +538,24 @@ public class NeighbourhoodWatch extends Module {
     private void tickPlayerTracking() {
         if (!trackPlayers.get()) {
             anyPlayerNearby = false;
+            notifiedPlayers.clear(); // Clear so they get re-notified if tracking is toggled
             return;
         }
 
         anyPlayerNearby = false;
+        Set<Integer> playersInVisualRangeThisTick = new HashSet<>();
 
         for (PlayerEntity player : mc.world.getPlayers()) {
             if (player == mc.player || player.isSpectator()) continue;
             if (mc.player.distanceTo(player) > trackRange.get()) continue;
 
             anyPlayerNearby = true;
+            playersInVisualRangeThisTick.add(player.getId());
 
             String       name   = player.getName().getString();
             PlayerStatus status = getPlayerStatusPublic(name);
 
-            boolean isNewlySpotted = notifiedPlayers.add(player.getId());
+            boolean isNewlySpotted = !notifiedPlayers.contains(player.getId());
 
             if (isNewlySpotted) {
                 // ── Update Last Seen HUD directly ──
@@ -535,12 +579,16 @@ public class NeighbourhoodWatch extends Module {
             if (!shouldNotify) continue;
 
             if (isNewlySpotted) {
-                if (notifyChat.get()) {
-                    String statusStr = status.name().toLowerCase();
-                    String msg = customMessage.get()
-                        .replace("{player}", name)
-                        .replace("{status}", statusStr);
+                String statusStr = status.name().toLowerCase();
+                String msg = customMessage.get()
+                    .replace("{player}", name)
+                    .replace("{status}", statusStr);
+
+                if (alertNotifications.get()) {
                     info(msg);
+
+                    actionBarMessage = Text.literal(msg).formatted(Formatting.RED, Formatting.BOLD);
+                    actionBarTicks = 40 + (int)(Math.random() * 61); // Random 2 to 5 seconds (40 to 100 ticks)
                 }
 
                 DangerSound sound = dangerSound.get();
@@ -553,7 +601,54 @@ public class NeighbourhoodWatch extends Module {
                 }
             }
         }
-        notifiedPlayers.removeIf(id -> mc.world.getEntityById(id) == null);
+
+        // Check for players who left visual range this tick
+        for (Integer id : notifiedPlayers) {
+            if (!playersInVisualRangeThisTick.contains(id)) {
+                PlayerEntity player = (PlayerEntity) mc.world.getEntityById(id);
+                if (player != null) {
+                    String name = player.getName().getString();
+                    PlayerStatus status = getPlayerStatusPublic(name);
+
+                    boolean shouldNotify = trackFilter.get() == TabFilter.All || switch (status) {
+                        case Friend -> trackFilter.get() == TabFilter.Friends;
+                        case Enemy  -> trackFilter.get() == TabFilter.Enemies;
+                        case Proxy  -> trackFilter.get() == TabFilter.Proxies;
+                        case Other  -> trackFilter.get() == TabFilter.Others;
+                    };
+
+                    if (shouldNotify && alertNotifications.get()) {
+                        info("§e%s has left visual range.", name);
+                        
+                        actionBarMessage = Text.literal(name + " left visual range!").formatted(Formatting.YELLOW, Formatting.BOLD);
+                        actionBarTicks = 40 + (int)(Math.random() * 61); // Random 2 to 5 seconds
+                    }
+                }
+            }
+        }
+
+        // Update the notified players set to match those currently in range
+        notifiedPlayers.clear();
+        notifiedPlayers.addAll(playersInVisualRangeThisTick);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Totem Pop Handler
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    private void handleTotemPop(PlayerEntity player) {
+        if (!alertNotifications.get()) return;
+
+        String name = player.getName().getString();
+        int pops = totemPops.getOrDefault(name, 0) + 1;
+        totemPops.put(name, pops);
+
+        String popMsg = name + " just popped a totem! (" + pops + ")";
+
+        info("§d" + popMsg); // Light purple in chat
+        
+        actionBarMessage = Text.literal(popMsg).formatted(Formatting.LIGHT_PURPLE, Formatting.BOLD);
+        actionBarTicks = 40 + (int)(Math.random() * 61); // Random 2 to 5 seconds
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -654,6 +749,9 @@ public class NeighbourhoodWatch extends Module {
         notifiedPlayers.clear();
         ignoredThisSession.clear();
         playersInTab.clear();
+        actionBarTicks = 0;
+        actionBarMessage = null;
+        totemPops.clear();
     }
 
     private void updateFriendEnemySets() {

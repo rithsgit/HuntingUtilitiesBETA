@@ -56,6 +56,7 @@ public class EightToOne extends Module {
     public enum CoordVisibility { Visible, Censored, Hidden }
     public enum BeamStyle { BOX, GUARDIAN }
     public enum ReplenishItem { Obsidian, EnderChest }
+    public enum ReplenishMode { Bind, Automatic }
 
     private final SettingGroup sgGeneral       = settings.getDefaultGroup();
     private final SettingGroup sgNetherPortals = settings.createGroup("Nether Portals");
@@ -209,24 +210,31 @@ public class EightToOne extends Module {
         .visible(() -> showBeam.get() && beamStyle.get() == BeamStyle.GUARDIAN).build());
 
     // ── Replenish ──
-    private final Setting<Boolean> replenishMode = sgReplenish.add(new BoolSetting.Builder()
+    private final Setting<ReplenishMode> replenishMode = sgReplenish.add(new EnumSetting.Builder<ReplenishMode>()
         .name("replenish-mode")
-        .description("Toggles the replenish keybind.")
-        .defaultValue(false)
+        .description("Toggle between using a keybind or doing it automatically.")
+        .defaultValue(ReplenishMode.Bind)
         .build());
 
     private final Setting<ReplenishItem> replenishItem = sgReplenish.add(new EnumSetting.Builder<ReplenishItem>()
         .name("replenish-item")
         .description("The item to replenish.")
         .defaultValue(ReplenishItem.Obsidian)
-        .visible(replenishMode::get)
+        .build());
+
+    private final Setting<Integer> autoThreshold = sgReplenish.add(new IntSetting.Builder()
+        .name("auto-threshold")
+        .description("Item count at which the slot automatically refills.")
+        .defaultValue(5)
+        .min(1)
+        .sliderMax(64)
+        .visible(() -> replenishMode.get() == ReplenishMode.Automatic)
         .build());
 
     private final Setting<Boolean> useSelectedSlot = sgReplenish.add(new BoolSetting.Builder()
         .name("use-selected-slot")
         .description("Replenishes the currently selected hotbar slot instead of a specific one.")
         .defaultValue(false)
-        .visible(replenishMode::get)
         .build());
 
     private final Setting<Integer> targetSlot = sgReplenish.add(new IntSetting.Builder()
@@ -235,19 +243,19 @@ public class EightToOne extends Module {
         .defaultValue(1)
         .min(1)
         .max(9)
-        .visible(() -> replenishMode.get() && !useSelectedSlot.get())
+        .visible(() -> !useSelectedSlot.get())
         .build());
 
     private final Setting<Keybind> replenishKey = sgReplenish.add(new KeybindSetting.Builder()
         .name("replenish-key")
         .description("Replenishes the target hotbar slot's item to its max stack size from the main inventory.")
         .defaultValue(Keybind.none())
-        .visible(replenishMode::get)
+        .visible(() -> replenishMode.get() == ReplenishMode.Bind)
         .action(() -> {
             if (mc.currentScreen != null) return;
             if (mc.player == null || mc.world == null) return;
-            if (!replenishMode.get()) return;
-            handleReplenish();
+            if (replenishMode.get() != ReplenishMode.Bind) return;
+            handleReplenish(false);
         })
         .build());
 
@@ -313,6 +321,7 @@ public class EightToOne extends Module {
         if (exclusionTimer > 0) exclusionTimer--;
 
         handleDimensionChange();
+        handleAutoReplenish();
 
         if (!dirtyChunks.isEmpty()) { 
             scannedChunks.removeAll(dirtyChunks); 
@@ -819,7 +828,28 @@ public class EightToOne extends Module {
     }
 
     // ── Replenish Feature ──
-    private void handleReplenish() {
+    private void handleAutoReplenish() {
+        if (replenishMode.get() != ReplenishMode.Automatic) return;
+        if (mc.currentScreen != null) return;
+
+        int selectedSlot = useSelectedSlot.get()
+            ? mc.player.getInventory().selectedSlot
+            : targetSlot.get() - 1;
+
+        ItemStack targetStack = mc.player.getInventory().getStack(selectedSlot);
+        Item targetItem = replenishItem.get() == ReplenishItem.Obsidian 
+            ? Items.OBSIDIAN 
+            : Items.ENDER_CHEST;
+
+        if (!targetStack.isEmpty() && targetStack.getItem() != targetItem) return;
+
+        int currentCount = targetStack.getCount();
+        if (currentCount <= autoThreshold.get()) {
+            handleReplenish(true);
+        }
+    }
+
+    private void handleReplenish(boolean silent) {
         int selectedSlot = useSelectedSlot.get() 
             ? mc.player.getInventory().selectedSlot 
             : targetSlot.get() - 1;
@@ -830,7 +860,7 @@ public class EightToOne extends Module {
             : Items.ENDER_CHEST;
 
         if (!targetStack.isEmpty() && targetStack.getItem() != targetItem) {
-            info("Target slot has a different item — cannot replenish.");
+            if (!silent) info("Target slot has a different item — cannot replenish.");
             return;
         }
 
@@ -839,7 +869,7 @@ public class EightToOne extends Module {
         int needed = maxCount - currentCount;
 
         if (needed <= 0) {
-            info("Stack is already full (" + maxCount + ").");
+            if (!silent) info("Stack is already full (" + maxCount + ").");
             return;
         }
 
@@ -858,10 +888,10 @@ public class EightToOne extends Module {
         int finalCount = maxCount - needed;
 
         if (needed > 0) {
-            info("Replenished " + targetItem.getName().getString()
+            if (!silent) info("Replenished " + targetItem.getName().getString()
                 + " to " + finalCount + " (not enough items in inventory).");
         } else {
-            info("Replenished " + targetItem.getName().getString()
+            if (!silent) info("Replenished " + targetItem.getName().getString()
                 + " to " + maxCount + ".");
             mc.player.playSound(SoundEvents.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
         }

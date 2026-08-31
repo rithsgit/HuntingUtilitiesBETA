@@ -51,7 +51,10 @@ import net.minecraft.entity.Entity;
 import net.minecraft.entity.ExperienceOrbEntity;
 import net.minecraft.entity.mob.EndermiteEntity;
 import net.minecraft.entity.mob.HostileEntity;
+import net.minecraft.entity.mob.MobEntity;
 import net.minecraft.entity.vehicle.ChestMinecartEntity;
+import net.minecraft.fluid.FluidState;
+import net.minecraft.fluid.Fluids;
 import net.minecraft.item.AxeItem;
 import net.minecraft.item.Item;
 import net.minecraft.item.Items;
@@ -59,6 +62,8 @@ import net.minecraft.item.PickaxeItem;
 import net.minecraft.item.SwordItem;
 import net.minecraft.sound.SoundEvents;
 import net.minecraft.state.property.Properties;
+import net.minecraft.text.Text;
+import net.minecraft.util.Formatting;
 import net.minecraft.util.Hand;
 import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.hit.EntityHitResult;
@@ -101,6 +106,11 @@ public class DungeonAssistant extends Module {
         ALL
     }
 
+    public enum SpawnerBeamMode {
+        NONE,
+        ALL
+    }
+
     public enum BeamStyle {
         BOX,
         GUARDIAN
@@ -123,10 +133,15 @@ public class DungeonAssistant extends Module {
     private final Set<BlockPos>              checkedContainers     = new HashSet<>();
     private final List<EndermiteEntity>      endermiteTargets      = new ArrayList<>();
     private final List<ExperienceOrbEntity>  xpOrbTargets          = new ArrayList<>();
+    private final List<MobEntity>            spawnerMobTargets     = new ArrayList<>();
     private final Set<Integer>               notifiedEndermites    = new HashSet<>();
+    private final Set<Integer>               notifiedSpawnerMobs   = new HashSet<>();
+    private final Set<Integer>               spawnerMobGlowingIds  = new HashSet<>();
     private final Set<Integer>               checkedEntityIds      = new HashSet<>();
     private final Set<Integer>               notifiedAnomalousMinecarts = new HashSet<>();
     private final Set<BlockPos>              spawnerTorches        = new HashSet<>();
+    private final Set<BlockPos>              activeSpawners        = new HashSet<>();
+    private int                              spawnerActionBarCooldown = 0;
 
     // Breaking
     private boolean  isBreaking        = false;
@@ -369,6 +384,21 @@ public class DungeonAssistant extends Module {
         .build()
     );
 
+    private final Setting<SpawnerBeamMode> spawnerBeamMode = sgBeam.add(new EnumSetting.Builder<SpawnerBeamMode>()
+        .name("spawner-beam-mode")
+        .description("Renders beams to the sky for active spawners to notify where they actually are.")
+        .defaultValue(SpawnerBeamMode.ALL)
+        .build()
+    );
+
+    private final Setting<SettingColor> spawnerBeamColor = sgBeam.add(new ColorSetting.Builder()
+        .name("spawner-beam-color")
+        .description("Color of the active spawner beams.")
+        .defaultValue(new SettingColor(255, 50, 50, 180))
+        .visible(() -> spawnerBeamMode.get() != SpawnerBeamMode.NONE)
+        .build()
+    );
+
     // ═══════════════════════════════════════════════════════════════════════════
     // Settings — Targets - Blocks
     // ═══════════════════════════════════════════════════════════════════════════
@@ -542,13 +572,49 @@ public class DungeonAssistant extends Module {
         .visible(trackXpOrbs::get).build()
     );
 
+    private final Setting<Boolean> trackSpawnerMobs = sgEntities.add(new BoolSetting.Builder()
+        .name("track-spawner-mobs")
+        .description("Highlights mobs within 5 blocks of a spawner, indicating activity without leaking coords.")
+        .defaultValue(true)
+        .build()
+    );
+
+    private final Setting<Double> spawnerChestRadius = sgEntities.add(new DoubleSetting.Builder()
+        .name("spawner-chest-radius")
+        .description("Only treats a spawner as active if a chest is found within this radius (to prevent false flags).")
+        .defaultValue(6.0).min(1.0).sliderMax(15.0)
+        .visible(trackSpawnerMobs::get)
+        .build()
+    );
+
+    private final Setting<SettingColor> spawnerMobColor = sgEntities.add(new ColorSetting.Builder()
+        .name("spawner-mob-color")
+        .description("The highlight color for mobs near a spawner.")
+        .defaultValue(new SettingColor(255, 100, 0, 255))
+        .visible(trackSpawnerMobs::get).build()
+    );
+
+    private final Setting<SettingColor> activeSpawnerColor = sgEntities.add(new ColorSetting.Builder()
+        .name("active-spawner-color")
+        .description("Highlight color for spawners that currently have mobs near them.")
+        .defaultValue(new SettingColor(255, 50, 50, 255)) // Bright Red
+        .visible(trackSpawnerMobs::get)
+        .build());
+
+    private final Setting<Double> spawnerAlertVolume = sgEntities.add(new DoubleSetting.Builder()
+        .name("alert-volume")
+        .description("Volume of the spawner activation alert sound.")
+        .defaultValue(1.0).min(0).sliderMax(1.0)
+        .visible(trackSpawnerMobs::get)
+        .build());
+
     // ═══════════════════════════════════════════════════════════════════════════
     // Settings — Automation
     // ═══════════════════════════════════════════════════════════════════════════
 
-    private final Setting<Boolean> autoOpenBreak = sgAutomation.add(new BoolSetting.Builder()
-        .name("auto-open/break")
-        .description("Automatically open, check, and break empty containers.")
+    private final Setting<Boolean> autoOpen = sgAutomation.add(new BoolSetting.Builder()
+        .name("auto-open")
+        .description("Automatically opens and checks nearby containers.")
         .defaultValue(true)
         .build()
     );
@@ -556,14 +622,21 @@ public class DungeonAssistant extends Module {
     private final Setting<Boolean> silentMode = sgAutomation.add(new BoolSetting.Builder()
         .name("silent-mode")
         .description("Open containers invisibly and switch tools silently.")
-        .defaultValue(true).visible(autoOpenBreak::get)
+        .defaultValue(true).visible(autoOpen::get)
+        .build()
+    );
+
+    private final Setting<Boolean> autoBreak = sgAutomation.add(new BoolSetting.Builder()
+        .name("auto-break")
+        .description("Automatically break empty containers after opening them.")
+        .defaultValue(true)
         .build()
     );
 
     private final Setting<Integer> breakDelay = sgAutomation.add(new IntSetting.Builder()
         .name("break-delay").description("Ticks to wait before breaking an empty container.")
         .defaultValue(5).min(0).max(40).sliderMin(0).sliderMax(20)
-        .visible(autoOpenBreak::get)
+        .visible(autoBreak::get)
         .build()
     );
 
@@ -583,7 +656,7 @@ public class DungeonAssistant extends Module {
             Items.BROWN_SHULKER_BOX,      Items.GREEN_SHULKER_BOX,
             Items.RED_SHULKER_BOX,        Items.BLACK_SHULKER_BOX
         ))
-        .visible(autoOpenBreak::get)
+        .visible(autoOpen::get)
         .build()
     );
 
@@ -607,7 +680,7 @@ public class DungeonAssistant extends Module {
     private final Setting<Boolean> prioritizeSpawners = sgAutomation.add(new BoolSetting.Builder()
         .name("prioritize-spawners")
         .description("Break spawners before opening chests when both auto-break and auto-open are active.")
-        .defaultValue(true).visible(() -> autoOpenBreak.get() && autoBreakSpawners.get())
+        .defaultValue(true).visible(() -> autoOpen.get() && autoBreakSpawners.get())
         .build()
     );
 
@@ -647,10 +720,15 @@ public class DungeonAssistant extends Module {
         checkedContainers.clear();
         endermiteTargets.clear();
         xpOrbTargets.clear();
+        spawnerMobTargets.clear();
         notifiedEndermites.clear();
+        notifiedSpawnerMobs.clear();
+        spawnerMobGlowingIds.clear();
         checkedEntityIds.clear();
         notifiedAnomalousMinecarts.clear();
         spawnerTorches.clear();
+        activeSpawners.clear();
+        spawnerActionBarCooldown = 0;
         brokenChestsCount = 0;
         lootFoundCount    = 0;
         isBreakingChest = false;
@@ -680,10 +758,15 @@ public class DungeonAssistant extends Module {
         checkedContainers.clear();
         endermiteTargets.clear();
         xpOrbTargets.clear();
+        spawnerMobTargets.clear();
         notifiedEndermites.clear();
+        notifiedSpawnerMobs.clear();
+        spawnerMobGlowingIds.clear();
         checkedEntityIds.clear();
         notifiedAnomalousMinecarts.clear();
         spawnerTorches.clear();
+        activeSpawners.clear();
+        spawnerActionBarCooldown = 0;
 
         resetSoftState();
     }
@@ -698,7 +781,7 @@ public class DungeonAssistant extends Module {
 
         if (wasAutoOpened) {
             interactTimeoutTimer = 0;
-            if (autoOpenBreak.get() && silentMode.get()
+            if (autoOpen.get() && silentMode.get()
                     && event.screen instanceof HandledScreen<?>
                     && !(event.screen instanceof InventoryScreen)) {
                 silentOpenPending = true;
@@ -772,6 +855,10 @@ public class DungeonAssistant extends Module {
 
                 renderBox = createPaddedBox(pos);
                 color = getColor(type);
+
+                if (type == TargetType.SPAWNER && activeSpawners.contains(pos)) {
+                    color = activeSpawnerColor.get();
+                }
             }
 
             if (color == null) continue;
@@ -845,6 +932,23 @@ public class DungeonAssistant extends Module {
             }
         }
 
+        if (trackSpawnerMobs.get() && !spawnerMobTargets.isEmpty()) {
+            SettingColor color = spawnerMobColor.get();
+            for (MobEntity mob : spawnerMobTargets) {
+                if (!mob.isAlive()) continue;
+                Box entityBox = mob.getBoundingBox();
+
+                if (isSpectral) {
+                    event.renderer.box(entityBox, withAlpha(color, 0), withAlpha(color, 200), ShapeMode.Lines, 0);
+                } else if (isPulse) {
+                    renderPulseBox(event, entityBox, color);
+                } else {
+                    renderGlowLayers(event, entityBox, color);
+                    event.renderer.box(entityBox, withAlpha(color, 0), color, ShapeMode.Lines, 0);
+                }
+            }
+        }
+
         // Chest Beams Collection
         if (chestBeamMode.get() != ChestBeamMode.NONE) {
             double maxDistSq = Math.pow(range.get() * 16, 2);
@@ -869,6 +973,20 @@ public class DungeonAssistant extends Module {
                         beamsToRender.add(new BeamData(createPaddedBox(pos), beamColor));
                     }
                 }
+            }
+        }
+
+        // Active Spawner Beams Collection
+        if (trackSpawnerMobs.get() && spawnerBeamMode.get() == SpawnerBeamMode.ALL && !activeSpawners.isEmpty()) {
+            SettingColor activeBeamColor = spawnerBeamColor.get();
+            double maxDistSq = Math.pow(range.get() * 16, 2);
+            
+            for (BlockPos pos : activeSpawners) {
+                if (!mc.world.getChunkManager().isChunkLoaded(pos.getX() >> 4, pos.getZ() >> 4)) continue;
+                if (pos.getSquaredDistance(mc.player.getPos()) > maxDistSq) continue;
+                if (mc.world.getBlockState(pos).isAir()) continue;
+                
+                beamsToRender.add(new BeamData(createPaddedBox(pos), activeBeamColor));
             }
         }
 
@@ -1028,6 +1146,7 @@ public class DungeonAssistant extends Module {
 
     private void rebuildSpectralRegistry() {
         GlowingRegistry.clear();
+        spawnerMobGlowingIds.clear();
         if (renderMode.get() != RenderMode.SPECTRAL) return;
 
         if (mc.world != null && mc.player != null && (trackChestMinecarts.get() || trackAnomalousMinecarts.get())) {
@@ -1055,6 +1174,15 @@ public class DungeonAssistant extends Module {
         if (trackXpOrbs.get()) {
             for (ExperienceOrbEntity orb : xpOrbTargets) {
                 if (orb.isAlive()) GlowingRegistry.add(orb.getId(), toArgb(xpOrbColor.get()));
+            }
+        }
+
+        if (trackSpawnerMobs.get()) {
+            for (MobEntity mob : spawnerMobTargets) {
+                if (mob.isAlive()) {
+                    GlowingRegistry.add(mob.getId(), toArgb(spawnerMobColor.get()));
+                    spawnerMobGlowingIds.add(mob.getId());
+                }
             }
         }
     }
@@ -1268,7 +1396,7 @@ public class DungeonAssistant extends Module {
             hasPlayedSoundForCurrentScreen = false;
 
             if (!silentFoundWhitelisted) {
-                if (autoOpenBreak.get()) {
+                if (autoBreak.get()) {
                     if (lastOpenedContainer != null) {
                         blockToBreak = lastOpenedContainer;
                         removeNeighborFromChecked(lastOpenedContainer);
@@ -1304,7 +1432,7 @@ public class DungeonAssistant extends Module {
                 if (!found) {
                     mc.player.closeHandledScreen();
                     wasAutoOpened = false;
-                    if (autoOpenBreak.get()) {
+                    if (autoBreak.get()) {
                         if (lastOpenedContainer != null) {
                             blockToBreak = lastOpenedContainer;
                             removeNeighborFromChecked(lastOpenedContainer);
@@ -1336,15 +1464,15 @@ public class DungeonAssistant extends Module {
 
             hasPlayedSoundForCurrentScreen = false;
 
-            if (autoOpenBreak.get()) {
+            if (autoOpen.get() || autoBreakSpawners.get()) {
                 if (prioritizeSpawners.get() && autoBreakSpawners.get() && isSpawnerInBreakRange()) {
                     if (runSpawnerCheck()) return;
-                    if (runMinecartCheck()) return;
-                    if (runChestCheck()) return;
+                    if (autoOpen.get() && runMinecartCheck()) return;
+                    if (autoOpen.get() && runChestCheck()) return;
                 } else {
-                    if (runMinecartCheck()) return;
-                    if (runChestCheck()) return;
-                    if (runSpawnerCheck()) return;
+                    if (autoOpen.get() && runMinecartCheck()) return;
+                    if (autoOpen.get() && runChestCheck()) return;
+                    if (autoBreakSpawners.get() && runSpawnerCheck()) return;
                 }
             }
         }
@@ -1378,6 +1506,7 @@ public class DungeonAssistant extends Module {
         scanEndermites();
         scanXpOrbs();
         scanSpawnerTorches();
+        scanSpawnerMobs();
         pruneCheckedEntityIds();
         pruneCheckedContainers();
     }
@@ -1500,6 +1629,7 @@ public class DungeonAssistant extends Module {
         checkedEntityIds.clear();
         notifiedAnomalousMinecarts.clear();
         GlowingRegistry.clear();
+        activeSpawners.clear();
     }
 
     private void scanEndermites() {
@@ -1575,6 +1705,111 @@ public class DungeonAssistant extends Module {
                     }
                 }
             }
+        }
+    }
+
+    private void scanSpawnerMobs() {
+        spawnerMobTargets.clear();
+        if (!trackSpawnerMobs.get() || mc.world == null || mc.player == null) {
+            notifiedSpawnerMobs.clear();
+            activeSpawners.clear();
+            for (Integer id : spawnerMobGlowingIds) {
+                GlowingRegistry.remove(id);
+            }
+            spawnerMobGlowingIds.clear();
+            return;
+        }
+
+        boolean isSpectral = renderMode.get() == RenderMode.SPECTRAL;
+        Set<Integer> currentIds = new HashSet<>();
+        Set<BlockPos> spawnerPositions = new HashSet<>();
+
+        for (Map.Entry<BlockPos, TargetType> entry : targets.entrySet()) {
+            if (entry.getValue() == TargetType.SPAWNER) {
+                spawnerPositions.add(entry.getKey());
+            }
+        }
+
+        Set<Integer> newGlowingIds = new HashSet<>();
+        Set<BlockPos> newActiveSpawners = new HashSet<>();
+
+        for (BlockPos spawnerPos : spawnerPositions) {
+            Box searchBox = new Box(spawnerPos).expand(5);
+            boolean hasMobs = false;
+            
+            for (MobEntity mob : mc.world.getEntitiesByClass(MobEntity.class, searchBox, e -> true)) {
+                if (spawnerPos.getSquaredDistance(mob.getPos()) <= 25) { // 5 blocks radius squared
+                    spawnerMobTargets.add(mob);
+                    currentIds.add(mob.getId());
+                    hasMobs = true;
+
+                    if (isSpectral) {
+                        GlowingRegistry.add(mob.getId(), toArgb(spawnerMobColor.get()));
+                        newGlowingIds.add(mob.getId());
+                    }
+
+                    if (notifiedSpawnerMobs.add(mob.getId())) {
+                        info("§cMob activity detected near a spawner!");
+                    }
+                }
+            }
+            
+            if (hasMobs) {
+                // Check for nearby chests to prevent false flags
+                boolean hasChestNearby = false;
+                double chestRadiusSq = Math.pow(spawnerChestRadius.get(), 2);
+                
+                for (Map.Entry<BlockPos, TargetType> targetEntry : targets.entrySet()) {
+                    if (targetEntry.getValue() == TargetType.CHEST) {
+                        if (spawnerPos.getSquaredDistance(targetEntry.getKey()) <= chestRadiusSq) {
+                            hasChestNearby = true;
+                            break;
+                        }
+                    }
+                }
+                
+                if (hasChestNearby) {
+                    newActiveSpawners.add(spawnerPos);
+                }
+            }
+        }
+
+        // Action Bar Notification Logic
+        if (!newActiveSpawners.isEmpty()) {
+            if (spawnerActionBarCooldown <= 0) {
+                Text message = Text.literal("⚠ Active Spawner Detected!").formatted(Formatting.RED, Formatting.BOLD);
+                mc.player.sendMessage(message, true); // true sends it to the action bar (above hotbar)
+                
+                float volume = spawnerAlertVolume.get().floatValue();
+                mc.player.playSound(SoundEvents.BLOCK_NOTE_BLOCK_PLING.value(), volume, 0.5f); // Low pitch pling
+                
+                spawnerActionBarCooldown = 60; // 3 seconds (20 ticks * 3)
+            } else {
+                spawnerActionBarCooldown--;
+            }
+        } else {
+            spawnerActionBarCooldown = 0; // Reset instantly when clear
+        }
+
+        notifiedSpawnerMobs.retainAll(currentIds);
+
+        activeSpawners.clear();
+        activeSpawners.addAll(newActiveSpawners);
+
+        // Cleanup old glowing IDs
+        if (isSpectral) {
+            for (Integer id : spawnerMobGlowingIds) {
+                if (!newGlowingIds.contains(id)) {
+                    GlowingRegistry.remove(id);
+                }
+            }
+            spawnerMobGlowingIds.clear();
+            spawnerMobGlowingIds.addAll(newGlowingIds);
+        } else {
+            for (Integer id : spawnerMobGlowingIds) {
+                GlowingRegistry.remove(id);
+            }
+            spawnerMobGlowingIds.clear();
         }
     }
 
@@ -1700,7 +1935,19 @@ public class DungeonAssistant extends Module {
     private TargetType getMinecartType(ChestMinecartEntity cart) {
         Vec3d exactPos = cart.getPos();
         BlockPos blockPos = cart.getBlockPos();
-        
+
+        // Check for flowing water within 1 block radius
+        for (int x = -1; x <= 1; x++) {
+            for (int y = -1; y <= 1; y++) {
+                for (int z = -1; z <= 1; z++) {
+                    FluidState fluidState = mc.world.getFluidState(blockPos.add(x, y, z));
+                    if (fluidState.isOf(Fluids.FLOWING_WATER)) {
+                        return TargetType.CHEST_MINECART; // Ignore displacement if caused by water
+                    }
+                }
+            }
+        }
+
         boolean isDisplaced = false;
         BlockState stateAtPos = mc.world.getBlockState(blockPos);
         

@@ -6,6 +6,9 @@ import java.util.Set;
 
 import com.example.addon.Tim;
 
+import baritone.api.BaritoneAPI;
+import baritone.api.IBaritone;
+import baritone.api.pathing.goals.GoalBlock;
 import meteordevelopment.meteorclient.events.world.TickEvent;
 import meteordevelopment.meteorclient.settings.BoolSetting;
 import meteordevelopment.meteorclient.settings.DoubleSetting;
@@ -37,7 +40,7 @@ import net.minecraft.world.RaycastContext;
 public class RocketPilot extends Module {
 
     // ─── Enums ───────────────────────────────────────────────────────────────────
-    public enum FlightMode { None, Normal, Pitch40, AltitudeBounce }
+    public enum FlightMode { None, Normal, Pitch40, AltitudeBounce, Ebounce }
 
     public enum FlightPattern {
         Manual,
@@ -61,10 +64,27 @@ public class RocketPilot extends Module {
     private static final int   ELYTRA_MIN_SWAP_DUR       = 50;
     private static final long  COLLISION_ROCKET_COOLDOWN = 200L;
 
+    // Ebounce Constants
+    private static final double EBOUNCE_STOP = 0.2;
+    private static final int EBOUNCE_GRID = 10;
+    private static final int EBOUNCE_REACH = 5;
+    private static final int EBOUNCE_LAUNCH = 3;
+    private static final int EBOUNCE_WAIT = 20;
+    private static final int EBOUNCE_WARMUP = 20;
+
+    private final int[] dxs = {0, -1, -1, -1, 0, 1, 1, 1};
+    private final int[] dzs = {1, 1, 0, -1, -1, -1, 0, 1};
+
+    // Ebounce state
+    private int ebouncePx, ebouncePz, ebounceDx, ebounceDz;
+    private int ebounceSlow, ebounceWarm, ebounceJump;
+    private boolean ebouncePass, ebounceStarted;
+
     // ─── Setting Groups ───────────────────────────────────────────────────────────
     private final SettingGroup sgFlight       = settings.createGroup("Flight");
     private final SettingGroup sgPitch40      = settings.createGroup("Pitch40");
     private final SettingGroup sgBounce       = settings.createGroup("Altitude Bounce");
+    private final SettingGroup sgEbounce      = settings.createGroup("Ebounce");
     private final SettingGroup sgSweep        = settings.createGroup("Sweep Pattern");
     private final SettingGroup sgPatterns     = settings.createGroup("Patterns");
     private final SettingGroup sgDrunk        = settings.createGroup("DrunkPilot");
@@ -72,10 +92,39 @@ public class RocketPilot extends Module {
     private final SettingGroup sgPlayerSafety = settings.createGroup("Player Safety");
 
     // ─── Flight Settings ─────────────────────────────────────────────────────────
+    public final Setting<FlightMode> flightMode = sgFlight.add(new EnumSetting.Builder<FlightMode>()
+        .name("flight-mode")
+        .description("The primary flight mode for pitch control.")
+        .defaultValue(FlightMode.Normal)
+        .onChanged(v -> {
+            if (!isActive() || mc.world == null) return;
+            resetPatternState();
+            
+            if (v != FlightMode.Ebounce) {
+                mc.options.forwardKey.setPressed(false);
+                mc.options.jumpKey.setPressed(false);
+                if (ebouncePass) {
+                    BaritoneAPI.getProvider().getPrimaryBaritone().getPathingBehavior().cancelEverything();
+                    ebouncePass = false;
+                }
+            }
+
+            switch (v) {
+                case Pitch40        -> info("Pitch40 mode enabled.");
+                case AltitudeBounce -> info("Altitude Bounce mode enabled.");
+                case Ebounce        -> info("Ebounce mode enabled.");
+                case None           -> info("Flight pitch control disabled.");
+                default             -> info("Normal flight mode enabled.");
+            }
+        })
+        .build()
+    );
+
     public final Setting<Boolean> useTargetY = sgFlight.add(new BoolSetting.Builder()
         .name("use-target-y")
         .description("Whether to maintain a specific Y level.")
         .defaultValue(true)
+        .visible(() -> flightMode.get() != FlightMode.Ebounce)
         .build()
     );
 
@@ -85,7 +134,7 @@ public class RocketPilot extends Module {
         .defaultValue(120.0)
         .min(-64).max(10000)
         .sliderRange(0, 10000)
-        .visible(useTargetY::get)
+        .visible(() -> flightMode.get() != FlightMode.Ebounce && useTargetY.get())
         .build()
     );
 
@@ -95,6 +144,7 @@ public class RocketPilot extends Module {
         .defaultValue(2.0)
         .min(0.5).max(10.0)
         .sliderRange(1.0, 5.0)
+        .visible(() -> flightMode.get() != FlightMode.Ebounce && useTargetY.get())
         .build()
     );
 
@@ -132,6 +182,7 @@ public class RocketPilot extends Module {
         .name("auto-takeoff")
         .description("Automatically jump and fire a rocket to start elytra flight.")
         .defaultValue(true)
+        .visible(() -> flightMode.get() != FlightMode.Ebounce)
         .build()
     );
 
@@ -148,6 +199,7 @@ public class RocketPilot extends Module {
         .defaultValue(2000)
         .min(100)
         .sliderRange(500, 5000)
+        .visible(() -> flightMode.get() != FlightMode.Ebounce)
         .build()
     );
 
@@ -155,23 +207,7 @@ public class RocketPilot extends Module {
         .name("silent-rockets")
         .description("Suppresses the hand swing animation when firing rockets.")
         .defaultValue(true)
-        .build()
-    );
-
-    public final Setting<FlightMode> flightMode = sgFlight.add(new EnumSetting.Builder<FlightMode>()
-        .name("flight-mode")
-        .description("The primary flight mode for pitch control.")
-        .defaultValue(FlightMode.Normal)
-        .onChanged(v -> {
-            if (!isActive() || mc.world == null) return;
-            resetPatternState();
-            switch (v) {
-                case Pitch40        -> info("Pitch40 mode enabled.");
-                case AltitudeBounce -> info("Altitude Bounce mode enabled.");
-                case None           -> info("Flight pitch control disabled.");
-                default             -> info("Normal flight mode enabled.");
-            }
-        })
+        .visible(() -> flightMode.get() != FlightMode.Ebounce)
         .build()
     );
 
@@ -230,8 +266,8 @@ public class RocketPilot extends Module {
         .name("flight-pattern")
         .description("The flight pattern to follow. Manual allows free mouse look.")
         .defaultValue(FlightPattern.Manual)
+        .visible(() -> flightMode.get() != FlightMode.Ebounce)
         .onChanged(v -> { 
-            // Reset state immediately if pattern changes, regardless of active status
             resetPatternState();
             resetDrunkSpiralState();
         })
@@ -243,7 +279,7 @@ public class RocketPilot extends Module {
         .name("sweep-width")
         .description("Total side-to-side distance in chunks.")
         .defaultValue(10).min(1).sliderRange(1, 50)
-        .visible(() -> flightPattern.get() == FlightPattern.Sweep)
+        .visible(() -> flightMode.get() != FlightMode.Ebounce && flightPattern.get() == FlightPattern.Sweep)
         .build()
     );
 
@@ -251,7 +287,7 @@ public class RocketPilot extends Module {
         .name("sweep-advance")
         .description("Forward distance moved per sweep in chunks.")
         .defaultValue(2).min(1).sliderRange(1, 20)
-        .visible(() -> flightPattern.get() == FlightPattern.Sweep)
+        .visible(() -> flightMode.get() != FlightMode.Ebounce && flightPattern.get() == FlightPattern.Sweep)
         .build()
     );
 
@@ -261,7 +297,7 @@ public class RocketPilot extends Module {
         .defaultValue(0.0)
         .min(0.0).max(0.5)
         .sliderRange(0.0, 0.2)
-        .visible(() -> flightPattern.get() == FlightPattern.Sweep)
+        .visible(() -> flightMode.get() != FlightMode.Ebounce && flightPattern.get() == FlightPattern.Sweep)
         .build()
     );
 
@@ -271,7 +307,7 @@ public class RocketPilot extends Module {
         .defaultValue(1.0)
         .min(1.0).max(5.0)
         .sliderRange(1.0, 3.0)
-        .visible(() -> flightPattern.get() == FlightPattern.Sweep && sweepExpansionRate.get() > 0.0)
+        .visible(() -> flightMode.get() != FlightMode.Ebounce && flightPattern.get() == FlightPattern.Sweep && sweepExpansionRate.get() > 0.0)
         .build()
     );
 
@@ -279,7 +315,7 @@ public class RocketPilot extends Module {
         .name("auto-update-origin")
         .description("Relocates the sweep pattern origin to your position if you manually fly too far from the current target.")
         .defaultValue(true)
-        .visible(() -> flightPattern.get() == FlightPattern.Sweep)
+        .visible(() -> flightMode.get() != FlightMode.Ebounce && flightPattern.get() == FlightPattern.Sweep)
         .build()
     );
 
@@ -334,13 +370,49 @@ public class RocketPilot extends Module {
         .build()
     );
 
-    // ─── Pattern Settings ─────────────────────────────────────────────────────────
+    // ─── Ebounce Settings ─────────────────────────────────────────────────────────
+    private final Setting<Double> ebouncePitch = sgEbounce.add(new DoubleSetting.Builder()
+        .name("pitch")
+        .description("The pitch used while elytra bouncing.")
+        .defaultValue(72.4)
+        .min(-90.0).max(90.0)
+        .sliderRange(-90.0, 90.0)
+        .visible(() -> flightMode.get() == FlightMode.Ebounce)
+        .build()
+    );
+
+    private final Setting<Boolean> ebounceObstacle = sgEbounce.add(new BoolSetting.Builder()
+        .name("obstacle-passer")
+        .description("Uses Baritone to pass obstacles when movement stops.")
+        .defaultValue(true)
+        .visible(() -> flightMode.get() == FlightMode.Ebounce)
+        .build()
+    );
+
+    private final Setting<Boolean> ebounceAvoid = sgEbounce.add(new BoolSetting.Builder()
+        .name("avoid-collisions")
+        .description("Uses raycasts to detect obstacles and avoid collisions.")
+        .defaultValue(true)
+        .visible(() -> flightMode.get() == FlightMode.Ebounce && ebounceObstacle.get())
+        .build()
+    );
+
+    private final Setting<Integer> ebounceTicks = sgEbounce.add(new IntSetting.Builder()
+        .name("collision-ticks")
+        .description("How many movement ticks ahead to scan for obstacles.")
+        .defaultValue(8)
+        .min(5).sliderMax(10)
+        .visible(() -> flightMode.get() == FlightMode.Ebounce && ebounceObstacle.get() && ebounceAvoid.get())
+        .build()
+    );
+
+    // ─── Pattern Settings Continued ──────────────────────────────────────────────
     private final Setting<Keybind> pauseKey = sgPatterns.add(new KeybindSetting.Builder()
         .name("pause-key")
         .description("Pauses/resumes the current flight pattern or drunk spiral.")
         .defaultValue(Keybind.none())
         .action(this::togglePause)
-        .visible(() -> isPatternMode())
+        .visible(() -> flightMode.get() != FlightMode.Ebounce && isPatternMode())
         .build()
     );
 
@@ -350,7 +422,7 @@ public class RocketPilot extends Module {
         .defaultValue(0.1)
         .min(0.01).max(1.0)
         .sliderRange(0.05, 0.5)
-        .visible(() -> flightPattern.get() != FlightPattern.Manual && flightPattern.get() != FlightPattern.Drunk)
+        .visible(() -> flightMode.get() != FlightMode.Ebounce && flightPattern.get() != FlightPattern.Manual && flightPattern.get() != FlightPattern.Drunk)
         .build()
     );
 
@@ -360,7 +432,7 @@ public class RocketPilot extends Module {
         .defaultValue(30)
         .min(5)
         .sliderRange(10, 100)
-        .visible(() -> flightPattern.get() != FlightPattern.Manual && flightPattern.get() != FlightPattern.Drunk)
+        .visible(() -> flightMode.get() != FlightMode.Ebounce && flightPattern.get() != FlightPattern.Manual && flightPattern.get() != FlightPattern.Drunk)
         .build()
     );
 
@@ -370,7 +442,7 @@ public class RocketPilot extends Module {
         .defaultValue(8)
         .min(1)
         .sliderRange(1, 32)
-        .visible(() -> flightPattern.get() == FlightPattern.Grid)
+        .visible(() -> flightMode.get() != FlightMode.Ebounce && flightPattern.get() == FlightPattern.Grid)
         .build()
     );
 
@@ -380,7 +452,7 @@ public class RocketPilot extends Module {
         .defaultValue(32)
         .min(4)
         .sliderRange(8, 128)
-        .visible(() -> flightPattern.get() == FlightPattern.Circle)
+        .visible(() -> flightMode.get() != FlightMode.Ebounce && flightPattern.get() == FlightPattern.Circle)
         .build()
     );
 
@@ -390,7 +462,7 @@ public class RocketPilot extends Module {
         .defaultValue(4)
         .min(1)
         .sliderRange(1, 16)
-        .visible(() -> flightPattern.get() == FlightPattern.Circle)
+        .visible(() -> flightMode.get() != FlightMode.Ebounce && flightPattern.get() == FlightPattern.Circle)
         .build()
     );
 
@@ -398,7 +470,7 @@ public class RocketPilot extends Module {
         .name("hexagon-side-length")
         .description("Side length of the hexagon in chunks.")
         .defaultValue(4).min(1).sliderRange(1, 32)
-        .visible(() -> flightPattern.get() == FlightPattern.Hexagon)
+        .visible(() -> flightMode.get() != FlightMode.Ebounce && flightPattern.get() == FlightPattern.Hexagon)
         .build()
     );
 
@@ -406,7 +478,7 @@ public class RocketPilot extends Module {
         .name("hexagon-expansion")
         .description("Chunks the hexagon side length grows per full rotation.")
         .defaultValue(2).min(1).sliderRange(1, 16)
-        .visible(() -> flightPattern.get() == FlightPattern.Hexagon)
+        .visible(() -> flightMode.get() != FlightMode.Ebounce && flightPattern.get() == FlightPattern.Hexagon)
         .build()
     );
 
@@ -414,7 +486,7 @@ public class RocketPilot extends Module {
         .name("triangle-side-length")
         .description("Side length of the triangle in chunks.")
         .defaultValue(6).min(1).sliderRange(1, 32)
-        .visible(() -> flightPattern.get() == FlightPattern.Triangle)
+        .visible(() -> flightMode.get() != FlightMode.Ebounce && flightPattern.get() == FlightPattern.Triangle)
         .build()
     );
 
@@ -422,7 +494,7 @@ public class RocketPilot extends Module {
         .name("triangle-expansion")
         .description("Chunks the triangle side length grows per full rotation.")
         .defaultValue(3).min(1).sliderRange(1, 16)
-        .visible(() -> flightPattern.get() == FlightPattern.Triangle)
+        .visible(() -> flightMode.get() != FlightMode.Ebounce && flightPattern.get() == FlightPattern.Triangle)
         .build()
     );
 
@@ -432,7 +504,7 @@ public class RocketPilot extends Module {
         .defaultValue(5)
         .min(1)
         .sliderRange(1, 50)
-        .visible(() -> flightPattern.get() == FlightPattern.ZigZag)
+        .visible(() -> flightMode.get() != FlightMode.Ebounce && flightPattern.get() == FlightPattern.ZigZag)
         .build()
     );
 
@@ -442,7 +514,7 @@ public class RocketPilot extends Module {
         .defaultValue(45.0)
         .min(10.0).max(80.0)
         .sliderRange(10.0, 80.0)
-        .visible(() -> flightPattern.get() == FlightPattern.ZigZag)
+        .visible(() -> flightMode.get() != FlightMode.Ebounce && flightPattern.get() == FlightPattern.ZigZag)
         .build()
     );
 
@@ -452,7 +524,7 @@ public class RocketPilot extends Module {
         .defaultValue(5)
         .min(1)
         .sliderRange(1, 20)
-        .visible(() -> flightPattern.get() == FlightPattern.FigureEight)
+        .visible(() -> flightMode.get() != FlightMode.Ebounce && flightPattern.get() == FlightPattern.FigureEight)
         .build()
     );
 
@@ -461,7 +533,7 @@ public class RocketPilot extends Module {
         .name("spiral-mode")
         .description("Constrains drunk wandering to follow an expanding grid or circular spiral outward.")
         .defaultValue(DrunkSpiralMode.None)
-        .visible(() -> flightPattern.get() == FlightPattern.Drunk)
+        .visible(() -> flightMode.get() != FlightMode.Ebounce && flightPattern.get() == FlightPattern.Drunk)
         .onChanged(v -> { resetDrunkSpiralState(); })
         .build()
     );
@@ -472,7 +544,7 @@ public class RocketPilot extends Module {
         .defaultValue(5)
         .min(1)
         .sliderRange(1, 20)
-        .visible(() -> flightPattern.get() == FlightPattern.Drunk)
+        .visible(() -> flightMode.get() != FlightMode.Ebounce && flightPattern.get() == FlightPattern.Drunk)
         .build()
     );
 
@@ -482,7 +554,7 @@ public class RocketPilot extends Module {
         .defaultValue(120.0)
         .min(1.0).max(180.0)
         .sliderRange(50.0, 180.0)
-        .visible(() -> flightPattern.get() == FlightPattern.Drunk && drunkSpiralMode.get() == DrunkSpiralMode.None)
+        .visible(() -> flightMode.get() != FlightMode.Ebounce && flightPattern.get() == FlightPattern.Drunk && drunkSpiralMode.get() == DrunkSpiralMode.None)
         .build()
     );
 
@@ -490,7 +562,7 @@ public class RocketPilot extends Module {
         .name("coordinate-bias")
         .description("Constrains drunk-pilot heading. None = fully random.")
         .defaultValue(DrunkBias.None)
-        .visible(() -> flightPattern.get() == FlightPattern.Drunk && drunkSpiralMode.get() == DrunkSpiralMode.None)
+        .visible(() -> flightMode.get() != FlightMode.Ebounce && flightPattern.get() == FlightPattern.Drunk && drunkSpiralMode.get() == DrunkSpiralMode.None)
         .build()
     );
 
@@ -498,7 +570,7 @@ public class RocketPilot extends Module {
         .name("avoid-visited")
         .description("Attempts to steer the Drunk Pilot away from chunks it has already flown over.")
         .defaultValue(true)
-        .visible(() -> flightPattern.get() == FlightPattern.Drunk && drunkSpiralMode.get() == DrunkSpiralMode.None)
+        .visible(() -> flightMode.get() != FlightMode.Ebounce && flightPattern.get() == FlightPattern.Drunk && drunkSpiralMode.get() == DrunkSpiralMode.None)
         .build()
     );
 
@@ -507,7 +579,7 @@ public class RocketPilot extends Module {
         .description("How smoothly to rotate to the new heading (lower = smoother).")
         .defaultValue(0.05)
         .min(0.01).max(1.0)
-        .visible(() -> flightPattern.get() == FlightPattern.Drunk)
+        .visible(() -> flightMode.get() != FlightMode.Ebounce && flightPattern.get() == FlightPattern.Drunk)
         .build()
     );
 
@@ -515,7 +587,7 @@ public class RocketPilot extends Module {
         .name("drunk-grid-spacing")
         .description("Distance (chunks) between grid legs when spiral-mode is Grid.")
         .defaultValue(4).min(1).sliderRange(1, 16)
-        .visible(() -> flightPattern.get() == FlightPattern.Drunk
+        .visible(() -> flightMode.get() != FlightMode.Ebounce && flightPattern.get() == FlightPattern.Drunk
                     && drunkSpiralMode.get() == DrunkSpiralMode.Grid)
         .build()
     );
@@ -524,7 +596,7 @@ public class RocketPilot extends Module {
         .name("drunk-circle-segments")
         .description("Waypoints per full rotation when spiral-mode is Circle.")
         .defaultValue(24).min(4).sliderRange(8, 64)
-        .visible(() -> flightPattern.get() == FlightPattern.Drunk
+        .visible(() -> flightMode.get() != FlightMode.Ebounce && flightPattern.get() == FlightPattern.Drunk
                     && drunkSpiralMode.get() == DrunkSpiralMode.Circle)
         .build()
     );
@@ -533,7 +605,7 @@ public class RocketPilot extends Module {
         .name("drunk-circle-expansion")
         .description("Chunks the circle radius grows per full rotation.")
         .defaultValue(2).min(1).sliderRange(1, 8)
-        .visible(() -> flightPattern.get() == FlightPattern.Drunk
+        .visible(() -> flightMode.get() != FlightMode.Ebounce && flightPattern.get() == FlightPattern.Drunk
                     && drunkSpiralMode.get() == DrunkSpiralMode.Circle)
         .build()
     );
@@ -542,7 +614,7 @@ public class RocketPilot extends Module {
         .name("drunk-hexagon-side-length")
         .description("Side length (chunks) of each hexagon edge when spiral-mode is Hexagon.")
         .defaultValue(4).min(1).sliderRange(1, 32)
-        .visible(() -> flightPattern.get() == FlightPattern.Drunk
+        .visible(() -> flightMode.get() != FlightMode.Ebounce && flightPattern.get() == FlightPattern.Drunk
                     && drunkSpiralMode.get() == DrunkSpiralMode.Hexagon)
         .build()
     );
@@ -551,7 +623,7 @@ public class RocketPilot extends Module {
         .name("drunk-hexagon-expansion")
         .description("Chunks the hexagon side length grows per full rotation.")
         .defaultValue(2).min(1).sliderRange(1, 16)
-        .visible(() -> flightPattern.get() == FlightPattern.Drunk
+        .visible(() -> flightMode.get() != FlightMode.Ebounce && flightPattern.get() == FlightPattern.Drunk
                     && drunkSpiralMode.get() == DrunkSpiralMode.Hexagon)
         .build()
     );
@@ -560,7 +632,7 @@ public class RocketPilot extends Module {
         .name("drunk-triangle-side-length")
         .description("Side length (chunks) of each triangle edge when spiral-mode is Triangle.")
         .defaultValue(6).min(1).sliderRange(1, 32)
-        .visible(() -> flightPattern.get() == FlightPattern.Drunk
+        .visible(() -> flightMode.get() != FlightMode.Ebounce && flightPattern.get() == FlightPattern.Drunk
                     && drunkSpiralMode.get() == DrunkSpiralMode.Triangle)
         .build()
     );
@@ -569,7 +641,7 @@ public class RocketPilot extends Module {
         .name("drunk-triangle-expansion")
         .description("Chunks the triangle side length grows per full rotation.")
         .defaultValue(3).min(1).sliderRange(1, 16)
-        .visible(() -> flightPattern.get() == FlightPattern.Drunk
+        .visible(() -> flightMode.get() != FlightMode.Ebounce && flightPattern.get() == FlightPattern.Drunk
                     && drunkSpiralMode.get() == DrunkSpiralMode.Triangle)
         .build()
     );
@@ -578,7 +650,7 @@ public class RocketPilot extends Module {
         .name("spiral-noise")
         .description("Random yaw offset (degrees) added to the spiral heading for the drunk feel.")
         .defaultValue(30.0).min(0.0).max(180.0).sliderRange(0.0, 90.0)
-        .visible(() -> flightPattern.get() == FlightPattern.Drunk
+        .visible(() -> flightMode.get() != FlightMode.Ebounce && flightPattern.get() == FlightPattern.Drunk
                     && drunkSpiralMode.get() != DrunkSpiralMode.None)
         .build()
     );
@@ -587,7 +659,7 @@ public class RocketPilot extends Module {
         .name("spiral-waypoint-reach")
         .description("Horizontal distance (blocks) to a spiral waypoint before advancing.")
         .defaultValue(20).min(5).sliderRange(5, 80)
-        .visible(() -> flightPattern.get() == FlightPattern.Drunk
+        .visible(() -> flightMode.get() != FlightMode.Ebounce && flightPattern.get() == FlightPattern.Drunk
                     && drunkSpiralMode.get() != DrunkSpiralMode.None)
         .build()
     );
@@ -597,6 +669,7 @@ public class RocketPilot extends Module {
         .name("collision-avoidance")
         .description("Attempts to avoid flying straight into walls.")
         .defaultValue(true)
+        .visible(() -> flightMode.get() != FlightMode.Ebounce)
         .build()
     );
 
@@ -606,7 +679,7 @@ public class RocketPilot extends Module {
         .defaultValue(10)
         .min(3)
         .sliderRange(5, 20)
-        .visible(collisionAvoidance::get)
+        .visible(() -> flightMode.get() != FlightMode.Ebounce && collisionAvoidance.get())
         .build()
     );
 
@@ -614,6 +687,7 @@ public class RocketPilot extends Module {
         .name("limit-rotation-speed")
         .description("Caps rotation speed per tick to reduce anti-cheat flags.")
         .defaultValue(true)
+        .visible(() -> flightMode.get() != FlightMode.Ebounce)
         .build()
     );
 
@@ -623,7 +697,7 @@ public class RocketPilot extends Module {
         .defaultValue(20.0)
         .min(1.0).max(90.0)
         .sliderRange(5.0, 45.0)
-        .visible(limitRotationSpeed::get)
+        .visible(() -> flightMode.get() != FlightMode.Ebounce && limitRotationSpeed.get())
         .build()
     );
 
@@ -664,6 +738,7 @@ public class RocketPilot extends Module {
         .name("disconnect-on-low-rockets")
         .description("Disconnect from the server when your firework rocket count drops below the minimum.")
         .defaultValue(false)
+        .visible(() -> flightMode.get() != FlightMode.Ebounce)
         .build()
     );
 
@@ -673,7 +748,7 @@ public class RocketPilot extends Module {
         .defaultValue(5)
         .min(1)
         .sliderRange(1, 64)
-        .visible(disconnectOnLowRockets::get)
+        .visible(() -> flightMode.get() != FlightMode.Ebounce && disconnectOnLowRockets.get())
         .build()
     );
 
@@ -798,7 +873,18 @@ public class RocketPilot extends Module {
         takeoffTimer             = 0;
         takeoffWaitTicks         = 0;
 
+        ebounceSlow = 0; ebounceWarm = 0; ebounceJump = 0;
+        ebouncePass = false; ebounceStarted = false;
+
         if (mc.player == null || mc.world == null) { toggle(); return; }
+
+        if (flightMode.get() == FlightMode.Ebounce) {
+            ebounceFace();
+            ebounceCenter();
+            // If already gliding, we've technically "started"
+            ebounceStarted = mc.player.isGliding();
+            return; // Skip standard rocket takeoff logic
+        }
 
         // Reset standard pattern state if player has moved too far from the origin since last time
         if (origin != null && mc.player.getPos().distanceTo(origin) > 100) {
@@ -823,7 +909,7 @@ public class RocketPilot extends Module {
             toggle();
             return;
         }
-        if (countFireworks() == 0) {
+        if (countFireworks() == 0 && flightMode.get() != FlightMode.Ebounce) {
             error("No fireworks in inventory.");
             toggle();
             return;
@@ -846,6 +932,14 @@ public class RocketPilot extends Module {
         takeoffWaitTicks   = 0;
         paused             = false; // Unpause on disable
         drunkVisitedChunks.clear(); // Free memory
+
+        // Clear Ebounce inputs
+        mc.options.forwardKey.setPressed(false);
+        mc.options.jumpKey.setPressed(false);
+        if (ebouncePass) {
+            BaritoneAPI.getProvider().getPrimaryBaritone().getPathingBehavior().cancelEverything();
+        }
+
         // Deliberately NOT resetting origin/currentTarget here so it can resume after restocking
     }
 
@@ -855,8 +949,6 @@ public class RocketPilot extends Module {
         if (System.currentTimeMillis() - lastLagbackTime < 500) return;
         if (mc.player == null || mc.world == null) return;
 
-        replenishRockets();
-
         if (disconnectOnTotemPop.get()) {
             int currentPops = mc.player.getStatHandler().getStat(Stats.USED, Items.TOTEM_OF_UNDYING);
             if (currentPops > totemPops) {
@@ -864,12 +956,6 @@ public class RocketPilot extends Module {
                 disconnect("[RocketPilot] Disconnected on totem pop.");
                 return;
             }
-        }
-
-        if (disconnectOnLowRockets.get() && countFireworks() < minRockets.get()) {
-            error("Low on rockets (%d < %d)! Disconnecting...", countFireworks(), minRockets.get());
-            disconnect("[RocketPilot] Disconnected due to low rocket count.");
-            return;
         }
 
         if (autoDisableOnLowHealth.get()) {
@@ -886,6 +972,20 @@ public class RocketPilot extends Module {
         if (elytra.isEmpty() || !elytra.isOf(Items.ELYTRA)) {
             error("Elytra missing — disabling.");
             toggle();
+            return;
+        }
+
+        // Cleanly separate Ebounce logic from Rocket logic
+        if (flightMode.get() == FlightMode.Ebounce) {
+            handleEbounceTick();
+            return;
+        }
+
+        replenishRockets();
+
+        if (disconnectOnLowRockets.get() && countFireworks() < minRockets.get()) {
+            error("Low on rockets (%d < %d)! Disconnecting...", countFireworks(), minRockets.get());
+            disconnect("[RocketPilot] Disconnected due to low rocket count.");
             return;
         }
 
@@ -942,7 +1042,6 @@ public class RocketPilot extends Module {
         if (!safetyOverride) {
             FlightPattern currentPattern = flightPattern.get();
             if (currentPattern == FlightPattern.Drunk) {
-                // Maintain memory bounds to prevent leaks
                 if (drunkVisitedChunks.size() > 2000) {
                     Iterator<Long> it = drunkVisitedChunks.iterator();
                     for (int i = 0; i < 1000 && it.hasNext(); i++) {
@@ -966,6 +1065,190 @@ public class RocketPilot extends Module {
             lastLagbackTime = System.currentTimeMillis();
             mc.options.forwardKey.setPressed(false);
         }
+    }
+
+    // ─── Ebounce Mode Logic ──────────────────────────────────────────────────────
+    private void handleEbounceTick() {
+        if (mc.player == null || mc.world == null) return;
+        handleElytraHealth();
+
+        IBaritone baritone = ebounceObstacle.get() ? BaritoneAPI.getProvider().getPrimaryBaritone() : null;
+
+        if (ebounceObstacle.get()) {
+            if (ebouncePass && (baritone.getCustomGoalProcess().isActive() || baritone.getPathingBehavior().isPathing())) {
+                mc.options.forwardKey.setPressed(false);
+                mc.options.jumpKey.setPressed(false);
+                mc.player.setSprinting(false);
+                ebounceSlow = 0; ebounceWarm = 0; ebounceJump = 0;
+                return;
+            }
+            if (ebouncePass) {
+                ebounceRotate();
+                ebounceSlow = 0; ebounceWarm = 0; ebounceJump = 0;
+                ebouncePass = false;
+            }
+        } else if (ebouncePass) {
+            baritone.getPathingBehavior().cancelEverything();
+            ebouncePass = false;
+        }
+
+        ItemStack elytra = mc.player.getEquippedStack(EquipmentSlot.CHEST);
+        if (elytra.isEmpty() || !elytra.isOf(Items.ELYTRA)) {
+            error("Elytra missing — disabling.");
+            toggle();
+            return;
+        }
+
+        if (!mc.player.isGliding() && !ebounceStarted) {
+            ebounceSlow = 0; ebounceWarm = 0;
+            mc.player.setSprinting(false);
+
+            if (mc.player.isOnGround()) {
+                ebounceJump = 0;
+                mc.options.forwardKey.setPressed(true);
+                mc.options.jumpKey.setPressed(true);
+                mc.player.jump();
+                return;
+            }
+
+            ebounceJump++;
+            if (ebounceJump < EBOUNCE_LAUNCH || mc.player.getVelocity().y >= 0.0) {
+                return;
+            }
+
+            mc.player.startGliding();
+            if (mc.player.networkHandler != null) {
+                mc.player.networkHandler.sendPacket(new ClientCommandC2SPacket(mc.player, ClientCommandC2SPacket.Mode.START_FALL_FLYING));
+            }
+            mc.player.setSprinting(true);
+            ebounceJump = 0;
+            ebounceStarted = true;
+        } else {
+            mc.player.setSprinting(true);
+            if (!mc.player.isGliding() && !mc.player.isOnGround()) {
+                mc.player.startGliding();
+                if (mc.player.networkHandler != null) {
+                    mc.player.networkHandler.sendPacket(new ClientCommandC2SPacket(mc.player, ClientCommandC2SPacket.Mode.START_FALL_FLYING));
+                }
+            }
+
+            if (!mc.player.isGliding()) {
+                ebounceStarted = false;
+                return;
+            }
+
+            mc.player.setPitch(ebouncePitch.get().floatValue());
+            mc.options.forwardKey.setPressed(true);
+            mc.options.jumpKey.setPressed(true);
+
+            ebounceWarm++;
+            if (ebounceObstacle.get() && ebounceAvoid.get()) {
+                Vec3d hit = ebounceCollision();
+                if (hit != null) {
+                    ebouncePath(baritone, hit);
+                    return;
+                }
+            }
+            if (ebounceObstacle.get() && ebounceWarm >= EBOUNCE_WARMUP) {
+                Vec3d vel = mc.player.getVelocity();
+                double speed = Math.hypot(vel.x, vel.z);
+                if (speed < EBOUNCE_STOP) ebounceSlow++;
+                else ebounceSlow = 0;
+                if (ebounceSlow > EBOUNCE_WAIT) {
+                    ebouncePath(baritone);
+                    return;
+                }
+            } else {
+                ebounceSlow = 0;
+            }
+        }
+    }
+
+    private Vec3d ebounceCollision() {
+        Vec3d front = new Vec3d(ebounceDx, 0, ebounceDz).normalize();
+        Vec3d side = new Vec3d(-front.z, 0, front.x);
+        Vec3d vel = mc.player.getVelocity();
+
+        double scan = Math.hypot(vel.x, vel.z) * ebounceTicks.get();
+        double width = mc.player.getWidth() / 2.0;
+
+        Vec3d closest = null;
+        double distance = Double.MAX_VALUE;
+
+        for (int idx = -1; idx <= 1; idx += 2) {
+            for (double y = 0.5; y <= 1.5; y++) {
+                Vec3d start = new Vec3d(mc.player.getX(), mc.player.getY() + y, mc.player.getZ());
+                start = start.add(side.multiply(width * idx));
+                Vec3d end = start.add(front.multiply(scan));
+                BlockHitResult hit = mc.world.raycast(new RaycastContext(start, end, RaycastContext.ShapeType.COLLIDER, RaycastContext.FluidHandling.NONE, mc.player));
+
+                if (hit.getType() != HitResult.Type.BLOCK) continue;
+                double current = start.squaredDistanceTo(hit.getPos());
+                if (current < distance) {
+                    distance = current;
+                    closest = hit.getPos();
+                }
+            }
+        }
+        return closest;
+    }
+
+    private void ebouncePath(IBaritone baritone) {
+        ebouncePath(baritone, mc.player.getPos());
+    }
+
+    private void ebouncePath(IBaritone baritone, Vec3d point) {
+        mc.options.forwardKey.setPressed(false);
+        mc.options.jumpKey.setPressed(false);
+        ebounceSlow = 0; ebounceWarm = 0; ebounceJump = 0;
+        ebouncePass = true; ebounceStarted = false;
+        mc.player.setSprinting(false);
+        GoalBlock goal = new GoalBlock(ebounceGoal(point));
+        baritone.getCustomGoalProcess().setGoalAndPath(goal);
+    }
+
+    private BlockPos ebounceGoal(Vec3d point) {
+        Vec3d dir = new Vec3d(ebounceDx, 0, ebounceDz).normalize();
+        double ox = point.x - ebouncePx;
+        double oz = point.z - ebouncePz;
+        double along = ox * dir.x + oz * dir.z;
+        double px = ebouncePx + dir.x * (along + EBOUNCE_REACH);
+        double pz = ebouncePz + dir.z * (along + EBOUNCE_REACH);
+        return new BlockPos((int) Math.round(px), mc.player.getBlockY(), (int) Math.round(pz));
+    }
+
+    private void ebounceFace() {
+        float yaw = mc.player.getYaw();
+        int face = MathHelper.floor((yaw + 22.5F) / 45.0F) & 7;
+        ebounceDx = dxs[face];
+        ebounceDz = dzs[face];
+    }
+
+    private void ebounceCenter() {
+        double px = mc.player.getX();
+        double pz = mc.player.getZ();
+        if (ebounceDx == 0) {
+            ebouncePx = ebounceSnap(px);
+            ebouncePz = 0;
+        } else if (ebounceDz == 0) {
+            ebouncePx = 0;
+            ebouncePz = ebounceSnap(pz);
+        } else {
+            Boolean eq = ebounceDx == ebounceDz;
+            ebouncePx = ebounceSnap(eq ? px - pz : px + pz);
+            ebouncePz = 0;
+        }
+    }
+
+    private void ebounceRotate() {
+        float yaw = (float) Math.toDegrees(Math.atan2(-ebounceDx, ebounceDz));
+        mc.player.setYaw(yaw);
+        mc.player.setHeadYaw(yaw);
+        mc.player.setBodyYaw(yaw);
+    }
+
+    private int ebounceSnap(double value) {
+        return (int) Math.round(value / EBOUNCE_GRID) * EBOUNCE_GRID;
     }
 
     // ─── Takeoff ─────────────────────────────────────────────────────────────────
@@ -1038,7 +1321,6 @@ public class RocketPilot extends Module {
         }
         if (!obstacleDetected) return null;
 
-        // If we are in a pattern, skip the blocked target so we don't loop into the wall
         if (isPatternMode()) {
             currentTarget = null;
         }
@@ -1197,8 +1479,6 @@ public class RocketPilot extends Module {
                 double dx = currentTarget.x - mc.player.getX();
                 double dz = currentTarget.z - mc.player.getZ();
 
-                // If auto-update is enabled and we are more than 4 chunks away from the target,
-                // reset the pattern to follow the player's current location.
                 if (sweepAutoUpdate.get() && flightPattern.get() == FlightPattern.Sweep && (dx * dx + dz * dz) > 4096.0) {
                     resetPatternState();
                     return;
@@ -1326,10 +1606,9 @@ public class RocketPilot extends Module {
             if (currentTarget == null) {
                 sweepInitialYaw = mc.player.getYaw();
                 sweepStep = 0;
-                currentSweepFactor = 1.0; // Reset on new pattern start
+                currentSweepFactor = 1.0;
             }
 
-            // Apply expansion after every full cycle (4 steps)
             if (sweepExpansionRate.get() > 0.0 && sweepStep > 0 && sweepStep % 4 == 0) {
                 currentSweepFactor = Math.min(sweepMaxFactor.get(), currentSweepFactor * (1.0 + sweepExpansionRate.get()));
             }
@@ -1339,15 +1618,15 @@ public class RocketPilot extends Module {
 
             float rad = (float) Math.toRadians(sweepInitialYaw);
             Vec3d fwd  = new Vec3d(-Math.sin(rad), 0, Math.cos(rad));
-            Vec3d side = new Vec3d(-Math.cos(rad), 0, -Math.sin(rad)); // Right vector
+            Vec3d side = new Vec3d(-Math.cos(rad), 0, -Math.sin(rad));
             Vec3d base = (currentTarget != null) ? currentTarget : origin;
 
             Vec3d move;
             switch (sweepStep % 4) {
-                case 0:  move = side.multiply(sweepStep == 0 ? -width : -width * 2.0); break; // Sweep Left
-                case 1:  move = fwd.multiply(advance); break; // Advance
-                case 2:  move = side.multiply(width * 2.0);  break; // Sweep Right
-                default: move = fwd.multiply(advance); break; // Advance
+                case 0:  move = side.multiply(sweepStep == 0 ? -width : -width * 2.0); break;
+                case 1:  move = fwd.multiply(advance); break;
+                case 2:  move = side.multiply(width * 2.0);  break;
+                default: move = fwd.multiply(advance); break;
             }
 
             nextX = base.x + move.x;
@@ -1374,7 +1653,7 @@ public class RocketPilot extends Module {
     // ─── Drunk Mode ──────────────────────────────────────────────────────────────
     private void handleDrunkMode() {
         if (drunkSpiralMode.get() != DrunkSpiralMode.None) {
-            if (paused) return; // Skip spiral updates if paused
+            if (paused) return;
             handleDrunkSpiralMode();
             return;
         }
@@ -1387,13 +1666,11 @@ public class RocketPilot extends Module {
                 if (drunkAvoidVisited.get()) {
                     float bestCandidate = mc.player.getYaw();
 
-                    // Try multiple random directions and pick one that doesn't point at a visited chunk
                     for (int i = 0; i < 10; i++) {
                         float candidate = mc.player.getYaw() + (float)((Math.random() - 0.5) * 2.0 * intensity);
                         double rad = Math.toRadians(candidate);
                         boolean pathVisited = false;
 
-                        // Check points roughly 1, 2, and 3 chunks ahead (16, 32, 48 blocks)
                         for (int dist : new int[]{16, 32, 48}) {
                             int cx = (int) Math.floor((mc.player.getX() - Math.sin(rad) * dist) / 16.0);
                             int cz = (int) Math.floor((mc.player.getZ() + Math.cos(rad) * dist) / 16.0);
@@ -1406,7 +1683,7 @@ public class RocketPilot extends Module {
                             bestCandidate = candidate;
                             break;
                         }
-                        if (i == 0) bestCandidate = candidate; // Fallback to first random
+                        if (i == 0) bestCandidate = candidate;
                     }
                     targetDrunkYaw = bestCandidate;
                 } else {
@@ -1454,7 +1731,6 @@ public class RocketPilot extends Module {
         if (mc.player == null) return;
         if (drunkSpiralOrigin == null) drunkSpiralOrigin = mc.player.getPos();
 
-        // Advance the spiral waypoint when we get close (or on first call)
         if (drunkSpiralTarget == null) {
             calculateDrunkSpiralTarget();
         } else {
@@ -1465,7 +1741,6 @@ public class RocketPilot extends Module {
         }
         if (drunkSpiralTarget == null) return;
 
-        // Re-roll the drunk heading on the existing interval timer.
         if (drunkTimer++ >= currentDrunkDuration) {
             double dx = drunkSpiralTarget.x - mc.player.getX();
             double dz = drunkSpiralTarget.z - mc.player.getZ();
@@ -1477,7 +1752,6 @@ public class RocketPilot extends Module {
             currentDrunkDuration = drunkInterval.get() + (int)(Math.random() * 10);
         }
 
-        // Smoothly rotate toward the drunk yaw (same as classic drunk mode)
         float currentYaw = mc.player.getYaw();
         float diffYaw    = MathHelper.wrapDegrees(targetDrunkYaw - currentYaw);
         float change     = diffYaw * drunkSmoothing.get().floatValue();
@@ -1517,19 +1791,17 @@ public class RocketPilot extends Module {
             }
         } else if (drunkSpiralMode.get() == DrunkSpiralMode.Hexagon || drunkSpiralMode.get() == DrunkSpiralMode.Triangle) {
             int    sides      = drunkSpiralMode.get() == DrunkSpiralMode.Hexagon ? 6 : 3;
-            double extAngle   = 2.0 * Math.PI / sides;  // 60° hex, 120° tri
+            double extAngle   = 2.0 * Math.PI / sides;
             int    baseSide   = drunkSpiralMode.get() == DrunkSpiralMode.Hexagon
                                 ? drunkHexagonSideLength.get() : drunkTriangleSideLength.get();
             int    expansion  = drunkSpiralMode.get() == DrunkSpiralMode.Hexagon
                                 ? drunkHexagonExpansion.get() : drunkTriangleExpansion.get();
 
-            // Continuous growth distributed across sides so the polygon doesn't
-            // re-trace over itself — creates a true outward spiral.
             int    totalSteps  = drunkPolygonRotation * sides + drunkPolygonSide;
             double growPerSide = (expansion * 16.0) / sides;
             double sideLen     = (baseSide * 16.0) + totalSteps * growPerSide;
 
-            double heading = drunkPolygonSide * extAngle;   // 0, 60°, 120°, …  /  0, 120°, 240°, …
+            double heading = drunkPolygonSide * extAngle;
             Vec3d start    = (drunkSpiralTarget != null) ? drunkSpiralTarget : drunkSpiralOrigin;
             nextX = start.x + Math.cos(heading) * sideLen;
             nextZ = start.z + Math.sin(heading) * sideLen;
@@ -1539,11 +1811,11 @@ public class RocketPilot extends Module {
                 drunkPolygonSide = 0;
                 drunkPolygonRotation++;
             }
-        } else { // Circle
+        } else {
             double angleStep       = 2.0 * Math.PI / drunkCircleSegments.get();
             double expansionBlocks = drunkCircleExpansion.get() * 16.0;
             double b               = expansionBlocks / (2.0 * Math.PI);
-            double radius          = b * drunkCircleAngle;          // Archimedean spiral
+            double radius          = b * drunkCircleAngle;
             nextX = drunkSpiralOrigin.x + radius * Math.cos(drunkCircleAngle);
             nextZ = drunkSpiralOrigin.z + radius * Math.sin(drunkCircleAngle);
             drunkCircleAngle += angleStep;
@@ -1597,7 +1869,7 @@ public class RocketPilot extends Module {
         for (int i = 0; i < 9; i++) {
             if (mc.player.getInventory().getStack(i).isEmpty()) { hotbarSlot = i; break; }
         }
-        if (hotbarSlot == -1) return; // Do not overwrite existing items
+        if (hotbarSlot == -1) return;
         InvUtils.move().from(invSlot).toHotbar(hotbarSlot);
     }
 

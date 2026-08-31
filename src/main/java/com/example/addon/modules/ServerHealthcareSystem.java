@@ -1,9 +1,14 @@
 package com.example.addon.modules;
 
+import java.util.Random;
 import java.util.Set;
 
 import com.example.addon.Tim;
 
+import baritone.api.BaritoneAPI;
+import baritone.api.process.IBaritoneProcess;
+import baritone.api.process.PathingCommand;
+import baritone.api.process.PathingCommandType;
 import meteordevelopment.meteorclient.events.game.GameJoinedEvent;
 import meteordevelopment.meteorclient.events.packets.PacketEvent;
 import meteordevelopment.meteorclient.events.world.TickEvent;
@@ -45,12 +50,6 @@ import net.minecraft.util.Hand;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.Vec3d;
-
-// Baritone imports
-import baritone.api.BaritoneAPI;
-import baritone.api.process.IBaritoneProcess;
-import baritone.api.process.PathingCommand;
-import baritone.api.process.PathingCommandType;
 
 public class ServerHealthcareSystem extends Module {
 
@@ -369,6 +368,12 @@ public class ServerHealthcareSystem extends Module {
     private boolean wasOnGround       = true;
     private boolean manualSwapRequested = false;
 
+    // Anti-AFK (always on while module is active)
+    private int antiAfkTickCounter    = 0;
+    private int antiAfkNextSwingTicks = 0;
+    private int lastSwingDelayTicks   = -1;
+    private static final Random AFK_RANDOM = new Random();
+
     // ── Constructor ───────────────────────────────────────────────────────────
 
     public ServerHealthcareSystem() {
@@ -392,6 +397,11 @@ public class ServerHealthcareSystem extends Module {
             highestHungerSeen = mc.player.getHungerManager().getFoodLevel();
         }
         resetState();
+
+        // Schedule the first anti-AFK swing (10–35s, no consecutive repeats)
+        antiAfkTickCounter    = 0;
+        lastSwingDelayTicks   = -1;
+        antiAfkNextSwingTicks = generateAntiAfkDelay();
     }
 
     @Override
@@ -444,6 +454,11 @@ public class ServerHealthcareSystem extends Module {
         jumpTime = -1;
         wasOnGround = true;
         manualSwapRequested = false;
+
+        // Anti-AFK resets
+        antiAfkTickCounter    = 0;
+        antiAfkNextSwingTicks = 0;
+        lastSwingDelayTicks   = -1;
     }
 
     private void stopEating() {
@@ -493,6 +508,9 @@ public class ServerHealthcareSystem extends Module {
     private void onTick(TickEvent.Pre event) {
         if (mc.player == null || mc.world == null) return;
 
+        // Anti-AFK is always active while the module is enabled
+        tickAntiAfk();
+
         switch (mode.get()) {
             case Default -> {
                 tickAutoTotem();
@@ -508,6 +526,35 @@ public class ServerHealthcareSystem extends Module {
                 tickHealthTracking();
             }
         }
+    }
+
+    private void tickAntiAfk() {
+        if (mc.player == null || mc.player.networkHandler == null) return;
+
+        antiAfkTickCounter++;
+
+        if (antiAfkTickCounter >= antiAfkNextSwingTicks) {
+            // Swing the hand — this sends HandSwingC2SPacket, which most
+            // servers count as activity and prevents AFK kicks.
+            mc.player.swingHand(Hand.MAIN_HAND);
+
+            // Reset counter and schedule next swing (never same as previous)
+            antiAfkTickCounter    = 0;
+            antiAfkNextSwingTicks = generateAntiAfkDelay();
+        }
+    }
+
+    /**
+     * Generates a random anti-AFK swing delay between 10s (200t) and 35s (700t).
+     * Guarantees the same value is never returned twice in a row.
+     */
+    private int generateAntiAfkDelay() {
+        int delay;
+        do {
+            delay = 200 + AFK_RANDOM.nextInt(501); // 200..700 inclusive
+        } while (delay == lastSwingDelayTicks);
+        lastSwingDelayTicks = delay;
+        return delay;
     }
 
     private void tickHealthTracking() {

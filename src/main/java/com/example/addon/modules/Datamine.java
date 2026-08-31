@@ -3,18 +3,22 @@ package com.example.addon.modules;
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
 
 import com.example.addon.Tim;
 import com.example.addon.mixin.InteractionAccessor;
+import com.example.addon.utils.Hotbar;
 
 import baritone.api.BaritoneAPI;
 import baritone.api.pathing.goals.GoalBlock;
+import baritone.api.pathing.goals.GoalNear;
 import meteordevelopment.meteorclient.events.packets.PacketEvent;
 import meteordevelopment.meteorclient.events.render.Render3DEvent;
 import meteordevelopment.meteorclient.events.world.TickEvent;
 import meteordevelopment.meteorclient.renderer.ShapeMode;
+import meteordevelopment.meteorclient.settings.BlockListSetting;
 import meteordevelopment.meteorclient.settings.BoolSetting;
 import meteordevelopment.meteorclient.settings.ColorSetting;
 import meteordevelopment.meteorclient.settings.DoubleSetting;
@@ -27,37 +31,49 @@ import meteordevelopment.meteorclient.systems.modules.Module;
 import meteordevelopment.meteorclient.systems.modules.Modules;
 import meteordevelopment.meteorclient.utils.render.color.SettingColor;
 import meteordevelopment.orbit.EventHandler;
+
+import net.minecraft.block.Block;
 import net.minecraft.block.BlockState;
+import net.minecraft.block.FluidBlock;
 import net.minecraft.entity.ItemEntity;
-import net.minecraft.entity.player.PlayerInventory;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
 import net.minecraft.network.packet.c2s.play.HandSwingC2SPacket;
 import net.minecraft.network.packet.c2s.play.PlayerActionC2SPacket;
-import net.minecraft.network.packet.c2s.play.UpdateSelectedSlotC2SPacket;
 import net.minecraft.util.Hand;
+import net.minecraft.util.hit.BlockHitResult;
+import net.minecraft.util.hit.HitResult;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Box;
 import net.minecraft.util.math.Direction;
+import net.minecraft.util.math.Vec3d;
+import net.minecraft.world.RaycastContext;
 
 /**
  * Core packet mining, queuing, and bursting logic provided by Arkie.
  * Refactored for readability and maintainability.
  */
 public class Datamine extends Module {
-    // --- Constants ---
-    private static final double BREAK_THRESHOLD = 0.75;
-    private static final long BURST_PAUSE = 305;
+    // --- Constants (Synced from MiningTweaks) ---
+    private static final double BREAK_THRESHOLD = 0.7;
+    private static final double REACH = 6.0;
+    private static final long RESTART_DELAY = 300;
+    private static final long BURST_PAUSE = 275;
     private static final int BURST_COUNT = 22;
-    private static final int FAKE_BLOCK_HEIGHT = 2048;
+    private static final int FAKE_BLOCK_HEIGHT = 1024;
 
     // --- Enums ---
     public enum MiningMode { Packet, Normal }
     public enum SwapMode { Normal, Silent }
     public enum HighlightStyle { GLOW, SPECTRAL, PULSE }
+    public enum NukerMode { Disabled, Tunnel, Hole, Excavator }
+    public enum TunnelShape { x1_2, x2_2, x3_3, x4_4, x5_5 }
+    public enum ExcavatorShape { Box, Sphere, Flat }
+    public enum ListMode { Whitelist, Blacklist }
 
     // --- Setting Groups ---
     private final SettingGroup sgMining = this.settings.getDefaultGroup();
+    private final SettingGroup sgNuker = this.settings.createGroup("Nuker");
     private final SettingGroup sgTools = this.settings.createGroup("Tools");
     private final SettingGroup sgVanilla = this.settings.createGroup("Vanilla Bypass");
     private final SettingGroup sgCollect = this.settings.createGroup("Auto-Collect");
@@ -78,31 +94,87 @@ public class Datamine extends Module {
         .build()
     );
 
-    private final Setting<Integer> remineDelay = sgMining.add(new IntSetting.Builder()
-        .name("remine-delay")
-        .description("Delay in ticks before checking for a replaced block. 0 = instant.")
-        .defaultValue(5)
-        .min(0)
-        .sliderMax(20)
-        .visible(instantRemine::get)
-        .build()
-    );
-
     private final Setting<Integer> validationTicks = sgMining.add(new IntSetting.Builder()
-        .name("validation-ticks")
-        .description("Ticks to wait before validating whether a block was broken.")
+        .name("validation-wait")
+        .description("Checks whether the block was mined after this many ticks.")
         .defaultValue(5)
         .min(1)
-        .sliderMax(20)
+        .sliderMax(10)
         .build()
     );
 
-    private final Setting<Integer> maxAttempts = sgMining.add(new IntSetting.Builder()
-        .name("max-attempts")
-        .description("Maximum total mining attempts for each block.")
-        .defaultValue(3)
+    private final Setting<Integer> maxRetries = sgMining.add(new IntSetting.Builder()
+        .name("maximum-retries")
+        .description("Maximum mining retries after a block fails to break.")
+        .defaultValue(1)
+        .min(0)
+        .sliderMax(2)
+        .build()
+    );
+
+    private final Setting<Integer> retryCooldown = sgMining.add(new IntSetting.Builder()
+        .name("retry-cooldown")
+        .description("Delay in ticks before starting another mining attempt.")
+        .defaultValue(6)
         .min(1)
-        .sliderMax(3)
+        .sliderMax(12)
+        .build()
+    );
+
+    // --- Nuker Settings ---
+    private final Setting<NukerMode> nukerMode = sgNuker.add(new EnumSetting.Builder<NukerMode>()
+        .name("nuker-mode")
+        .description("Whether to use the built-in nuker to automatically queue blocks.")
+        .defaultValue(NukerMode.Disabled)
+        .build()
+    );
+
+    private final Setting<TunnelShape> tunnelShape = sgNuker.add(new EnumSetting.Builder<TunnelShape>()
+        .name("tunnel-shape")
+        .description("The shape of the tunnel to mine.")
+        .defaultValue(TunnelShape.x3_3)
+        .visible(() -> nukerMode.get() == NukerMode.Tunnel)
+        .build()
+    );
+
+    private final Setting<ExcavatorShape> excavatorShape = sgNuker.add(new EnumSetting.Builder<ExcavatorShape>()
+        .name("excavator-shape")
+        .description("The shape of the area to scan and excavate.")
+        .defaultValue(ExcavatorShape.Box)
+        .visible(() -> nukerMode.get() == NukerMode.Excavator)
+        .build()
+    );
+
+    private final Setting<Integer> excavatorRange = sgNuker.add(new IntSetting.Builder()
+        .name("excavator-range")
+        .description("Radius in blocks to search for whitelisted blocks to excavate.")
+        .defaultValue(16)
+        .min(4)
+        .sliderMax(64)
+        .visible(() -> nukerMode.get() == NukerMode.Excavator)
+        .build()
+    );
+
+    private final Setting<Boolean> excavatorIgnoreFloor = sgNuker.add(new BoolSetting.Builder()
+        .name("ignore-floor")
+        .description("Prevents the excavator from mining any blocks directly below your feet level.")
+        .defaultValue(true)
+        .visible(() -> nukerMode.get() == NukerMode.Excavator)
+        .build()
+    );
+
+    private final Setting<ListMode> listMode = sgNuker.add(new EnumSetting.Builder<ListMode>()
+        .name("list-mode")
+        .description("Whether to treat the block list as a whitelist or blacklist.")
+        .defaultValue(ListMode.Whitelist)
+        .visible(() -> nukerMode.get() == NukerMode.Tunnel || nukerMode.get() == NukerMode.Hole)
+        .build()
+    );
+
+    private final Setting<List<Block>> blockList = sgNuker.add(new BlockListSetting.Builder()
+        .name("block-list")
+        .description("Which blocks to target or ignore. Excavator strictly uses this as a whitelist.")
+        .visible(() -> nukerMode.get() != NukerMode.Disabled)
         .build()
     );
 
@@ -118,6 +190,15 @@ public class Datamine extends Module {
         .name("silent-swing")
         .description("Hides the client-side hand swing animation. (Server still receives the packet).")
         .defaultValue(false)
+        .build()
+    );
+
+    private final Setting<Integer> toolSyncDelay = sgTools.add(new IntSetting.Builder()
+        .name("tool-sync-delay")
+        .description("Delay in ticks after switching tools before mining starts.")
+        .defaultValue(3)
+        .min(1)
+        .sliderMax(5)
         .build()
     );
 
@@ -140,11 +221,11 @@ public class Datamine extends Module {
 
     // --- Vanilla Bypass Settings ---
     private final Setting<Integer> vanilla = sgVanilla.add(new IntSetting.Builder()
-        .name("vanilla-bypass")
-        .description("Bypasses the mining queue for blocks that break within this many ticks. 0 = disabled.")
-        .defaultValue(0)
+        .name("vanilla-cutoff")
+        .description("Uses vanilla mining for breaks within this limit in ticks. 0 = disabled.")
+        .defaultValue(1)
         .min(0)
-        .sliderMax(20)
+        .sliderMax(5)
         .build()
     );
 
@@ -330,18 +411,23 @@ public class Datamine extends Module {
 
     // --- Variables & State ---
     private final Deque<Request> queue = new ArrayDeque<>();
+    private final Deque<Retry> waiting = new ArrayDeque<>();
+
     private Target primary;
     private Target secondary;
     private Request last;
 
     private int tick = 0;
-    private int lastBreakTick = 0;
-    private long lastMineTime = 0;
+    private long ready = 0;
     private long stopped = 0;
+    private boolean fast = false;
 
+    private long lastMineTime = 0;
     private final Set<Integer> seenItems = new HashSet<>();
     private boolean sendingCustomPacket = false;
     private boolean swapped = false;
+
+    private BlockPos excavatorTarget = null;
 
     public Datamine() {
         super(Tim.CATEGORY, "datamine", "Queues blocks for fast packet mining with double break.");
@@ -362,8 +448,7 @@ public class Datamine extends Module {
             this.action(this.secondary, PlayerActionC2SPacket.Action.ABORT_DESTROY_BLOCK, this.secondary.pos, this.secondary.side);
         }
 
-        // Stop Baritone if it was pathing to items, UNLESS PortalMaker is currently using it
-        if (this.autoCollect.get() && !Modules.get().isActive(PortalMaker.class) && BaritoneAPI.getProvider().getPrimaryBaritone().getPathingBehavior().isPathing()) {
+        if (BaritoneAPI.getProvider().getPrimaryBaritone().getPathingBehavior().isPathing()) {
             BaritoneAPI.getProvider().getPrimaryBaritone().getPathingBehavior().forceCancel();
         }
 
@@ -385,7 +470,6 @@ public class Datamine extends Module {
                     event.cancel();
                 }
 
-                // Prevent STOP_DESTROY_BLOCK from being sent for the last broken block while instant remine is active
                 if (this.instantRemine.get() && this.last != null && action == PlayerActionC2SPacket.Action.STOP_DESTROY_BLOCK && packet.getPos().equals(this.last.pos)) {
                     event.cancel();
                 }
@@ -399,11 +483,19 @@ public class Datamine extends Module {
 
         this.tick++;
 
+        if (this.nukerMode.get() != NukerMode.Disabled) {
+            this.doNuking();
+        }
+
+        this.promote();
         this.clean();
+
         this.update(this.secondary);
         this.update(this.primary);
+
         this.fill();
         this.remine();
+        
         this.checkForNewItems();
         this.doAutoCollect();
     }
@@ -424,6 +516,162 @@ public class Datamine extends Module {
         }
     }
 
+    // --- Nuker Logic ---
+    private void doNuking() {
+        if (this.mc.player == null || this.mc.world == null) return;
+
+        BlockPos basePos = this.mc.player.getBlockPos();
+        Direction facing = this.mc.player.getHorizontalFacing();
+
+        if (this.nukerMode.get() == NukerMode.Tunnel) {
+            int width = 1, height = 2;
+            TunnelShape shape = this.tunnelShape.get();
+            if (shape == TunnelShape.x2_2) { width = 2; height = 2; }
+            else if (shape == TunnelShape.x3_3) { width = 3; height = 3; }
+            else if (shape == TunnelShape.x4_4) { width = 4; height = 4; }
+            else if (shape == TunnelShape.x5_5) { width = 5; height = 5; }
+
+            int halfW = width / 2;
+
+            for (int y = 0; y < height; y++) {
+                for (int x = 0; x < width; x++) {
+                    int offsetX = x - halfW;
+                    int offsetY = y; // Start at feet level and go up
+                    BlockPos pos = this.getTunnelPos(basePos, facing, offsetX, offsetY);
+                    this.tryMine(pos);
+                }
+            }
+        } else if (this.nukerMode.get() == NukerMode.Hole) {
+            for (int x = -1; x <= 1; x++) {
+                for (int z = -1; z <= 1; z++) {
+                    BlockPos pos = basePos.add(x, -1, z);
+                    this.tryMine(pos);
+                }
+            }
+        } else if (this.nukerMode.get() == NukerMode.Excavator) {
+            this.doExcavating();
+        }
+    }
+
+    private BlockPos getTunnelPos(BlockPos base, Direction facing, int offsetX, int offsetY) {
+        if (facing == Direction.NORTH) return base.add(offsetX, offsetY, -1);
+        if (facing == Direction.SOUTH) return base.add(offsetX, offsetY, 1);
+        if (facing == Direction.WEST) return base.add(-1, offsetY, offsetX);
+        if (facing == Direction.EAST) return base.add(1, offsetY, offsetX);
+        return base;
+    }
+
+    private void tryMine(BlockPos pos) {
+        if (pos == null) return;
+        if (this.isTracked(pos)) return;
+
+        BlockState state = this.mc.world.getBlockState(pos);
+        if (state.isAir() || state.getBlock() instanceof FluidBlock) return;
+
+        if (!this.isBlockAllowed(state.getBlock())) return;
+
+        if (!this.breakable(pos, state)) return;
+
+        Direction side = this.face(pos, Direction.UP);
+        this.mine(pos, side);
+    }
+
+    private boolean isBlockAllowed(Block block) {
+        if (blockList.get().isEmpty()) return listMode.get() == ListMode.Blacklist;
+        if (listMode.get() == ListMode.Whitelist) {
+            return blockList.get().contains(block);
+        } else {
+            return !blockList.get().contains(block);
+        }
+    }
+
+    // --- Excavator Logic ---
+    private void doExcavating() {
+        // Pause Baritone if we are actively mining something
+        if (this.primary != null || this.secondary != null || !this.queue.isEmpty()) {
+            if (BaritoneAPI.getProvider().getPrimaryBaritone().getPathingBehavior().isPathing()) {
+                BaritoneAPI.getProvider().getPrimaryBaritone().getPathingBehavior().forceCancel();
+            }
+            return;
+        }
+
+        // Find a new target if we don't have one or the current one is invalid
+        if (this.excavatorTarget == null || !this.isExcavatable(this.excavatorTarget)) {
+            this.excavatorTarget = this.findExcavatorTarget();
+        }
+
+        if (this.excavatorTarget == null) {
+            // No targets found, stop Baritone
+            if (BaritoneAPI.getProvider().getPrimaryBaritone().getPathingBehavior().isPathing()) {
+                BaritoneAPI.getProvider().getPrimaryBaritone().getPathingBehavior().forceCancel();
+            }
+            return;
+        }
+
+        // If we are close enough to mine it, cancel Baritone and queue the block
+        if (this.reachable(this.excavatorTarget)) {
+            if (BaritoneAPI.getProvider().getPrimaryBaritone().getPathingBehavior().isPathing()) {
+                BaritoneAPI.getProvider().getPrimaryBaritone().getPathingBehavior().forceCancel();
+            }
+            this.tryMine(this.excavatorTarget);
+            this.excavatorTarget = null; // Look for next target next tick
+        } else {
+            // Path to the target if we aren't already
+            if (!BaritoneAPI.getProvider().getPrimaryBaritone().getPathingBehavior().isPathing()) {
+                GoalNear goal = new GoalNear(this.excavatorTarget, 1);
+                BaritoneAPI.getProvider().getPrimaryBaritone().getCustomGoalProcess().setGoalAndPath(goal);
+            }
+        }
+    }
+
+    private boolean isExcavatable(BlockPos pos) {
+        if (pos == null) return false;
+        
+        // Prevent mining any floor blocks if the player is on the ground
+        if (this.excavatorIgnoreFloor.get() && this.mc.player.isOnGround()) {
+            if (pos.getY() < this.mc.player.getBlockPos().getY()) {
+                return false;
+            }
+        }
+
+        BlockState state = this.mc.world.getBlockState(pos);
+        if (state.isAir() || state.getBlock() instanceof FluidBlock) return false;
+        if (state.getHardness(this.mc.world, pos) < 0.0F) return false; // Unbreakable
+        if (this.blockList.get().isEmpty()) return false; // Strictly whitelist only
+        return this.blockList.get().contains(state.getBlock());
+    }
+
+    private BlockPos findExcavatorTarget() {
+        BlockPos playerPos = this.mc.player.getBlockPos();
+        int range = this.excavatorRange.get();
+        BlockPos closest = null;
+        double closestDist = Double.MAX_VALUE;
+        int rangeSq = range * range;
+
+        for (int x = -range; x <= range; x++) {
+            for (int y = -range; y <= range; y++) {
+                for (int z = -range; z <= range; z++) {
+                    if (this.excavatorShape.get() == ExcavatorShape.Sphere) {
+                        if (x*x + y*y + z*z > rangeSq) continue;
+                    } else if (this.excavatorShape.get() == ExcavatorShape.Flat) {
+                        if (y != 0) continue;
+                    }
+
+                    BlockPos pos = playerPos.add(x, y, z);
+                    if (this.isTracked(pos)) continue;
+                    if (!this.isExcavatable(pos)) continue;
+                    
+                    double dist = this.mc.player.squaredDistanceTo(pos.getX() + 0.5, pos.getY() + 0.5, pos.getZ() + 0.5);
+                    if (dist < closestDist) {
+                        closestDist = dist;
+                        closest = pos.toImmutable();
+                    }
+                }
+            }
+        }
+        return closest;
+    }
+
     // --- Queue & Target Management ---
     public void mine(BlockPos pos, Direction side) {
         if (this.mc.player == null || this.mc.world == null || this.mc.interactionManager == null || pos == null || side == null) return;
@@ -434,30 +682,56 @@ public class Datamine extends Module {
         BlockState state = this.mc.world.getBlockState(pos);
         if (!this.breakable(pos, state)) return;
 
-        this.queue.addLast(new Request(pos, side, 1));
+        this.queue.addLast(new Request(pos, side, 0));
         this.fill();
     }
 
     private void reset() {
         this.queue.clear();
+        this.waiting.clear();
         this.primary = null;
         this.secondary = null;
         this.last = null;
         this.tick = 0;
-        this.lastBreakTick = 0;
-        this.lastMineTime = 0;
+        this.ready = 0;
         this.stopped = 0;
+        this.fast = false;
+        this.lastMineTime = 0;
         this.seenItems.clear();
         this.sendingCustomPacket = false;
         this.swapped = false;
+        this.excavatorTarget = null;
+    }
+
+    private void promote() {
+        if (this.waiting.isEmpty()) return;
+
+        long now = System.currentTimeMillis();
+        Iterator<Retry> iterator = this.waiting.iterator();
+
+        while (iterator.hasNext()) {
+            Retry retry = iterator.next();
+            if (now < retry.ready) continue;
+
+            BlockState state = this.mc.world.getBlockState(retry.request.pos);
+            iterator.remove();
+
+            if (!this.breakable(retry.request.pos, state)) continue;
+            this.queue.addFirst(retry.request);
+        }
     }
 
     private void clean() {
         this.queue.removeIf(request -> !this.breakable(request.pos, this.mc.world.getBlockState(request.pos)));
+        this.waiting.removeIf(retry -> !this.breakable(retry.request.pos, this.mc.world.getBlockState(retry.request.pos)));
     }
 
     private void fill() {
+        if (this.queue.isEmpty()) return;
+
         if (this.primary == null) {
+            if (!this.startable()) return;
+
             Target target = this.next();
             if (target != null) this.begin(target);
         }
@@ -474,30 +748,68 @@ public class Datamine extends Module {
     private Target next() {
         while (!this.queue.isEmpty()) {
             Request request = this.queue.removeFirst();
+
             BlockState state = this.mc.world.getBlockState(request.pos);
-            if (this.breakable(request.pos, state)) {
-                return new Target(request, state);
-            }
+            if (!this.breakable(request.pos, state)) continue;
+
+            Direction side = this.face(request.pos, request.side);
+            return new Target(request, state, side);
         }
         return null;
     }
 
+    private boolean startable() {
+        return this.fast || System.currentTimeMillis() - this.stopped > RESTART_DELAY;
+    }
+
     private boolean parkable() {
-        return this.primary != null && !this.primary.finished && !this.primary.instant && this.primary.progress < 1;
+        return this.secondary == null
+            && System.currentTimeMillis() >= this.ready
+            && this.primary != null && !this.primary.arming
+            && !this.primary.finished && !this.primary.instant
+            && this.progress(this.primary) < 1.0;
     }
 
     private void park() {
         Target target = this.primary;
         this.action(target, PlayerActionC2SPacket.Action.STOP_DESTROY_BLOCK, target.pos, target.side);
-        target.primary = false;
-        target.parked = true;
-        this.secondary = target;
+
+        Target parked = new Target(
+            new Request(target.pos, target.side, target.retry),
+            target.state, target.side
+        );
+
+        long now = System.currentTimeMillis();
+
+        parked.started = now;
+        parked.updated = now;
+
+        parked.slot = target.slot;
+        parked.delta = this.delta(parked);
+        parked.work = Math.max(0.0, parked.delta);
+
+        parked.instant = parked.delta >= 1.0F;
+        parked.burst = target.burst;
+
+        this.secondary = parked;
         this.primary = null;
     }
 
-    private void remove(Target target) {
-        if (target == this.primary) this.primary = null;
-        if (target == this.secondary) this.secondary = null;
+    private void remove(Target target, boolean confirmed) {
+        if (target == this.primary) {
+            this.primary = null;
+        }
+
+        if (target == this.secondary) {
+            this.secondary = null;
+            this.ready = System.currentTimeMillis();
+            this.ready += (confirmed ? 50L : BURST_PAUSE);
+        }
+
+        // Revert slot if the target was removed while arming
+        if (target.arming && this.swapped) {
+            this.revertSlot();
+        }
     }
 
     public boolean isTracked(BlockPos pos) {
@@ -506,51 +818,42 @@ public class Datamine extends Module {
         for (Request request : this.queue) {
             if (request.pos.equals(pos)) return true;
         }
+        for (Retry retry : this.waiting) {
+            if (retry.request.pos.equals(pos)) return true;
+        }
         return false;
     }
 
     // --- Server Block Update Hook ---
-    // Called by ClientPlayNetworkHandlerMixin when the server confirms a block change.
-    // Lets us react immediately to server-confirmed state changes rather than
-    // waiting for the tick loop's validation cycle.
     public void onServerBlockUpdate(BlockPos pos, BlockState state) {
-    if (pos == null || state == null) return;
-    BlockPos immutablePos = pos.toImmutable();  // never reassigned → effectively final
+        if (pos == null || state == null) return;
+        BlockPos immutablePos = pos.toImmutable();
 
-    // --- Primary target check ---
-    if (this.primary != null && this.primary.pos.equals(immutablePos)) {
-        if (state.isAir()) {
-            this.confirm(this.primary);
-        } else if (!this.breakable(immutablePos, state)) {
-            this.remove(this.primary);
+        if (this.primary != null && this.primary.pos.equals(immutablePos)) {
+            if (state.isAir()) {
+                this.confirm(this.primary);
+            } else if (!this.breakable(immutablePos, state)) {
+                this.remove(this.primary, false);
+            }
         }
-    }
 
-    // --- Secondary (parked) target check ---
-    if (this.secondary != null && this.secondary.pos.equals(immutablePos)) {
-        if (state.isAir()) {
-            this.confirm(this.secondary);
-        } else if (!this.breakable(immutablePos, state)) {
-            this.remove(this.secondary);
+        if (this.secondary != null && this.secondary.pos.equals(immutablePos)) {
+            if (state.isAir()) {
+                this.confirm(this.secondary);
+            } else if (!this.breakable(immutablePos, state)) {
+                this.remove(this.secondary, false);
+            }
         }
-    }
 
-    // --- Prune queued requests that became unbreakable ---
-    this.queue.removeIf(request ->
-        request.pos.equals(immutablePos) && !this.breakable(immutablePos, state)
-    );
+        this.queue.removeIf(request -> request.pos.equals(immutablePos) && !this.breakable(immutablePos, state));
+        this.waiting.removeIf(retry -> retry.request.pos.equals(immutablePos) && !this.breakable(immutablePos, state));
 
-    // --- Instant-remine trigger ---
-    if (this.instantRemine.get()
-            && this.last != null
-            && this.last.pos.equals(immutablePos)
-            && this.breakable(immutablePos, state)) {
-        this.remine();
-    }
-}
-
-    private boolean breakable(BlockPos pos, BlockState state) {
-        return !state.isAir() && state.getHardness(this.mc.world, pos) >= 0;
+        if (this.instantRemine.get()
+                && this.last != null
+                && this.last.pos.equals(immutablePos)
+                && this.breakable(immutablePos, state)) {
+            this.remine();
+        }
     }
 
     // --- Vanilla Bypass ---
@@ -573,17 +876,34 @@ public class Datamine extends Module {
 
     // --- Mining Logic ---
     private void begin(Target target) {
-        target.primary = true;
-        target.started = System.currentTimeMillis();
+        target.side = this.face(target.pos, target.side);
         target.slot = this.best(target.state, target.pos);
+
+        this.primary = target;
 
         this.select(target.slot);
 
-        target.delta = this.delta(target);
-        target.instant = target.delta >= 1.0F;
-        target.progress = target.instant ? 1 : 0;
+        if (this.swapped) {
+            target.arming = true;
+            target.arm = this.tick + this.toolSyncDelay.get();
+            // Do NOT revert slot here. We want the server to keep the tool equipped during arming.
+            return;
+        }
 
-        this.primary = target;
+        this.start(target);
+    }
+
+    private void start(Target target) {
+        long now = System.currentTimeMillis();
+
+        target.arming = false;
+        target.started = now;
+        target.updated = now;
+
+        target.delta = this.delta(target);
+        target.work = Math.max(0.0, target.delta);
+
+        target.instant = target.delta >= 1.0F;
 
         this.packet(PlayerActionC2SPacket.Action.START_DESTROY_BLOCK, target.pos, target.side);
 
@@ -611,66 +931,75 @@ public class Datamine extends Module {
             return;
         }
 
-        if (target.finished) {
-            if (this.tick - target.finish >= this.validationTicks.get()) {
-                this.verify(target);
-            }
+        if (!this.reachable(target.pos) || !state.equals(target.state)) {
+            this.fail(target);
             return;
         }
 
-        target.slot = this.best(target.state, target.pos);
-        target.delta = this.delta(target);
-        target.progress = this.progress(target);
+        if (target.arming) {
+            int slot = this.best(target.state, target.pos);
 
+            if (slot != target.slot) {
+                target.slot = slot;
+                this.select(slot);
+                if (!this.swapped) {
+                    this.start(target);
+                    return;
+                }
+                target.arm = this.tick + this.toolSyncDelay.get();
+                return;
+            }
+
+            if (this.tick < target.arm) {
+                return;
+            }
+
+            this.start(target);
+            return;
+        }
+
+        if (target.finished) {
+            int delay = target == this.primary ? this.validationTicks.get() : this.validationTicks.get() * 2;
+            if (this.tick - target.finish >= delay) this.verify(target);
+            return;
+        }
+
+        int slot = this.best(target.state, target.pos);
+        if (slot != target.slot) target.slot = slot;
+
+        this.advance(target);
+
+        double progress = this.progress(target);
         long elapsed = System.currentTimeMillis() - target.started;
 
         if (this.miningMode.get() == MiningMode.Packet) {
-            if (!target.burst && elapsed >= BURST_PAUSE && this.duration(target) > BURST_PAUSE && target.progress < 1) {
+            if (!target.burst && elapsed >= BURST_PAUSE && this.expected(target) >= BURST_PAUSE && progress < 1.0) {
                 this.burst(target);
             }
         }
 
-        if (target.progress >= 1) this.finish(target);
+        if (progress >= 1.0) this.finish(target);
     }
 
-    private void finish(Target target) {
-        if (target.finished) return;
+    private void advance(Target target) {
+        long now = System.currentTimeMillis();
+        long elapsed = Math.max(0, now - target.updated);
 
-        if (!target.instant && !target.parked) {
-            this.action(target, PlayerActionC2SPacket.Action.STOP_DESTROY_BLOCK, target.pos, target.side);
+        target.delta = this.delta(target);
+
+        if (elapsed > 0 && target.delta > 0.0F) {
+            target.work += target.delta * elapsed / 50.0;
         }
 
-        target.progress = 1;
-        target.finished = true;
-        target.finish = this.tick;
-    }
-
-    private void verify(Target target) {
-        BlockState state = this.mc.world.getBlockState(target.pos);
-
-        if (state.isAir()) {
-            this.confirm(target);
-            return;
-        }
-
-        this.remove(target);
-        if (target.attempt >= this.maxAttempts.get()) return;
-
-        this.queue.addFirst(new Request(target.pos, target.side, target.attempt + 1));
-    }
-
-    private void confirm(Target target) {
-        // Send STOP_DESTROY_BLOCK packet to the server for the already mined block
-        // This ensures the server is fully aware the breaking action has ceased, preventing desyncs.
-        this.packet(PlayerActionC2SPacket.Action.STOP_DESTROY_BLOCK, target.pos, target.side);
-
-        this.last = new Request(target.pos, target.side, 1);
-        this.lastBreakTick = this.tick;
-        this.remove(target);
+        target.updated = now;
     }
 
     private void burst(Target target) {
+        this.advance(target);
+
+        target.side = this.face(target.pos, target.side);
         target.slot = this.best(target.state, target.pos);
+
         this.select(target.slot);
 
         BlockPos pos = this.fake(target.pos);
@@ -683,6 +1012,66 @@ public class Datamine extends Module {
         this.revertSlot();
     }
 
+    private void finish(Target target) {
+        if (target.finished) return;
+
+        this.advance(target);
+
+        target.finished = true;
+        target.finish = this.tick;
+
+        this.fast = target.burst;
+
+        if (target == this.primary && !target.instant) {
+            this.action(target, PlayerActionC2SPacket.Action.STOP_DESTROY_BLOCK, target.pos, target.side);
+        }
+
+        this.stopped = System.currentTimeMillis();
+    }
+
+    private void verify(Target target) {
+        BlockState state = this.mc.world.getBlockState(target.pos);
+
+        if (state.isAir()) {
+            this.confirm(target);
+            return;
+        }
+
+        this.fail(target);
+    }
+
+    private void fail(Target target) {
+        BlockState state = this.mc.world.getBlockState(target.pos);
+
+        boolean reachable = this.reachable(target.pos);
+        boolean identical = state.equals(target.state);
+
+        Direction side = this.face(target.pos, target.side);
+        target.side = side;
+
+        this.action(target, PlayerActionC2SPacket.Action.ABORT_DESTROY_BLOCK, target.pos, target.side);
+        this.remove(target, false);
+
+        if (!reachable || !identical || target.retry >= this.maxRetries.get()) {
+            return;
+        }
+
+        long ready = System.currentTimeMillis();
+        ready += this.retryCooldown.get() * 50L;
+
+        this.waiting.addLast(new Retry(new Request(
+            target.pos, side, target.retry + 1), ready)
+        );
+    }
+
+    private void confirm(Target target) {
+        this.last = new Request(target.pos,
+            this.face(target.pos, target.side), 0
+        );
+
+        this.remove(target, true);
+    }
+
     private boolean remine() {
         if (!this.instantRemine.get() || this.last == null ||
             this.primary != null || this.secondary != null) {
@@ -692,13 +1081,12 @@ public class Datamine extends Module {
         BlockState state = this.mc.world.getBlockState(this.last.pos);
         if (!this.breakable(this.last.pos, state)) return false;
 
-        Direction side = this.last.side;
+        Direction side = this.face(this.last.pos, this.last.side);
         int slot = this.best(state, this.last.pos);
 
         this.select(slot);
-        this.packet(PlayerActionC2SPacket.Action.STOP_DESTROY_BLOCK,
-            this.last.pos, side
-        );
+        this.packet(PlayerActionC2SPacket.Action.STOP_DESTROY_BLOCK, this.last.pos, side);
+        this.revertSlot();
 
         this.stopped = System.currentTimeMillis();
         return true;
@@ -706,47 +1094,66 @@ public class Datamine extends Module {
 
     // --- Math & Calculations ---
     private double progress(Target target) {
-        if (target.finished) return 1;
-        if (target.delta <= 0) return 0;
+        if (target.finished) return 1.0;
 
-        double diff = System.currentTimeMillis() - target.started;
-        double ticks = Math.max(1.0, diff / 50.0);
-        double limit = (this.miningMode.get() == MiningMode.Packet && target.primary) ? BREAK_THRESHOLD : 1.0;
+        double limit = this.limit(target);
+        if (limit <= 0.0) return 1.0;
 
-        return Math.min(1.0, target.delta * ticks / limit);
+        return Math.min(1.0, target.work / limit);
     }
 
-    private long duration(Target target) {
-        if (target.delta <= 0) return Long.MAX_VALUE;
-        double limit = (this.miningMode.get() == MiningMode.Packet && target.primary) ? BREAK_THRESHOLD : 1.0;
-        return (long) Math.max(0, (limit / target.delta - 1.0) * 50.0);
+    private long expected(Target target) {
+        if (target.delta <= 0.0F) return Long.MAX_VALUE;
+
+        double limit = this.limit(target);
+        double ratio = limit / target.delta - 1.0;
+
+        return (long) Math.max(0.0, ratio * 50.0);
+    }
+
+    private double limit(Target target) {
+        return target == this.primary ? BREAK_THRESHOLD : 1.0;
     }
 
     private float delta(Target target) {
-        PlayerInventory inv = this.mc.player.getInventory();
-        int selected = inv.selectedSlot;
-        inv.setSelectedSlot(target.slot);
+        int selected = Hotbar.selected();
+        Hotbar.set(target.slot);
 
         try {
             return target.state.calcBlockBreakingDelta(this.mc.player, this.mc.world, target.pos);
         } finally {
-            inv.setSelectedSlot(selected);
+            Hotbar.set(selected);
         }
+    }
+
+    private double visual(Target target) {
+        if (target.finished) return 1.0;
+
+        double limit = this.limit(target);
+        if (limit <= 0.0) return 1.0;
+
+        double work = target.work;
+
+        if (!target.arming && target.updated > 0 && target.delta > 0.0F) {
+            long elapsed = System.currentTimeMillis() - target.updated;
+            work += target.delta * Math.max(0, elapsed) / 50.0;
+        }
+
+        return Math.min(1.0, work / limit);
     }
 
     // --- Tool & Packet Logic ---
     private int best(BlockState state, BlockPos pos) {
-        PlayerInventory inv = this.mc.player.getInventory();
-        int selected = inv.selectedSlot;
+        int selected = Hotbar.selected();
         int best = selected;
+        float speed = -1.0F;
 
-        float speed = -1;
         boolean suitable = false;
         boolean required = state.isToolRequired();
 
         try {
             for (int idx = 0; idx < 9; idx++) {
-                ItemStack stack = inv.getStack(idx);
+                ItemStack stack = Hotbar.stack(idx);
 
                 if (this.durabilityProtection.get() && stack.isDamageable()) {
                     int remaining = stack.getMaxDamage() - stack.getDamage();
@@ -754,7 +1161,7 @@ public class Datamine extends Module {
                 }
 
                 boolean good = stack.isSuitableFor(state);
-                inv.setSelectedSlot(idx);
+                Hotbar.set(idx);
 
                 float value = state.calcBlockBreakingDelta(this.mc.player, this.mc.world, pos);
 
@@ -773,39 +1180,43 @@ public class Datamine extends Module {
                 suitable = good;
             }
         } finally {
-            inv.setSelectedSlot(selected);
+            Hotbar.set(selected);
         }
+
         return best;
     }
 
     private void action(Target target, PlayerActionC2SPacket.Action action, BlockPos pos, Direction side) {
+        target.side = this.face(target.pos, target.side);
         target.slot = this.best(target.state, target.pos);
+
         this.select(target.slot);
-        this.packet(action, pos, side);
+        this.packet(action, pos, target.side);
         this.revertSlot();
     }
 
     private void select(int slot) {
-        PlayerInventory inv = this.mc.player.getInventory();
-        if (inv.selectedSlot == slot) {
+        if (Hotbar.selected() == slot) {
             this.swapped = false;
             return;
         }
 
         this.swapped = true;
 
+        // Normal mode updates the client slot and sends the packet
+        // Silent mode only sends the packet to the server
         if (this.swapMode.get() == SwapMode.Normal) {
-            inv.setSelectedSlot(slot);
+            Hotbar.set(slot);
         }
-
-        this.mc.player.networkHandler.sendPacket(new UpdateSelectedSlotC2SPacket(slot));
+        
+        Hotbar.sync(slot);
     }
 
     private void revertSlot() {
         if (!this.swapped || this.swapMode.get() != SwapMode.Silent) return;
-
-        PlayerInventory inv = this.mc.player.getInventory();
-        this.mc.player.networkHandler.sendPacket(new UpdateSelectedSlotC2SPacket(inv.selectedSlot));
+        
+        // Re-syncs the actual client slot to the server
+        Hotbar.sync(Hotbar.selected());
         this.swapped = false;
     }
 
@@ -825,6 +1236,81 @@ public class Datamine extends Module {
 
     private BlockPos fake(BlockPos pos) {
         return new BlockPos(pos.getX(), FAKE_BLOCK_HEIGHT, pos.getZ());
+    }
+
+    // --- Block Targeting & Validation ---
+    private Direction face(BlockPos pos, Direction fallback) {
+        Vec3d eye = this.mc.player.getEyePos();
+
+        Direction best = fallback == null ? Direction.UP : fallback;
+        double distance = Double.POSITIVE_INFINITY;
+
+        for (Direction side : Direction.values()) {
+            Vec3d point = this.point(pos, side);
+
+            BlockHitResult hit = this.mc.world.raycast(
+                new RaycastContext(eye, point,
+                    RaycastContext.ShapeType.COLLIDER,
+                    RaycastContext.FluidHandling.NONE,
+                    this.mc.player
+                )
+            );
+
+            if (hit.getType() != HitResult.Type.BLOCK ||
+                !hit.getBlockPos().equals(pos)) {
+                continue;
+            }
+
+            double value = eye.squaredDistanceTo(point);
+            if (value >= distance) continue;
+
+            distance = value;
+            best = hit.getSide();
+        }
+
+        if (distance < Double.POSITIVE_INFINITY) {
+            return best;
+        }
+
+        for (Direction side : Direction.values()) {
+            Vec3d point = this.point(pos, side);
+
+            double value = eye.squaredDistanceTo(point);
+            if (value >= distance) continue;
+
+            distance = value;
+            best = side;
+        }
+
+        return best;
+    }
+
+    private Vec3d point(BlockPos pos, Direction side) {
+        return new Vec3d(
+            pos.getX() + 0.5 + side.getOffsetX() * 0.49,
+            pos.getY() + 0.5 + side.getOffsetY() * 0.49,
+            pos.getZ() + 0.5 + side.getOffsetZ() * 0.49
+        );
+    }
+
+    private boolean breakable(BlockPos pos, BlockState state) {
+        return this.reachable(pos) && !state.isAir()
+            && !(state.getBlock() instanceof FluidBlock)
+            && state.getHardness(this.mc.world, pos) >= 0.0F;
+    }
+
+    private boolean reachable(BlockPos pos) {
+        Vec3d eye = this.mc.player.getEyePos();
+
+        double px = Math.max(pos.getX(), Math.min(eye.x, pos.getX() + 1.0));
+        double py = Math.max(pos.getY(), Math.min(eye.y, pos.getY() + 1.0));
+        double pz = Math.max(pos.getZ(), Math.min(eye.z, pos.getZ() + 1.0));
+
+        double dx = px - eye.x;
+        double dy = py - eye.y;
+        double dz = pz - eye.z;
+
+        return dx * dx + dy * dy + dz * dz <= REACH * REACH;
     }
 
     // --- Auto-Collect Logic ---
@@ -860,7 +1346,6 @@ public class Datamine extends Module {
         long gracePeriodMs = this.gracePeriod.get() * 1000L;
         long collectDelayMs = this.collectDelay.get() * 50L; // Convert ticks to ms
 
-        // If actively mining, halt Baritone pathing
         if (this.primary != null || this.secondary != null || !this.queue.isEmpty()) {
             if (BaritoneAPI.getProvider().getPrimaryBaritone().getPathingBehavior().isPathing()) {
                 BaritoneAPI.getProvider().getPrimaryBaritone().getPathingBehavior().forceCancel();
@@ -868,7 +1353,6 @@ public class Datamine extends Module {
             return;
         }
 
-        // Enforce the delay cooldown before starting collection
         if (elapsedMs < collectDelayMs) {
             if (BaritoneAPI.getProvider().getPrimaryBaritone().getPathingBehavior().isPathing()) {
                 BaritoneAPI.getProvider().getPrimaryBaritone().getPathingBehavior().forceCancel();
@@ -876,7 +1360,6 @@ public class Datamine extends Module {
             return;
         }
 
-        // If the grace period has expired, stop pathing
         if (elapsedMs > gracePeriodMs) {
             if (BaritoneAPI.getProvider().getPrimaryBaritone().getPathingBehavior().isPathing()) {
                 BaritoneAPI.getProvider().getPrimaryBaritone().getPathingBehavior().forceCancel();
@@ -884,7 +1367,6 @@ public class Datamine extends Module {
             return;
         }
 
-        // Don't interrupt existing pathing
         if (BaritoneAPI.getProvider().getPrimaryBaritone().getPathingBehavior().isPathing()) return;
 
         ItemEntity closestItem = null;
@@ -912,7 +1394,7 @@ public class Datamine extends Module {
 
     // --- Rendering Logic ---
     private void renderTarget(Render3DEvent event, Target target, SettingColor color) {
-        double offset = (1.0 - target.progress) / 2.0;
+        double offset = (1.0 - this.visual(target)) / 2.0;
 
         Box box = new Box(
             target.pos.getX() + offset,
@@ -987,35 +1469,41 @@ public class Datamine extends Module {
     }
 
     // --- Data Structures ---
-    private record Request(BlockPos pos, Direction side, int attempt) {
+    private record Request(BlockPos pos, Direction side, int retry) {
         private Request {
             pos = pos.toImmutable();
         }
     }
 
+    private record Retry(Request request, long ready) {}
+
     private static class Target {
         private final BlockPos pos;
         private final BlockState state;
-        private final Direction side;
-        private final int attempt;
+        private final int retry;
+
+        private Direction side;
 
         private long started;
-        private float delta;
-        private double progress;
-        private int slot;
+        private long updated;
 
-        private boolean primary;
-        private boolean parked;
+        private float delta;
+        private double work;
+
+        private int slot;
+        private int arm;
+        private int finish;
+
+        private boolean arming;
         private boolean burst;
         private boolean instant;
         private boolean finished;
-        private int finish;
 
-        private Target(Request request, BlockState state) {
+        private Target(Request request, BlockState state, Direction side) {
             this.pos = request.pos;
             this.state = state;
-            this.side = request.side;
-            this.attempt = request.attempt;
+            this.side = side;
+            this.retry = request.retry;
         }
     }
 }

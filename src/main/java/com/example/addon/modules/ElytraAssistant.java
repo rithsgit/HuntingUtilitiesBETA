@@ -59,14 +59,18 @@ public class ElytraAssistant extends Module {
         }
     }
 
+    public enum ReplenishMode {
+        Bind,
+        Automatic
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // Setting Groups
     // ═══════════════════════════════════════════════════════════════════════════
 
-    private final SettingGroup sgAutoReplace = settings.createGroup("Auto Replace");
-    private final SettingGroup sgMiddleClick = settings.createGroup("Middle Click");
+    private final SettingGroup sgAutoReplace     = settings.createGroup("Auto Replace");
+    private final SettingGroup sgMiddleClick     = settings.createGroup("Middle Click");
     private final SettingGroup sgRocketReplenish = settings.createGroup("Rocket Replenish");
-    private final SettingGroup sgMisc        = settings.createGroup("Miscellaneous");
 
     // ═══════════════════════════════════════════════════════════════════════════
     // Settings — Auto Replace
@@ -144,8 +148,26 @@ public class ElytraAssistant extends Module {
 
     private final Setting<Boolean> rocketReplenishEnabled = sgRocketReplenish.add(new BoolSetting.Builder()
         .name("rocket-replenish")
-        .description("Enables the rocket replenish keybind.")
+        .description("Enables the rocket replenish system.")
         .defaultValue(true)
+        .build()
+    );
+
+    private final Setting<ReplenishMode> replenishMode = sgRocketReplenish.add(new EnumSetting.Builder<ReplenishMode>()
+        .name("replenish-mode")
+        .description("Toggle between using a keybind or doing it automatically.")
+        .defaultValue(ReplenishMode.Bind)
+        .visible(rocketReplenishEnabled::get)
+        .build()
+    );
+
+    private final Setting<Integer> autoThreshold = sgRocketReplenish.add(new IntSetting.Builder()
+        .name("auto-threshold")
+        .description("Rocket count at which the slot automatically refills.")
+        .defaultValue(5)
+        .min(1)
+        .sliderMax(63)
+        .visible(() -> rocketReplenishEnabled.get() && replenishMode.get() == ReplenishMode.Automatic)
         .build()
     );
 
@@ -171,24 +193,13 @@ public class ElytraAssistant extends Module {
         .name("replenish-key")
         .description("Replenishes the target hotbar slot's item to its max stack size from the main inventory.")
         .defaultValue(Keybind.none())
-        .visible(rocketReplenishEnabled::get)
+        .visible(() -> rocketReplenishEnabled.get() && replenishMode.get() == ReplenishMode.Bind)
         .action(() -> {
             if (mc.currentScreen != null) return;
             if (mc.player == null || mc.world == null) return;
             if (!rocketReplenishEnabled.get()) return;
-            handleRocketReplenish();
+            handleRocketReplenish(false);
         })
-        .build()
-    );
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // Settings — Miscellaneous
-    // ═══════════════════════════════════════════════════════════════════════════
-
-    public final Setting<Boolean> antiAfk = sgMisc.add(new BoolSetting.Builder()
-        .name("anti-afk")
-        .description("Prevents AFK kick by swinging hand periodically.")
-        .defaultValue(false)
         .build()
     );
 
@@ -196,8 +207,6 @@ public class ElytraAssistant extends Module {
     // Constants
     // ═══════════════════════════════════════════════════════════════════════════
 
-    private static final int AFK_INTERVAL_TICKS = 300; // 15 seconds
-    private static final int AFK_RANDOMNESS_TICKS = 120; // ±6 seconds
     private static final int MIDDLE_CLICK_COOLDOWN = 5;
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -212,12 +221,6 @@ public class ElytraAssistant extends Module {
 
     private boolean wasMiddlePressed = false;
     private int middleClickCooldown = 0;
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // State — Anti-AFK
-    // ═══════════════════════════════════════════════════════════════════════════
-
-    private int antiAfkTimer = 0;
 
     // ═══════════════════════════════════════════════════════════════════════════
     // Constructor
@@ -235,7 +238,6 @@ public class ElytraAssistant extends Module {
     public void onActivate() {
         resetAutoReplaceState();
         resetMiddleClickState();
-        resetAntiAfkState();
     }
 
     private void resetAutoReplaceState() {
@@ -247,10 +249,6 @@ public class ElytraAssistant extends Module {
         middleClickCooldown = 0;
     }
 
-    private void resetAntiAfkState() {
-        antiAfkTimer = 0;
-    }
-
     // ═══════════════════════════════════════════════════════════════════════════
     // Event Handlers
     // ═══════════════════════════════════════════════════════════════════════════
@@ -260,8 +258,8 @@ public class ElytraAssistant extends Module {
         if (mc.player == null || mc.world == null) return;
 
         handleMiddleClick();
-        handleAntiAfk();
         handleAutoReplace();
+        handleAutoReplenish();
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -348,7 +346,6 @@ public class ElytraAssistant extends Module {
     private void executeMiddleClickAction() {
         MiddleClickAction action = middleClickAction.get();
 
-        // Ground usage is always prevented while the module is enabled.
         if (mc.player.isOnGround()) return;
 
         ItemUsage target = switch (action) {
@@ -389,24 +386,41 @@ public class ElytraAssistant extends Module {
     // Rocket Replenish Feature
     // ═══════════════════════════════════════════════════════════════════════════
 
-    private void handleRocketReplenish() {
-        // Determine which slot to target based on settings
-        int selectedSlot = useSelectedSlot.get() 
-            ? mc.player.getInventory().selectedSlot 
-            : targetSlot.get() - 1; // Convert 1-9 to 0-8
+    private void handleAutoReplenish() {
+        if (!rocketReplenishEnabled.get()) return;
+        if (replenishMode.get() != ReplenishMode.Automatic) return;
+        if (mc.currentScreen != null) return;
+
+        int selectedSlot = useSelectedSlot.get()
+            ? mc.player.getInventory().selectedSlot
+            : targetSlot.get() - 1;
+
+        ItemStack targetStack = mc.player.getInventory().getStack(selectedSlot);
+        
+        // If the slot is occupied by something else, don't touch it.
+        if (!targetStack.isEmpty() && !targetStack.isOf(Items.FIREWORK_ROCKET)) return;
+
+        int currentCount = targetStack.getCount();
+        if (currentCount <= autoThreshold.get()) {
+            handleRocketReplenish(true);
+        }
+    }
+
+    private void handleRocketReplenish(boolean silent) {
+        int selectedSlot = useSelectedSlot.get()
+            ? mc.player.getInventory().selectedSlot
+            : targetSlot.get() - 1;
 
         ItemStack targetStack = mc.player.getInventory().getStack(selectedSlot);
         Item targetItem = Items.FIREWORK_ROCKET;
 
-        // Abort if the slot is occupied by a different item
         if (!targetStack.isEmpty() && targetStack.getItem() != targetItem) {
-            info("Target slot has a different item — cannot replenish.");
+            if (!silent) info("Target slot has a different item — cannot replenish.");
             return;
         }
 
-        // Don't interfere if the cursor is already holding an item.
         if (!mc.player.currentScreenHandler.getCursorStack().isEmpty()) {
-            info("Cursor has an item — cannot replenish right now.");
+            if (!silent) info("Cursor has an item — cannot replenish right now.");
             return;
         }
 
@@ -415,58 +429,30 @@ public class ElytraAssistant extends Module {
         int needed = maxCount - currentCount;
 
         if (needed <= 0) {
-            info("Stack is already full (" + maxCount + ").");
+            if (!silent) info("Stack is already full (" + maxCount + ").");
             return;
         }
 
-        // Search main inventory (slots 9–35) for matching items and move them
-        // into the target hotbar slot until it reaches max stack size.
         for (int i = 9; i < 36 && needed > 0; i++) {
             ItemStack sourceStack = mc.player.getInventory().getStack(i);
             if (sourceStack.isEmpty()) continue;
             if (sourceStack.getItem() != targetItem) continue;
 
             int available = sourceStack.getCount();
-
-            // from() uses screen-handler slot indices; main inventory is 9–35
-            // which coincides with the inventory index used above.
-            // toHotbar() internally converts 0–8 → 36–44.
             InvUtils.move().from(i).toHotbar(selectedSlot);
-
             needed -= Math.min(needed, available);
         }
 
         int finalCount = maxCount - needed;
 
         if (needed > 0) {
-            info("Replenished " + targetItem.getName().getString()
+            if (!silent) info("Replenished " + targetItem.getName().getString()
                 + " to " + finalCount + " (not enough items in inventory).");
         } else {
-            info("Replenished " + targetItem.getName().getString()
+            if (!silent) info("Replenished " + targetItem.getName().getString()
                 + " to " + maxCount + ".");
             mc.player.playSound(SoundEvents.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
         }
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // Anti-AFK Feature
-    // ═══════════════════════════════════════════════════════════════════════════
-
-    private void handleAntiAfk() {
-        if (!antiAfk.get()) return;
-
-        if (antiAfkTimer <= 0) {
-            mc.player.swingHand(Hand.MAIN_HAND);
-            antiAfkTimer = calculateNextSwingDelay();
-        } else {
-            antiAfkTimer--;
-        }
-    }
-
-    private int calculateNextSwingDelay() {
-        int base = AFK_INTERVAL_TICKS;
-        int variance = (int) (Math.random() * AFK_RANDOMNESS_TICKS * 2) - AFK_RANDOMNESS_TICKS;
-        return Math.max(1, base + variance);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
